@@ -1,0 +1,26 @@
+{
+  "name": "@d8um/adapter-sqlite-vec",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@d8um/core": "workspace:*",
+    "better-sqlite3": "^9.0.0",
+    "sqlite-vec": "^0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/better-sqlite3": "^7.0.0"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "d8um",
+  "private": true,
+  "packageManager": "pnpm@10.18.0",
+  "workspaces": ["packages/*", "packages/adapters/*", "packages/connectors/*", "examples/*"],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0",
+    "eslint": "^8.0.0",
+    "prettier": "^3.0.0",
+    "vitest": "^1.0.0"
+  }
+}

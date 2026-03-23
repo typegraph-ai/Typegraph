@@ -1,0 +1,16 @@
+{
+  "name": "@d8um/example-local-dev",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "tsx index.ts",
+    "build": "echo 'no build step'",
+    "clean": "echo 'nothing to clean'"
+  },
+  "dependencies": {
+    "@d8um/core": "workspace:*",
+    "@d8um/adapter-sqlite-vec": "workspace:*",
+    "tsx": "^4.0.0"
+  }
+}

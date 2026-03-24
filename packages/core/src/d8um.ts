@@ -74,27 +74,39 @@ export function resolveEmbeddingProvider(config: EmbeddingInput): EmbeddingProvi
   throw new Error('Invalid embedding configuration')
 }
 
-export class d8um {
+/** The d8um instance interface — all public methods. */
+export interface d8umInstance {
+  initialize(config: d8umConfig): this
+  addSource(source: d8umSource): this
+  getEmbeddingForSource(sourceId: string): EmbeddingProvider
+  getDistinctEmbeddings(sourceIds?: string[]): Map<string, EmbeddingProvider>
+  groupSourcesByModel(sourceIds?: string[]): Map<string, string[]>
+  index(sourceId?: string, opts?: IndexOpts): Promise<IndexResult | IndexResult[]>
+  query(text: string, opts?: QueryOpts): Promise<QueryResponse>
+  assemble(results: d8umResult[], opts?: AssembleOpts): string
+  destroy(): Promise<void>
+}
+
+class d8umImpl implements d8umInstance {
   private sources = new Map<string, d8umSource>()
   private sourceEmbeddings = new Map<string, EmbeddingProvider>()
-  private adapter: VectorStoreAdapter
-  private defaultEmbedding: EmbeddingProvider
-  private config: d8umConfig
+  private adapter!: VectorStoreAdapter
+  private defaultEmbedding!: EmbeddingProvider
+  private config!: d8umConfig
+  private configured = false
   private initialized = false
 
-  constructor(config: d8umConfig) {
+  initialize(config: d8umConfig): this {
     this.config = config
     this.adapter = config.vectorStore
     this.defaultEmbedding = resolveEmbeddingProvider(config.embedding)
-  }
-
-  async initialize(): Promise<void> {
-    if (this.initialized) return
-    await this.adapter.initialize()
-    this.initialized = true
+    this.configured = true
+    this.initialized = false
+    return this
   }
 
   addSource(source: d8umSource): this {
+    this.assertConfigured()
     if (source.mode === 'indexed' && !source.index) {
       throw new Error(`Source "${source.id}": mode 'indexed' requires an index config`)
     }
@@ -107,7 +119,6 @@ export class d8um {
 
     this.sources.set(source.id, source)
 
-    // Resolve per-source embedding or fall back to default
     const embedding = source.embedding
       ? resolveEmbeddingProvider(source.embedding)
       : this.defaultEmbedding
@@ -116,17 +127,12 @@ export class d8um {
     return this
   }
 
-  /** Get the resolved embedding provider for a source. */
   getEmbeddingForSource(sourceId: string): EmbeddingProvider {
     const embedding = this.sourceEmbeddings.get(sourceId)
     if (!embedding) throw new Error(`Source "${sourceId}" not found`)
     return embedding
   }
 
-  /**
-   * Get all distinct embedding providers across registered sources.
-   * Returns a map of model identifier → EmbeddingProvider.
-   */
   getDistinctEmbeddings(sourceIds?: string[]): Map<string, EmbeddingProvider> {
     const map = new Map<string, EmbeddingProvider>()
     const ids = sourceIds ?? [...this.sources.keys()]
@@ -137,10 +143,6 @@ export class d8um {
     return map
   }
 
-  /**
-   * Group source IDs by their embedding model identifier.
-   * Used by the query planner to fan out one query embedding per distinct model.
-   */
   groupSourcesByModel(sourceIds?: string[]): Map<string, string[]> {
     const groups = new Map<string, string[]>()
     const ids = sourceIds ?? [...this.sources.keys()]
@@ -189,11 +191,29 @@ export class d8um {
     return assembleResults(results, opts)
   }
 
-  private async ensureInitialized(): Promise<void> {
-    if (!this.initialized) await this.initialize()
+  async destroy(): Promise<void> {
+    await this.adapter?.destroy?.()
   }
 
-  async destroy(): Promise<void> {
-    await this.adapter.destroy?.()
+  private assertConfigured(): void {
+    if (!this.configured) {
+      throw new Error('d8um not initialized. Call d8um.initialize({ vectorStore, embedding }) first.')
+    }
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    this.assertConfigured()
+    if (!this.initialized) {
+      await this.adapter.initialize()
+      this.initialized = true
+    }
   }
 }
+
+/** Create a new independent d8um instance. */
+export function d8umCreate(config: d8umConfig): d8umInstance {
+  return new d8umImpl().initialize(config)
+}
+
+/** Global singleton d8um instance. Call d8um.initialize() before use. */
+export const d8um: d8umInstance = new d8umImpl()

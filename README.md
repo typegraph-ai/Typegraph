@@ -26,8 +26,8 @@
 **d8um** (pronounced "datum") is a TypeScript SDK and open protocol for supplying context to LLMs. Define your data sources once - websites, documents, integrations, APIs, databases - and query all of them with a single call. d8um handles chunking, embedding, storage, retrieval, score merging, and prompt assembly so you can focus on building your application.
 
 ```ts
-const { results } = await ctx.query('how do I configure SSO?', { topK: 8 })
-const context = ctx.assemble(results, { format: 'xml', maxTokens: 4000 })
+const { results } = await d8um.query('how do I configure SSO?', { topK: 8 })
+const context = d8um.assemble(results, { format: 'xml', maxTokens: 4000 })
 ```
 
 ## Why d8um?
@@ -54,10 +54,10 @@ d8um organizes every data source into one of three modes:
 | **`live`** | Fetched at query time. Never stored - always fresh. | APIs, search engines, real-time data |
 | **`cached`** | Fetched once, stored until a TTL expires, then re-fetched. | Slowly-changing reference data |
 
-A single `ctx.query()` call fans out across all three modes in parallel, normalizes scores, merges results via [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf), and returns a unified ranked result set.
+A single `d8um.query()` call fans out across all three modes in parallel, normalizes scores, merges results via [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf), and returns a unified ranked result set.
 
 ```
-                        ctx.query("how do I configure SSO?")
+                        d8um.query("how do I configure SSO?")
                                       │
                      ┌────────────────┼────────────────┐
                      ▼                ▼                ▼
@@ -127,10 +127,10 @@ import { UrlConnector } from '@d8um/connector-url'
 import { openai } from '@ai-sdk/openai'
 import { neon } from '@neondatabase/serverless'
 
-// 1. Create a d8um instance — bring your own Postgres driver
+// 1. Initialize d8um — bring your own Postgres driver
 const sql = neon(process.env.DATABASE_URL!)
 
-const ctx = new d8um({
+d8um.initialize({
   embedding: {
     model: openai.embedding('text-embedding-3-small'),
     dimensions: 1536,
@@ -138,8 +138,12 @@ const ctx = new d8um({
   vectorStore: new PgVectorAdapter({ sql }),
 })
 
+// Need multiple instances? Use d8umCreate():
+// import { d8umCreate } from '@d8um/core'
+// const other = d8umCreate({ embedding: ..., vectorStore: ... })
+
 // 2. Add your data sources
-ctx.addSource({
+d8um.addSource({
   id: 'marketing-site',
   connector: new DomainConnector({
     startUrl: 'https://acme.com',
@@ -154,7 +158,7 @@ ctx.addSource({
   },
 })
 
-ctx.addSource({
+d8um.addSource({
   id: 'docs',
   connector: new DomainConnector({
     startUrl: 'https://docs.acme.com',
@@ -168,7 +172,7 @@ ctx.addSource({
   },
 })
 
-ctx.addSource({
+d8um.addSource({
   id: 'changelog',
   connector: new UrlConnector({
     urls: ['https://acme.com/changelog'],
@@ -182,15 +186,15 @@ ctx.addSource({
 })
 
 // 3. Index (run in a background job, cron, or on deploy)
-await ctx.index('marketing-site', { mode: 'upsert' })
-await ctx.index('docs', { mode: 'upsert', pruneDeleted: true })
-await ctx.index('changelog', { mode: 'upsert' })
+await d8um.index('marketing-site', { mode: 'upsert' })
+await d8um.index('docs', { mode: 'upsert', pruneDeleted: true })
+await d8um.index('changelog', { mode: 'upsert' })
 
 // 4. Query - fans out across all sources, merges, re-ranks
-const { results } = await ctx.query('how do I configure SSO?', { topK: 8 })
+const { results } = await d8um.query('how do I configure SSO?', { topK: 8 })
 
 // 5. Get prompt-ready context
-const context = ctx.assemble(results, {
+const context = d8um.assemble(results, {
   format: 'xml',
   maxTokens: 4000,
   citeSources: true,
@@ -224,18 +228,18 @@ const context = ctx.assemble(results, {
 
 | Method | Description |
 |--------|-------------|
-| `new d8um(config)` | Create an instance with a vector store adapter and embedding provider |
+| `d8um.initialize(config)` | Configure the singleton with a vector store adapter and embedding provider |
+| `d8umCreate(config)` | Create an independent instance (for multi-instance use cases) |
 | `.addSource(source)` | Register a data source (indexed, live, or cached) |
 | `.index(sourceId?, opts?)` | Index one or all indexed sources - idempotent, incremental by default |
 | `.query(text, opts?)` | Fan-out query across all sources, merge, and rank |
 | `.assemble(results, opts?)` | Format results for prompt injection (`xml`, `markdown`, `plain`, or custom) |
-| `.initialize()` | Initialize the vector store (idempotent - safe to call on every cold start) |
 | `.destroy()` | Clean up connections |
 
 ### Indexing Options
 
 ```ts
-await ctx.index('docs', {
+await d8um.index('docs', {
   mode: 'upsert',       // 'upsert' (incremental) or 'replace' (full rebuild)
   tenantId: 'acme',     // Multi-tenant isolation
   pruneDeleted: true,    // Remove chunks for documents no longer in the source
@@ -247,7 +251,7 @@ await ctx.index('docs', {
 ### Query Options
 
 ```ts
-const response = await ctx.query('search text', {
+const response = await d8um.query('search text', {
   topK: 10,
   sources: ['docs', 'wiki'],     // Filter to specific sources
   tenantId: 'acme',
@@ -288,7 +292,7 @@ const myConnector: Connector = {
   },
 }
 
-ctx.addSource({
+d8um.addSource({
   id: 'my-source',
   connector: myConnector,
   mode: 'indexed',
@@ -335,6 +339,7 @@ d8um uses the [Vercel AI SDK](https://ai-sdk.dev) provider ecosystem for embeddi
 Set a default embedding model on the `d8um` instance, then optionally override it on any source:
 
 ```ts
+import { d8um } from '@d8um/core'
 import { openai } from '@ai-sdk/openai'
 import { cohere } from '@ai-sdk/cohere'
 import { neon } from '@neondatabase/serverless'
@@ -342,7 +347,7 @@ import { PgVectorAdapter } from '@d8um/adapter-pgvector'
 
 const adapter = new PgVectorAdapter({ sql: neon(process.env.DATABASE_URL!) })
 
-const ctx = new d8um({
+d8um.initialize({
   // Global default - used for all sources unless overridden
   embedding: {
     model: openai.embedding('text-embedding-3-small'),
@@ -352,7 +357,7 @@ const ctx = new d8um({
 })
 
 // Uses the global default (OpenAI, 1536 dims)
-ctx.addSource({
+d8um.addSource({
   id: 'docs',
   connector: docsConnector,
   mode: 'indexed',
@@ -360,7 +365,7 @@ ctx.addSource({
 })
 
 // Overrides with Cohere (1024 dims) - gets its own vector table automatically
-ctx.addSource({
+d8um.addSource({
   id: 'wiki',
   connector: wikiConnector,
   mode: 'indexed',
@@ -374,7 +379,7 @@ ctx.addSource({
 
 ### What happens at query time
 
-When you call `ctx.query()`, d8um:
+When you call `d8um.query()`, d8um:
 
 1. Groups sources by their embedding model
 2. Embeds the query text **once per distinct model** (not once per source)
@@ -397,7 +402,7 @@ Each embedding model gets its own vector table (e.g., `d8um_chunks_openai_text_e
 For full control, pass a raw `EmbeddingProvider` object - no AI SDK required:
 
 ```ts
-const ctx = new d8um({
+d8um.initialize({
   embedding: {
     model: 'custom/my-model',
     dimensions: 768,

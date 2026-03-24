@@ -11,7 +11,7 @@ import { d8um } from '@d8um/core'
 import { SqliteVecAdapter } from '@d8um/adapter-sqlite-vec'
 
 async function main() {
-  const ctx = new d8um({
+  d8um.initialize({
     // For local dev, you can use a custom EmbeddingProvider directly
     embedding: {
       model: 'mock/local-dev',
@@ -28,7 +28,7 @@ async function main() {
     vectorStore: new SqliteVecAdapter({ dbPath: './local-dev.db' }),
   })
 
-  ctx.addSource({
+  d8um.addSource({
     id: 'test-docs',
     connector: {
       async *fetch() {
@@ -42,7 +42,7 @@ async function main() {
         yield {
           id: 'doc-2',
           title: 'Configuration',
-          content: 'You can configure d8um by passing a vectorStore and embedding provider to the d8um constructor.',
+          content: 'You can configure d8um by calling d8um.initialize() with a vectorStore and embedding provider.',
           updatedAt: new Date(),
           metadata: {},
         }
@@ -57,14 +57,14 @@ async function main() {
   })
 
   console.log('Indexing...')
-  const result = await ctx.index('test-docs')
+  const result = await d8um.index('test-docs')
   console.log('Index result:', result)
 
   console.log('Querying...')
-  const response = await ctx.query('how do I install d8um?')
+  const response = await d8um.query('how do I install d8um?')
   console.log('Results:', response.results.map(r => r.content))
 
-  const context = ctx.assemble(response.results, { format: 'xml' })
+  const context = d8um.assemble(response.results, { format: 'xml' })
   console.log('Assembled context:\n', context)
 }
 

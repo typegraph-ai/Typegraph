@@ -1,6 +1,6 @@
 // Main public API
-export { d8um, resolveEmbeddingProvider } from './d8um.js'
-export type { d8umConfig } from './d8um.js'
+export { d8um, d8umCreate, resolveEmbeddingProvider } from './d8um.js'
+export type { d8umConfig, d8umInstance } from './d8um.js'
 /** @deprecated Use AI SDK providers instead. */
 export type { EmbeddingProviderConfig } from './d8um.js'
 

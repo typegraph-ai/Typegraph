@@ -7,11 +7,11 @@
 // import { openai } from '@ai-sdk/openai'
 // embedding: { model: openai.embedding('text-embedding-3-small'), dimensions: 1536 }
 
-import { D8um } from '@d8um/core'
+import { d8um } from '@d8um/core'
 import { SqliteVecAdapter } from '@d8um/adapter-sqlite-vec'
 
 async function main() {
-  const ctx = new D8um({
+  const ctx = new d8um({
     // For local dev, you can use a custom EmbeddingProvider directly
     embedding: {
       model: 'mock/local-dev',
@@ -42,7 +42,7 @@ async function main() {
         yield {
           id: 'doc-2',
           title: 'Configuration',
-          content: 'You can configure d8um by passing a vectorStore and embedding provider to the D8um constructor.',
+          content: 'You can configure d8um by passing a vectorStore and embedding provider to the d8um constructor.',
           updatedAt: new Date(),
           metadata: {},
         }

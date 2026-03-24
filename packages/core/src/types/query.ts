@@ -1,11 +1,11 @@
-export interface D8umQuery {
+export interface d8umQuery {
   text: string
   sources?: string[] | undefined
   topK?: number | undefined
   filters?: Record<string, unknown> | undefined
 }
 
-export interface D8umResult {
+export interface d8umResult {
   content: string
 
   score: number
@@ -56,7 +56,7 @@ export interface QueryOpts {
 }
 
 export interface QueryResponse {
-  results: D8umResult[]
+  results: d8umResult[]
   sources: Record<string, {
     mode: 'indexed' | 'live' | 'cached'
     resultCount: number
@@ -74,7 +74,7 @@ export interface QueryResponse {
 }
 
 export interface AssembleOpts {
-  format?: 'xml' | 'markdown' | 'plain' | ((results: D8umResult[]) => string) | undefined
+  format?: 'xml' | 'markdown' | 'plain' | ((results: d8umResult[]) => string) | undefined
   maxTokens?: number | undefined
   citeSources?: boolean | undefined
   groupBySource?: boolean | undefined

@@ -28,7 +28,7 @@ export interface Connector<TMeta extends Record<string, unknown> = Record<string
 
   fetchSince?(since: Date): AsyncIterable<RawDocument<TMeta>>
 
-  query?(q: import('./query.js').D8umQuery): Promise<import('./query.js').D8umResult[]>
+  query?(q: import('./query.js').d8umQuery): Promise<import('./query.js').d8umResult[]>
 
   chunk?(doc: RawDocument<TMeta>, opts: ChunkOpts): Chunk[]
 

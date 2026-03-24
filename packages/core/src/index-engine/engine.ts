@@ -1,4 +1,4 @@
-import type { D8umSource } from '../types/source.js'
+import type { d8umSource } from '../types/source.js'
 import type { VectorStoreAdapter } from '../types/adapter.js'
 import type { EmbeddingProvider } from '../embedding/provider.js'
 import type { IndexOpts, IndexResult } from '../types/index-types.js'
@@ -13,7 +13,7 @@ export class IndexEngine {
     private embedding: EmbeddingProvider
   ) {}
 
-  async indexSource(source: D8umSource, opts: IndexOpts = {}): Promise<IndexResult> {
+  async indexSource(source: d8umSource, opts: IndexOpts = {}): Promise<IndexResult> {
     const {
       mode = 'upsert',
       tenantId,

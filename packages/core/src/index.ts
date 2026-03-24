@@ -1,6 +1,6 @@
 // Main public API
-export { D8um, resolveEmbeddingProvider } from './d8um.js'
-export type { D8umConfig } from './d8um.js'
+export { d8um, resolveEmbeddingProvider } from './d8um.js'
+export type { d8umConfig } from './d8um.js'
 /** @deprecated Use AI SDK providers instead. */
 export type { EmbeddingProviderConfig } from './d8um.js'
 
@@ -13,7 +13,7 @@ export type {
   SyncMode,
   IndexConfig,
   CacheConfig,
-  D8umSource,
+  d8umSource,
   EmbeddingInput,
   EmbeddedChunk,
   ChunkFilter,
@@ -22,8 +22,8 @@ export type {
   HashRecord,
   HashStoreAdapter,
   VectorStoreAdapter,
-  D8umQuery,
-  D8umResult,
+  d8umQuery,
+  d8umResult,
   QueryOpts,
   QueryResponse,
   AssembleOpts,

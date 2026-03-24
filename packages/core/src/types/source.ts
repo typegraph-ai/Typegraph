@@ -23,12 +23,12 @@ export interface CacheConfig {
   ttl: string | number
 }
 
-export interface D8umSource {
+export interface d8umSource {
   id: string
   connector: Connector
   mode: SyncMode
   index?: IndexConfig | undefined
   cache?: CacheConfig | undefined
-  /** Optional per-source embedding model. Overrides the global default from D8umConfig. */
+  /** Optional per-source embedding model. Overrides the global default from d8umConfig. */
   embedding?: EmbeddingInput | undefined
 }

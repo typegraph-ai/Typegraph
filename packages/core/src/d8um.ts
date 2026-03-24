@@ -1,6 +1,6 @@
 import type { VectorStoreAdapter } from './types/adapter.js'
-import type { D8umSource, EmbeddingInput } from './types/source.js'
-import type { QueryOpts, QueryResponse, AssembleOpts, D8umResult } from './types/query.js'
+import type { d8umSource, EmbeddingInput } from './types/source.js'
+import type { QueryOpts, QueryResponse, AssembleOpts, d8umResult } from './types/query.js'
 import type { IndexOpts, IndexResult } from './types/index-types.js'
 import type { EmbeddingProvider } from './embedding/provider.js'
 import type { AISDKEmbeddingInput } from './embedding/ai-sdk-adapter.js'
@@ -11,7 +11,7 @@ import { IndexEngine } from './index-engine/engine.js'
 import { QueryPlanner } from './query/planner.js'
 import { assemble as assembleResults } from './query/assemble.js'
 
-export interface D8umConfig {
+export interface d8umConfig {
   vectorStore: VectorStoreAdapter
   embedding: EmbeddingInput
   tenantId?: string | undefined
@@ -74,15 +74,15 @@ export function resolveEmbeddingProvider(config: EmbeddingInput): EmbeddingProvi
   throw new Error('Invalid embedding configuration')
 }
 
-export class D8um {
-  private sources = new Map<string, D8umSource>()
+export class d8um {
+  private sources = new Map<string, d8umSource>()
   private sourceEmbeddings = new Map<string, EmbeddingProvider>()
   private adapter: VectorStoreAdapter
   private defaultEmbedding: EmbeddingProvider
-  private config: D8umConfig
+  private config: d8umConfig
   private initialized = false
 
-  constructor(config: D8umConfig) {
+  constructor(config: d8umConfig) {
     this.config = config
     this.adapter = config.vectorStore
     this.defaultEmbedding = resolveEmbeddingProvider(config.embedding)
@@ -94,7 +94,7 @@ export class D8um {
     this.initialized = true
   }
 
-  addSource(source: D8umSource): this {
+  addSource(source: d8umSource): this {
     if (source.mode === 'indexed' && !source.index) {
       throw new Error(`Source "${source.id}": mode 'indexed' requires an index config`)
     }
@@ -185,7 +185,7 @@ export class D8um {
     })
   }
 
-  assemble(results: D8umResult[], opts?: AssembleOpts): string {
+  assemble(results: d8umResult[], opts?: AssembleOpts): string {
     return assembleResults(results, opts)
   }
 

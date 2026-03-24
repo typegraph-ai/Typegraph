@@ -9,7 +9,7 @@ export type {
   SyncMode,
   IndexConfig,
   CacheConfig,
-  D8umSource,
+  d8umSource,
   EmbeddingInput,
   EmbeddingProviderConfig,
 } from './source.js'
@@ -28,8 +28,8 @@ export type {
 } from './adapter.js'
 
 export type {
-  D8umQuery,
-  D8umResult,
+  d8umQuery,
+  d8umResult,
   QueryOpts,
   QueryResponse,
   AssembleOpts,

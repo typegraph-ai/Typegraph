@@ -112,35 +112,39 @@ npm install @d8um/adapter-pgvector    # Production - Postgres + pgvector
 npm install @d8um/adapter-sqlite-vec  # Local dev - zero external dependencies
 
 # Pick connectors
-npm install @d8um/connector-url       # Crawl URLs and sitemaps
+npm install @d8um/connector-domain    # Recursively crawl a domain/website
+npm install @d8um/connector-url       # Scrape individual web pages
 npm install @d8um/connector-notion    # Sync Notion pages and databases
 ```
 
 ### Define sources, index, query
 
 ```ts
-import { D8um } from '@d8um/core'
+import { d8um } from '@d8um/core'
 import { PgVectorAdapter } from '@d8um/adapter-pgvector'
+import { DomainConnector } from '@d8um/connector-domain'
 import { UrlConnector } from '@d8um/connector-url'
-import { NotionConnector } from '@d8um/connector-notion'
 import { openai } from '@ai-sdk/openai'
+import { neon } from '@neondatabase/serverless'
 
-// 1. Create a d8um instance with an AI SDK embedding model
-const ctx = new D8um({
+// 1. Create a d8um instance — bring your own Postgres driver
+const sql = neon(process.env.DATABASE_URL!)
+
+const ctx = new d8um({
   embedding: {
     model: openai.embedding('text-embedding-3-small'),
     dimensions: 1536,
   },
-  vectorStore: new PgVectorAdapter({
-    connectionString: process.env.DATABASE_URL!,
-  }),
+  vectorStore: new PgVectorAdapter({ sql }),
 })
 
 // 2. Add your data sources
 ctx.addSource({
-  id: 'docs',
-  connector: new UrlConnector({
-    urls: ['https://docs.acme.com/sitemap.xml'],
+  id: 'marketing-site',
+  connector: new DomainConnector({
+    startUrl: 'https://acme.com',
+    denyPatterns: ['/blog/*'],
+    maxPages: 200,
   }),
   mode: 'indexed',
   index: {
@@ -151,22 +155,36 @@ ctx.addSource({
 })
 
 ctx.addSource({
-  id: 'wiki',
-  connector: new NotionConnector({
-    apiKey: process.env.NOTION_API_KEY!,
+  id: 'docs',
+  connector: new DomainConnector({
+    startUrl: 'https://docs.acme.com',
+    maxPages: 500,
   }),
   mode: 'indexed',
   index: {
     chunkSize: 512,
     chunkOverlap: 64,
-    idempotencyKey: ['metadata.pageId'],
-    propagateMetadata: ['url', 'title', 'updatedAt', 'metadata.pageId'],
+    idempotencyKey: ['url'],
+  },
+})
+
+ctx.addSource({
+  id: 'changelog',
+  connector: new UrlConnector({
+    urls: ['https://acme.com/changelog'],
+  }),
+  mode: 'indexed',
+  index: {
+    chunkSize: 512,
+    chunkOverlap: 64,
+    idempotencyKey: ['url'],
   },
 })
 
 // 3. Index (run in a background job, cron, or on deploy)
-await ctx.index('docs', { mode: 'upsert' })
-await ctx.index('wiki', { mode: 'upsert', pruneDeleted: true })
+await ctx.index('marketing-site', { mode: 'upsert' })
+await ctx.index('docs', { mode: 'upsert', pruneDeleted: true })
+await ctx.index('changelog', { mode: 'upsert' })
 
 // 4. Query - fans out across all sources, merges, re-ranks
 const { results } = await ctx.query('how do I configure SSO?', { topK: 8 })
@@ -202,11 +220,11 @@ const context = ctx.assemble(results, {
 
 ## API Overview
 
-### `D8um`
+### `d8um`
 
 | Method | Description |
 |--------|-------------|
-| `new D8um(config)` | Create an instance with a vector store adapter and embedding provider |
+| `new d8um(config)` | Create an instance with a vector store adapter and embedding provider |
 | `.addSource(source)` | Register a data source (indexed, live, or cached) |
 | `.index(sourceId?, opts?)` | Index one or all indexed sources - idempotent, incremental by default |
 | `.query(text, opts?)` | Fan-out query across all sources, merge, and rank |
@@ -244,9 +262,10 @@ const response = await ctx.query('search text', {
 | Package | Description | Status |
 |---------|-------------|--------|
 | [`@d8um/core`](packages/core) | Query engine, index engine, types, embedding providers | Alpha |
-| [`@d8um/adapter-pgvector`](packages/adapters/pgvector) | PostgreSQL + pgvector - production-ready vector store | Alpha |
+| [`@d8um/adapter-pgvector`](packages/adapters/pgvector) | PostgreSQL + pgvector - driver-agnostic (bring your own Postgres client) | Alpha |
 | [`@d8um/adapter-sqlite-vec`](packages/adapters/sqlite-vec) | SQLite + sqlite-vec - zero-infra local development | Alpha |
-| [`@d8um/connector-url`](packages/connectors/url) | Crawl URLs and sitemaps, strip HTML to clean text | Alpha |
+| [`@d8um/connector-domain`](packages/connectors/domain) | Recursively crawl a domain with BFS, respecting depth/page limits | Alpha |
+| [`@d8um/connector-url`](packages/connectors/url) | Scrape individual web pages, strip HTML to clean text | Alpha |
 | [`@d8um/connector-notion`](packages/connectors/notion) | Sync Notion pages and databases with block-aware chunking | Alpha |
 
 ### Build Your Own
@@ -281,7 +300,7 @@ ctx.addSource({
 
 ```
 @d8um/core
-├── D8um                Main orchestrator, per-source embedding resolution
+├── d8um()              Main orchestrator, per-source embedding resolution
 ├── embedding/
 │   ├── provider.ts     EmbeddingProvider interface
 │   └── ai-sdk-adapter  Wraps any AI SDK model via structural typing (zero deps)
@@ -313,13 +332,17 @@ d8um uses the [Vercel AI SDK](https://ai-sdk.dev) provider ecosystem for embeddi
 
 ### Global default + per-source overrides
 
-Set a default embedding model on the `D8um` instance, then optionally override it on any source:
+Set a default embedding model on the `d8um` instance, then optionally override it on any source:
 
 ```ts
 import { openai } from '@ai-sdk/openai'
 import { cohere } from '@ai-sdk/cohere'
+import { neon } from '@neondatabase/serverless'
+import { PgVectorAdapter } from '@d8um/adapter-pgvector'
 
-const ctx = new D8um({
+const adapter = new PgVectorAdapter({ sql: neon(process.env.DATABASE_URL!) })
+
+const ctx = new d8um({
   // Global default - used for all sources unless overridden
   embedding: {
     model: openai.embedding('text-embedding-3-small'),
@@ -374,14 +397,14 @@ Each embedding model gets its own vector table (e.g., `d8um_chunks_openai_text_e
 For full control, pass a raw `EmbeddingProvider` object - no AI SDK required:
 
 ```ts
-const ctx = new D8um({
+const ctx = new d8um({
   embedding: {
     model: 'custom/my-model',
     dimensions: 768,
     async embed(text) { /* your logic */ },
     async embedBatch(texts) { /* your logic */ },
   },
-  vectorStore: adapter,
+  vectorStore: new PgVectorAdapter({ sql: neon(process.env.DATABASE_URL!) }),
 })
 ```
 
@@ -408,10 +431,13 @@ The repo uses [Turborepo](https://turbo.build) for build orchestration and [pnpm
 - [x] AI SDK embedding provider integration (40+ providers)
 - [x] Per-source embedding model support with automatic multi-model query fan-out
 - [x] Per-model vector table isolation
-- [ ] Query runners (indexed, live, cached) and QueryPlanner implementation
-- [ ] Full pgvector adapter with hybrid search (iterative HNSW + tsvector RRF)
+- [x] Indexed query runner and QueryPlanner implementation
+- [x] Full pgvector adapter with hybrid search (iterative HNSW + tsvector RRF)
+- [x] Driver-agnostic pgvector adapter (bring your own Postgres client)
+- [x] URL connector with HTML stripping and link extraction
+- [x] Domain connector with BFS crawling, domain boundaries, and allow/deny patterns
+- [ ] Live and cached query runners
 - [ ] SQLite-vec adapter implementation
-- [ ] URL connector with sitemap expansion and HTML stripping
 - [ ] Notion connector with block tree traversal
 - [ ] Neighbor chunk joining in `assemble()`
 - [ ] Token budget trimming

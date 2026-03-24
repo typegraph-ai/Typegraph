@@ -1,7 +1,7 @@
-import type { D8umResult } from '../types/query.js'
+import type { d8umResult } from '../types/query.js'
 import type { AssembleOpts } from '../types/query.js'
 
-export function assemble(results: D8umResult[], opts: AssembleOpts = {}): string {
+export function assemble(results: d8umResult[], opts: AssembleOpts = {}): string {
   const {
     format = 'xml',
     citeSources = true,
@@ -22,7 +22,7 @@ export function assemble(results: D8umResult[], opts: AssembleOpts = {}): string
   }
 }
 
-function assembleXml(results: D8umResult[], _opts: { citeSources: boolean }): string {
+function assembleXml(results: d8umResult[], _opts: { citeSources: boolean }): string {
   const sources = groupBySourceId(results)
   const parts = Object.entries(sources).map(([sourceId, chunks]) => {
     const first = chunks[0]!
@@ -42,21 +42,21 @@ function assembleXml(results: D8umResult[], _opts: { citeSources: boolean }): st
   return `<context>\n${parts.join('\n')}\n</context>`
 }
 
-function assembleMarkdown(results: D8umResult[], _opts: { citeSources: boolean }): string {
+function assembleMarkdown(results: d8umResult[], _opts: { citeSources: boolean }): string {
   // TODO: implement
   return results.map(r => r.content).join('\n\n---\n\n')
 }
 
-function assemblePlain(results: D8umResult[]): string {
+function assemblePlain(results: d8umResult[]): string {
   return results.map(r => r.content).join('\n\n')
 }
 
-function groupBySourceId(results: D8umResult[]): Record<string, D8umResult[]> {
+function groupBySourceId(results: d8umResult[]): Record<string, d8umResult[]> {
   return results.reduce((acc, r) => {
     const key = r.source.id
     ;(acc[key] = acc[key] ?? []).push(r)
     return acc
-  }, {} as Record<string, D8umResult[]>)
+  }, {} as Record<string, d8umResult[]>)
 }
 
 function escapeXml(s: string): string {

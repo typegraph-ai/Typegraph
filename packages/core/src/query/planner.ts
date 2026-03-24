@@ -1,5 +1,5 @@
-import type { D8umSource } from '../types/source.js'
-import type { QueryOpts, QueryResponse, D8umResult } from '../types/query.js'
+import type { d8umSource } from '../types/source.js'
+import type { QueryOpts, QueryResponse, d8umResult } from '../types/query.js'
 import type { VectorStoreAdapter } from '../types/adapter.js'
 import type { EmbeddingProvider } from '../embedding/provider.js'
 import { IndexedRunner } from './runners/indexed.js'
@@ -8,7 +8,7 @@ import { mergeAndRank, type NormalizedResult } from './merger.js'
 export class QueryPlanner {
   constructor(
     private adapter: VectorStoreAdapter,
-    private sources: Map<string, D8umSource>,
+    private sources: Map<string, d8umSource>,
     private sourceEmbeddings: Map<string, EmbeddingProvider>
   ) {}
 
@@ -22,7 +22,7 @@ export class QueryPlanner {
     const sourceIds = opts.sources ?? [...this.sources.keys()]
     const activeSources = sourceIds
       .map(id => this.sources.get(id))
-      .filter((s): s is D8umSource => s != null)
+      .filter((s): s is d8umSource => s != null)
 
     // Separate by mode — only indexed supported in this iteration
     const indexedSources = activeSources.filter(s => s.mode === 'indexed')
@@ -86,8 +86,8 @@ export class QueryPlanner {
       ? mergeAndRank([allResults], topK, weights)
       : allResults.slice(0, topK)
 
-    // Map NormalizedResult → D8umResult
-    const results: D8umResult[] = mergedResults.map(r => ({
+    // Map NormalizedResult → d8umResult
+    const results: d8umResult[] = mergedResults.map(r => ({
       content: r.content,
       score: r.normalizedScore,
       scores: {

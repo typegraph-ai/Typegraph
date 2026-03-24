@@ -21,6 +21,12 @@ export interface d8umResult {
     title: string
     url?: string | undefined
     updatedAt: Date
+    status?: string | undefined
+    scope?: string | undefined
+    documentType?: string | undefined
+    sourceType?: string | undefined
+    userId?: string | undefined
+    folderId?: string | undefined
   }
 
   chunk: {
@@ -38,6 +44,8 @@ export interface QueryOpts {
   topK?: number | undefined
   tenantId?: string | undefined
   filters?: Record<string, unknown> | undefined
+  /** Filter results by document-level fields (status, scope, type, etc.). */
+  documentFilter?: import('./d8um-document.js').DocumentFilter | undefined
 
   mergeStrategy?: 'rrf' | 'linear' | 'custom' | undefined
   mergeWeights?: {

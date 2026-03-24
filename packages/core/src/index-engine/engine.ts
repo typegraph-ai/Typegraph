@@ -2,10 +2,11 @@ import type { d8umSource } from '../types/source.js'
 import type { VectorStoreAdapter } from '../types/adapter.js'
 import type { EmbeddingProvider } from '../embedding/provider.js'
 import type { IndexOpts, IndexResult } from '../types/index-types.js'
-import type { RawDocument } from '../types/connector.js'
+import type { RawDocument, Chunk } from '../types/connector.js'
 import { IndexError } from '../types/index-types.js'
 import { sha256, resolveIdempotencyKey, buildHashStoreKey } from './hash.js'
 import { defaultChunker } from './chunker.js'
+import { stripMarkdown } from './strip-markdown.js'
 
 export class IndexEngine {
   constructor(
@@ -109,6 +110,25 @@ export class IndexEngine {
           })
         }
 
+        // Create/update document record
+        let documentId = doc.id
+        if (this.adapter.upsertDocumentRecord && !dryRun) {
+          const docRecord = await this.adapter.upsertDocumentRecord({
+            sourceId: source.id,
+            tenantId,
+            title: doc.title,
+            url: doc.url,
+            contentHash,
+            chunkCount: 0,
+            status: 'processing',
+            documentType: source.index.documentType,
+            sourceType: source.index.sourceType,
+            scope: source.index.scope,
+            metadata: doc.metadata,
+          })
+          documentId = docRecord.id
+        }
+
         const chunks = source.connector.chunk
           ? source.connector.chunk(doc, source.index)
           : defaultChunker(doc, source.index)
@@ -120,7 +140,10 @@ export class IndexEngine {
           failed: 0,
           current: { idempotencyKey: ikey, reason: stored ? 'hash_changed' : 'new' },
         })
-        const embeddings = await this.embedding.embedBatch(chunks.map(c => c.content))
+
+        // Apply embedding preprocessing
+        const textsForEmbedding = chunks.map(c => this.preprocessForEmbedding(c.content, source))
+        const embeddings = await this.embedding.embedBatch(textsForEmbedding)
 
         const propagated = this.propagateMetadata(doc, source.index.propagateMetadata)
 
@@ -128,7 +151,7 @@ export class IndexEngine {
           idempotencyKey: ikey,
           sourceId: source.id,
           tenantId,
-          documentId: doc.id,
+          documentId,
           content: chunk.content,
           embedding: embeddings[i]!,
           embeddingModel: modelId,
@@ -147,6 +170,11 @@ export class IndexEngine {
             current: { idempotencyKey: ikey, reason: stored ? 'hash_changed' : 'new' },
           })
           await this.adapter.upsertDocument(modelId, embeddedChunks)
+
+          // Update document status to complete
+          if (this.adapter.updateDocumentStatus) {
+            await this.adapter.updateDocumentStatus(documentId, 'complete', chunks.length)
+          }
 
           await this.adapter.hashStore.set(storeKey, {
             idempotencyKey: ikey,
@@ -198,6 +226,119 @@ export class IndexEngine {
 
     result.durationMs = Date.now() - startMs
     return result
+  }
+
+  /**
+   * Ingest a document with pre-built chunks (e.g. spreadsheet rows).
+   * Skips the default chunker — uses the provided chunks directly.
+   */
+  async ingestWithChunks(
+    source: d8umSource,
+    doc: RawDocument,
+    chunks: Chunk[],
+    opts: IndexOpts = {}
+  ): Promise<IndexResult> {
+    const { tenantId, dryRun = false } = opts
+
+    if (!source.index) throw new Error(`Source "${source.id}" has no index config`)
+
+    const modelId = this.embedding.model
+    const startMs = Date.now()
+
+    if (!dryRun) {
+      await this.adapter.ensureModel(modelId, this.embedding.dimensions)
+    }
+
+    const contentHash = sha256(doc.content)
+    const ikey = resolveIdempotencyKey(doc, source.index.idempotencyKey)
+
+    // Create/update document record
+    let documentId = doc.id
+    if (this.adapter.upsertDocumentRecord && !dryRun) {
+      const docRecord = await this.adapter.upsertDocumentRecord({
+        sourceId: source.id,
+        tenantId,
+        title: doc.title,
+        url: doc.url,
+        contentHash,
+        chunkCount: chunks.length,
+        status: 'processing',
+        documentType: source.index.documentType,
+        sourceType: source.index.sourceType,
+        scope: source.index.scope,
+        metadata: doc.metadata,
+      })
+      documentId = docRecord.id
+    }
+
+    try {
+      // Apply embedding preprocessing
+      const textsForEmbedding = chunks.map(c => this.preprocessForEmbedding(c.content, source))
+      const embeddings = await this.embedding.embedBatch(textsForEmbedding)
+
+      const propagated = this.propagateMetadata(doc, source.index.propagateMetadata)
+
+      const embeddedChunks = chunks.map((chunk, i) => ({
+        idempotencyKey: ikey,
+        sourceId: source.id,
+        tenantId,
+        documentId,
+        content: chunk.content,
+        embedding: embeddings[i]!,
+        embeddingModel: modelId,
+        chunkIndex: chunk.chunkIndex,
+        totalChunks: chunks.length,
+        metadata: { ...propagated, ...chunk.metadata },
+        indexedAt: new Date(),
+      }))
+
+      if (!dryRun) {
+        await this.adapter.upsertDocument(modelId, embeddedChunks)
+
+        if (this.adapter.updateDocumentStatus) {
+          await this.adapter.updateDocumentStatus(documentId, 'complete', chunks.length)
+        }
+
+        const storeKey = buildHashStoreKey(tenantId, source.id, ikey)
+        await this.adapter.hashStore.set(storeKey, {
+          idempotencyKey: ikey,
+          contentHash,
+          sourceId: source.id,
+          tenantId,
+          embeddingModel: modelId,
+          indexedAt: new Date(),
+          chunkCount: chunks.length,
+        })
+      }
+
+      return {
+        sourceId: source.id,
+        tenantId,
+        mode: 'upsert',
+        total: 1,
+        skipped: 0,
+        updated: 0,
+        inserted: 1,
+        pruned: 0,
+        durationMs: Date.now() - startMs,
+      }
+    } catch (error) {
+      if (this.adapter.updateDocumentStatus && !dryRun) {
+        await this.adapter.updateDocumentStatus(documentId, 'failed')
+      }
+      throw error
+    }
+  }
+
+  /** Apply embedding preprocessing based on source config. */
+  private preprocessForEmbedding(content: string, source: d8umSource): string {
+    if (source.index?.preprocessForEmbedding) {
+      return source.index.preprocessForEmbedding(content)
+    }
+    if (source.index?.stripMarkdownForEmbedding) {
+      return stripMarkdown(content)
+    }
+    return content
   }
 
   private propagateMetadata(

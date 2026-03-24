@@ -59,7 +59,7 @@ export class QueryPlanner {
     if (modelGroups.size > 0) {
       const runnerStart = Date.now()
       const runner = new IndexedRunner(this.adapter)
-      const results = await runner.run(text, modelGroups, topK, tenantId)
+      const results = await runner.run(text, modelGroups, topK, tenantId, opts.documentFilter)
       const runnerDuration = Date.now() - runnerStart
 
       // Record per-source timings
@@ -101,6 +101,12 @@ export class QueryPlanner {
         title: r.title ?? '',
         url: r.url,
         updatedAt: r.updatedAt ?? new Date(),
+        status: r.documentStatus,
+        scope: r.documentScope,
+        documentType: r.documentType,
+        sourceType: r.sourceType,
+        userId: r.userId,
+        folderId: r.folderId,
       },
       chunk: r.chunk ?? { index: 0, total: 1, isNeighbor: false },
       metadata: r.metadata,

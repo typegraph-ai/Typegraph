@@ -13,6 +13,13 @@ export interface NormalizedResult {
   title?: string | undefined
   updatedAt?: Date | undefined
   tenantId?: string | undefined
+  // Document-level fields (populated when searchWithDocuments is used)
+  documentStatus?: string | undefined
+  documentScope?: string | undefined
+  documentType?: string | undefined
+  sourceType?: string | undefined
+  userId?: string | undefined
+  folderId?: string | undefined
 }
 
 export function dedupKey(r: NormalizedResult): string {

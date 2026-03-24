@@ -22,6 +22,7 @@ export type {
   HashRecord,
   HashStoreAdapter,
   VectorStoreAdapter,
+  ScoredChunkWithDocument,
   d8umQuery,
   d8umResult,
   QueryOpts,
@@ -30,6 +31,12 @@ export type {
   IndexOpts,
   IndexProgressEvent,
   IndexResult,
+  d8umDocument,
+  DocumentStatus,
+  DocumentScope,
+  DocumentFilter,
+  UpsertDocumentInput,
+  d8umHooks,
 } from './types/index.js'
 export { IndexError } from './types/index.js'
 
@@ -43,9 +50,11 @@ export { OpenAIEmbedding, CohereEmbedding } from './embedding/index.js'
 export type { OpenAIEmbeddingConfig, CohereEmbeddingConfig } from './embedding/index.js'
 
 // Index engine
-export { IndexEngine, defaultChunker, sha256 } from './index-engine/index.js'
+export { IndexEngine, defaultChunker, sha256, stripMarkdown } from './index-engine/index.js'
 
 // Query engine
 export { assemble } from './query/index.js'
 export { mergeAndRank, minMaxNormalize } from './query/index.js'
+export { searchWithContext } from './query/index.js'
 export type { NormalizedResult } from './query/index.js'
+export type { ContextSearchOpts, ContextPassage, ContextSearchResponse } from './query/index.js'

@@ -1,7 +1,9 @@
-import type { VectorStoreAdapter, SearchOpts } from '@d8um/core'
+import type { VectorStoreAdapter, SearchOpts, ScoredChunkWithDocument } from '@d8um/core'
 import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '@d8um/core'
-import { REGISTRY_SQL, MODEL_TABLE_SQL, HASH_TABLE_SQL, sanitizeModelKey } from './migrations.js'
+import type { d8umDocument, DocumentFilter, DocumentStatus, UpsertDocumentInput } from '@d8um/core'
+import { REGISTRY_SQL, MODEL_TABLE_SQL, HASH_TABLE_SQL, DOCUMENTS_TABLE_SQL, sanitizeModelKey } from './migrations.js'
 import { PgHashStore } from './hash-store.js'
+import { PgDocumentStore, buildDocWhere } from './document-store.js'
 
 /**
  * A function that runs a parameterized SQL query and returns rows.
@@ -31,14 +33,17 @@ export interface PgVectorAdapterConfig {
   transaction?: (fn: (sql: SqlExecutor) => Promise<unknown>) => Promise<unknown>
   tablePrefix?: string | undefined
   hashesTable?: string | undefined
+  documentsTable?: string | undefined
 }
 
 export class PgVectorAdapter implements VectorStoreAdapter {
   private sql: SqlExecutor
   private transaction?: PgVectorAdapterConfig['transaction']
   readonly hashStore: PgHashStore
+  readonly documentStore: PgDocumentStore
   private tablePrefix: string
   private hashesTable: string
+  private documentsTable: string
   private registryTable: string
 
   /** model key → table name */
@@ -49,14 +54,17 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     this.transaction = config.transaction
     this.tablePrefix = config.tablePrefix ?? 'd8um_chunks'
     this.hashesTable = config.hashesTable ?? 'd8um_hashes'
+    this.documentsTable = config.documentsTable ?? 'd8um_documents'
     this.registryTable = `${this.tablePrefix}_registry`
     this.hashStore = new PgHashStore(this.sql, this.hashesTable)
+    this.documentStore = new PgDocumentStore(this.sql, this.documentsTable)
   }
 
   async initialize(): Promise<void> {
     await this.sql(`CREATE EXTENSION IF NOT EXISTS vector;`)
     await this.sql(REGISTRY_SQL(this.registryTable))
     await this.sql(HASH_TABLE_SQL(this.hashesTable))
+    await this.sql(DOCUMENTS_TABLE_SQL(this.documentsTable))
     await this.hashStore.initialize()
 
     // Load existing model registrations
@@ -123,7 +131,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
         (source_id, tenant_id, document_id, idempotency_key, content, embedding,
          embedding_model, chunk_index, total_chunks, metadata, indexed_at)
        SELECT * FROM unnest(
-        $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::vector[],
+        $1::text[], $2::text[], $3::uuid[], $4::text[], $5::text[], $6::vector[],
         $7::text[], $8::int[], $9::int[], $10::jsonb[], $11::timestamptz[]
        )
        ON CONFLICT (idempotency_key, chunk_index, source_id) DO UPDATE SET
@@ -281,6 +289,168 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     return (rows[0]?.count as number) ?? 0
   }
 
+  // --- Document record methods ---
+
+  async upsertDocumentRecord(input: UpsertDocumentInput): Promise<d8umDocument> {
+    return this.documentStore.upsert(input)
+  }
+
+  async getDocument(id: string): Promise<d8umDocument | null> {
+    return this.documentStore.get(id)
+  }
+
+  async listDocuments(filter: DocumentFilter): Promise<d8umDocument[]> {
+    return this.documentStore.list(filter)
+  }
+
+  async deleteDocuments(filter: DocumentFilter): Promise<number> {
+    return this.documentStore.delete(filter)
+  }
+
+  async updateDocumentStatus(id: string, status: DocumentStatus, chunkCount?: number): Promise<void> {
+    return this.documentStore.updateStatus(id, status, chunkCount)
+  }
+
+  // --- Search with document JOIN ---
+
+  async searchWithDocuments(
+    model: string,
+    embedding: number[],
+    query: string,
+    opts: SearchOpts & { documentFilter?: DocumentFilter | undefined }
+  ): Promise<ScoredChunkWithDocument[]> {
+    const table = this.getTable(model)
+    const vectorStr = `[${embedding.join(',')}]`
+    const topK = opts.topK
+    const { where: chunkFilterWhere, params: chunkFilterParams } = buildWhere(opts.filter)
+    const chunkFilterClause = chunkFilterWhere ? `AND ${chunkFilterWhere}` : ''
+    const { where: docFilterWhere, params: docFilterParams } = buildDocWhere(opts.documentFilter ?? {})
+
+    // Base params: $1=vector, $2=query, $3=topK
+    // Then chunk filter params, then doc filter params
+    const baseOffset = 3
+    const reindexedChunkFilter = chunkFilterClause.replace(
+      /\$(\d+)/g,
+      (_, n) => `$${parseInt(n) + baseOffset}`
+    )
+    const docParamOffset = baseOffset + chunkFilterParams.length
+    const docFilterClause = docFilterWhere
+      ? `AND ${docFilterWhere.replace(/\$(\d+)/g, (_, n) => `$${parseInt(n) + docParamOffset}`)}`
+      : ''
+
+    const allParams = [vectorStr, query, topK, ...chunkFilterParams, ...docFilterParams]
+
+    const runQuery = async (sql: SqlExecutor): Promise<ScoredChunkWithDocument[]> => {
+      if (opts.iterativeScan !== false) {
+        await sql(`SET LOCAL hnsw.iterative_scan = relaxed_order;`)
+      }
+
+      const rows = await sql(
+        `WITH
+          tsq AS (
+            SELECT websearch_to_tsquery('english', $2) AS q
+          ),
+          vector_ranked AS (
+            SELECT c.*, 1 - (c.embedding <=> $1::vector) AS similarity,
+                   ROW_NUMBER() OVER (ORDER BY c.embedding <=> $1::vector) AS vrank
+            FROM ${table} c
+            JOIN ${this.documentsTable} d ON c.document_id = d.id
+            WHERE TRUE ${reindexedChunkFilter} ${docFilterClause}
+            ORDER BY c.embedding <=> $1::vector
+            LIMIT 60
+          ),
+          keyword_ranked AS (
+            SELECT c.*, ts_rank(c.search_vector, tsq.q) AS kw_score,
+                   ROW_NUMBER() OVER (ORDER BY ts_rank(c.search_vector, tsq.q) DESC) AS krank
+            FROM ${table} c, tsq
+            JOIN ${this.documentsTable} d ON c.document_id = d.id
+            WHERE c.search_vector @@ tsq.q ${reindexedChunkFilter} ${docFilterClause}
+            ORDER BY ts_rank(c.search_vector, tsq.q) DESC
+            LIMIT 60
+          ),
+          combined AS (
+            SELECT id, source_id, tenant_id, document_id, idempotency_key, content,
+                   embedding_model, chunk_index, total_chunks, metadata, indexed_at,
+                   similarity, NULL::double precision AS kw_score,
+                   vrank, NULL::bigint AS krank
+            FROM vector_ranked
+            UNION ALL
+            SELECT id, source_id, tenant_id, document_id, idempotency_key, content,
+                   embedding_model, chunk_index, total_chunks, metadata, indexed_at,
+                   NULL::double precision AS similarity, kw_score,
+                   NULL::bigint AS vrank, krank
+            FROM keyword_ranked
+          ),
+          scored AS (
+            SELECT *,
+              COALESCE(1.0 / (60 + vrank), 0) + COALESCE(1.0 / (60 + krank), 0) AS rrf_score,
+              ROW_NUMBER() OVER (
+                PARTITION BY id
+                ORDER BY COALESCE(similarity, 0) DESC
+              ) AS dedup_rank
+            FROM combined
+          ),
+          final_chunks AS (
+            SELECT id, source_id, tenant_id, document_id, idempotency_key, content,
+                   embedding_model, chunk_index, total_chunks, metadata, indexed_at,
+                   MAX(similarity) AS similarity,
+                   MAX(kw_score) AS keyword_score,
+                   SUM(rrf_score) AS rrf_score
+            FROM scored
+            WHERE dedup_rank = 1
+            GROUP BY id, source_id, tenant_id, document_id, idempotency_key, content,
+                     embedding_model, chunk_index, total_chunks, metadata, indexed_at
+            ORDER BY SUM(rrf_score) DESC
+            LIMIT $3
+          )
+        SELECT fc.*,
+               d.id AS doc_id, d.title AS doc_title, d.url AS doc_url,
+               d.content_hash AS doc_content_hash, d.chunk_count AS doc_chunk_count,
+               d.status AS doc_status, d.scope AS doc_scope,
+               d.folder_id AS doc_folder_id, d.user_id AS doc_user_id,
+               d.document_type AS doc_document_type, d.source_type AS doc_source_type,
+               d.indexed_at AS doc_indexed_at, d.created_at AS doc_created_at,
+               d.updated_at AS doc_updated_at, d.metadata AS doc_metadata
+        FROM final_chunks fc
+        JOIN ${this.documentsTable} d ON fc.document_id = d.id
+        ORDER BY fc.rrf_score DESC`,
+        allParams
+      )
+
+      return rows.map(row => ({
+        ...mapRowToScoredChunk(row, {
+          vector: (row.similarity as number) ?? undefined,
+          keyword: (row.keyword_score as number) ?? undefined,
+          rrf: row.rrf_score as number,
+        }),
+        document: mapRowToDocument(row),
+      }))
+    }
+
+    if (this.transaction) {
+      return this.transaction(runQuery) as Promise<ScoredChunkWithDocument[]>
+    }
+    return runQuery(this.sql)
+  }
+
+  // --- Chunk range fetch (for neighbor expansion) ---
+
+  async getChunksByRange(
+    model: string,
+    documentId: string,
+    fromIndex: number,
+    toIndex: number
+  ): Promise<ScoredChunk[]> {
+    const table = this.getTable(model)
+    const rows = await this.sql(
+      `SELECT * FROM ${table}
+       WHERE document_id = $1 AND chunk_index >= $2 AND chunk_index <= $3
+       ORDER BY chunk_index`,
+      [documentId, fromIndex, toIndex]
+    )
+    return rows.map(row => mapRowToScoredChunk(row, {}))
+  }
+
   async destroy(): Promise<void> {
     // No-op — the developer owns the connection lifecycle
   }
@@ -336,5 +506,27 @@ function mapRowToScoredChunk(
       keyword: scores.keyword,
       rrf: scores.rrf,
     },
+  }
+}
+
+function mapRowToDocument(row: Record<string, unknown>): d8umDocument {
+  return {
+    id: row.doc_id as string,
+    sourceId: row.source_id as string,
+    tenantId: (row.tenant_id as string) ?? undefined,
+    title: row.doc_title as string,
+    url: (row.doc_url as string) ?? undefined,
+    contentHash: row.doc_content_hash as string,
+    chunkCount: row.doc_chunk_count as number,
+    status: row.doc_status as d8umDocument['status'],
+    scope: (row.doc_scope as d8umDocument['scope']) ?? undefined,
+    folderId: (row.doc_folder_id as string) ?? undefined,
+    userId: (row.doc_user_id as string) ?? undefined,
+    documentType: (row.doc_document_type as string) ?? undefined,
+    sourceType: (row.doc_source_type as string) ?? undefined,
+    indexedAt: new Date(row.doc_indexed_at as string),
+    createdAt: new Date(row.doc_created_at as string),
+    updatedAt: new Date(row.doc_updated_at as string),
+    metadata: (typeof row.doc_metadata === 'string' ? JSON.parse(row.doc_metadata) : row.doc_metadata ?? {}) as Record<string, unknown>,
   }
 }

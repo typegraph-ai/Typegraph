@@ -2,6 +2,7 @@ export interface EmbeddedChunk {
   idempotencyKey: string
   sourceId: string
   tenantId?: string | undefined
+  /** UUID referencing d8um_documents.id. */
   documentId: string
 
   content: string

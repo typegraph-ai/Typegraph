@@ -25,6 +25,7 @@ export type {
   HashRecord,
   HashStoreAdapter,
   VectorStoreAdapter,
+  ScoredChunkWithDocument,
 } from './adapter.js'
 
 export type {
@@ -42,3 +43,13 @@ export type {
 } from './index-types.js'
 
 export { IndexError } from './index-types.js'
+
+export type {
+  d8umDocument,
+  DocumentStatus,
+  DocumentScope,
+  DocumentFilter,
+  UpsertDocumentInput,
+} from './d8um-document.js'
+
+export type { d8umHooks } from './hooks.js'

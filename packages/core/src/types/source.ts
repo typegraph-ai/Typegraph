@@ -17,6 +17,16 @@ export type EmbeddingInput = EmbeddingProvider | EmbeddingProviderConfig | AISDK
 export interface IndexConfig extends ChunkOpts {
   idempotencyKey: string[] | ((doc: import('./connector.js').RawDocument) => string)
   propagateMetadata?: string[] | undefined
+  /** If true, strip markdown syntax from chunk content before embedding. Original content is stored as-is. */
+  stripMarkdownForEmbedding?: boolean | undefined
+  /** Custom preprocessing function for embedding. Takes chunk content, returns text to embed. Overrides stripMarkdownForEmbedding. */
+  preprocessForEmbedding?: ((content: string) => string) | undefined
+  /** App-specific document type applied to all documents from this source (e.g. 'pdf', 'webpage'). */
+  documentType?: string | undefined
+  /** App-specific source type applied to all documents from this source (e.g. 'upload', 'web_scrape'). */
+  sourceType?: string | undefined
+  /** Access scope for all documents from this source. */
+  scope?: import('./d8um-document.js').DocumentScope | undefined
 }
 
 export interface CacheConfig {

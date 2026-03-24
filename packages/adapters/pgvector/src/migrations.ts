@@ -21,7 +21,7 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => `
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     source_id       TEXT NOT NULL,
     tenant_id       TEXT,
-    document_id     TEXT NOT NULL,
+    document_id     UUID NOT NULL,
     idempotency_key TEXT NOT NULL,
     content         TEXT NOT NULL,
     embedding       VECTOR(${dimensions}),
@@ -78,6 +78,48 @@ export const HASH_TABLE_SQL = (hashesTable: string) => `
     last_run   TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (source_id, COALESCE(tenant_id, ''))
   );
+`
+
+/**
+ * DDL for the documents table — tracks indexed documents with metadata.
+ * Created once during initialize().
+ */
+export const DOCUMENTS_TABLE_SQL = (documentsTable: string) => `
+  CREATE TABLE IF NOT EXISTS ${documentsTable} (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_id       TEXT NOT NULL,
+    tenant_id       TEXT,
+    title           TEXT NOT NULL DEFAULT '',
+    url             TEXT,
+    content_hash    TEXT NOT NULL,
+    chunk_count     INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'processing', 'complete', 'failed')),
+    scope           TEXT CHECK (scope IS NULL OR scope IN ('tenant', 'folder', 'user')),
+    folder_id       UUID,
+    user_id         UUID,
+    document_type   TEXT,
+    source_type     TEXT,
+    indexed_at      TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metadata        JSONB NOT NULL DEFAULT '{}'
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS ${documentsTable}_source_hash_idx
+    ON ${documentsTable} (source_id, COALESCE(tenant_id, ''), content_hash);
+
+  CREATE INDEX IF NOT EXISTS ${documentsTable}_source_idx
+    ON ${documentsTable} (source_id, tenant_id);
+
+  CREATE INDEX IF NOT EXISTS ${documentsTable}_status_idx
+    ON ${documentsTable} (status);
+
+  CREATE INDEX IF NOT EXISTS ${documentsTable}_scope_user_idx
+    ON ${documentsTable} (scope, user_id);
+
+  CREATE INDEX IF NOT EXISTS ${documentsTable}_type_idx
+    ON ${documentsTable} (document_type);
 `
 
 /**

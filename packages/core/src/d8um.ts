@@ -4,11 +4,15 @@ import type { QueryOpts, QueryResponse, AssembleOpts, d8umResult } from './types
 import type { IndexOpts, IndexResult } from './types/index-types.js'
 import type { EmbeddingProvider } from './embedding/provider.js'
 import type { AISDKEmbeddingInput } from './embedding/ai-sdk-adapter.js'
+import type { RawDocument, Chunk } from './types/connector.js'
+import type { d8umHooks } from './types/hooks.js'
+import type { ContextSearchOpts, ContextSearchResponse } from './query/context-search.js'
 import { aiSdkEmbeddingProvider, isAISDKEmbeddingInput } from './embedding/ai-sdk-adapter.js'
 import { OpenAIEmbedding } from './embedding/openai.js'
 import { CohereEmbedding } from './embedding/cohere.js'
 import { IndexEngine } from './index-engine/engine.js'
 import { QueryPlanner } from './query/planner.js'
+import { searchWithContext as searchWithContextFn } from './query/context-search.js'
 import { assemble as assembleResults } from './query/assemble.js'
 
 export interface d8umConfig {
@@ -16,6 +20,7 @@ export interface d8umConfig {
   embedding: EmbeddingInput
   tenantId?: string | undefined
   tokenizer?: ((text: string) => number) | undefined
+  hooks?: d8umHooks | undefined
 }
 
 /**
@@ -83,6 +88,8 @@ export interface d8umInstance {
   groupSourcesByModel(sourceIds?: string[]): Map<string, string[]>
   index(sourceId?: string, opts?: IndexOpts): Promise<IndexResult | IndexResult[]>
   query(text: string, opts?: QueryOpts): Promise<QueryResponse>
+  searchWithContext(text: string, opts?: ContextSearchOpts): Promise<ContextSearchResponse>
+  ingestWithChunks(sourceId: string, doc: RawDocument, chunks: Chunk[], opts?: IndexOpts): Promise<IndexResult>
   assemble(results: d8umResult[], opts?: AssembleOpts): string
   destroy(): Promise<void>
 }
@@ -165,7 +172,11 @@ class d8umImpl implements d8umInstance {
       if (source.mode !== 'indexed') throw new Error(`Source "${sourceId}" is not indexed`)
       const embedding = this.getEmbeddingForSource(sourceId)
       const engine = new IndexEngine(this.adapter, embedding)
-      return engine.indexSource(source, opts)
+
+      await this.config.hooks?.onIndexStart?.(sourceId, opts ?? {})
+      const result = await engine.indexSource(source, opts)
+      await this.config.hooks?.onIndexComplete?.(sourceId, result)
+      return result
     }
 
     const indexedSources = [...this.sources.values()].filter(s => s.mode === 'indexed')
@@ -173,7 +184,11 @@ class d8umImpl implements d8umInstance {
     for (const source of indexedSources) {
       const embedding = this.getEmbeddingForSource(source.id)
       const engine = new IndexEngine(this.adapter, embedding)
-      results.push(await engine.indexSource(source, opts))
+
+      await this.config.hooks?.onIndexStart?.(source.id, opts ?? {})
+      const result = await engine.indexSource(source, opts)
+      await this.config.hooks?.onIndexComplete?.(source.id, result)
+      results.push(result)
     }
     return results
   }
@@ -181,10 +196,43 @@ class d8umImpl implements d8umInstance {
   async query(text: string, opts?: QueryOpts): Promise<QueryResponse> {
     await this.ensureInitialized()
     const planner = new QueryPlanner(this.adapter, this.sources, this.sourceEmbeddings)
-    return planner.execute(text, {
+    const response = await planner.execute(text, {
       ...opts,
       tenantId: opts?.tenantId ?? this.config.tenantId,
     })
+    await this.config.hooks?.onQueryResults?.(text, response.results)
+    return response
+  }
+
+  async searchWithContext(text: string, opts: ContextSearchOpts = {}): Promise<ContextSearchResponse> {
+    await this.ensureInitialized()
+    const response = await searchWithContextFn(
+      this.adapter,
+      this.sources,
+      this.sourceEmbeddings,
+      text,
+      { ...opts, tenantId: opts.tenantId ?? this.config.tenantId }
+    )
+    await this.config.hooks?.onQueryResults?.(text, response.rawResults)
+    return response
+  }
+
+  async ingestWithChunks(
+    sourceId: string,
+    doc: RawDocument,
+    chunks: Chunk[],
+    opts?: IndexOpts
+  ): Promise<IndexResult> {
+    await this.ensureInitialized()
+    const source = this.sources.get(sourceId)
+    if (!source) throw new Error(`Source "${sourceId}" not found`)
+    const embedding = this.getEmbeddingForSource(sourceId)
+    const engine = new IndexEngine(this.adapter, embedding)
+
+    await this.config.hooks?.onIndexStart?.(sourceId, opts ?? {})
+    const result = await engine.ingestWithChunks(source, doc, chunks, opts)
+    await this.config.hooks?.onIndexComplete?.(sourceId, result)
+    return result
   }
 
   assemble(results: d8umResult[], opts?: AssembleOpts): string {

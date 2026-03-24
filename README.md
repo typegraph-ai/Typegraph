@@ -87,9 +87,9 @@ d8um organizes every data source into one of three modes:
 
 | Mode          | Behavior                                                                                 | Best for                             |
 | ------------- | ---------------------------------------------------------------------------------------- | ------------------------------------ |
-| `**indexed`** | Content is chunked, embedded, and stored. Semantic search runs against the vector store. | Docs, wikis, knowledge bases         |
-| `**live**`    | Fetched at query time. Never stored - always fresh.                                      | APIs, search engines, real-time data |
-| `**cached**`  | Fetched once, stored until a TTL expires, then re-fetched.                               | Slowly-changing reference data       |
+| **`indexed`** | Content is chunked, embedded, and stored. Semantic search runs against the vector store. | Docs, wikis, knowledge bases         |
+| **`live`**    | Fetched at query time. Never stored - always fresh.                                      | APIs, search engines, real-time data |
+| **`cached`**  | Fetched once, stored until a TTL expires, then re-fetched.                               | Slowly-changing reference data       |
 
 
 A single `d8um.query()` call fans out across all three modes in parallel, normalizes scores, merges results via [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf), and returns a unified ranked result set.

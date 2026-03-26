@@ -7,6 +7,7 @@ dist/
 *.tsbuildinfo
 *.db
 *.onnx
+*.tgz
 local_cache/
 coverage/
 CLAUDE.local.md

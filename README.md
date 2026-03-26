@@ -129,28 +129,29 @@ indexed live cached    ← per-source embedding models
 | Package | Description | Status |
 |---------|-------------|--------|
 | **Core** | | |
-| `@d8um/core` | Query engine, index engine, job registry, built-in jobs | Alpha |
-| `@d8um/adapter-pgvector` | PostgreSQL + pgvector storage | Alpha |
-| `@d8um/adapter-sqlite-vec` | SQLite + sqlite-vec - zero-infra local dev | Alpha |
-| `@d8um/embedding-local` | Local embeddings (bge-small-en-v1.5, MIT, ONNX) | Alpha |
-| `@d8um/hosted` | Hosted client SDK | Alpha |
+| [`@d8um/core`](packages/core) | Query engine, index engine, job registry, built-in jobs | Alpha |
+| [`@d8um/adapter-pgvector`](packages/adapters/pgvector) | PostgreSQL + pgvector storage | Alpha |
+| [`@d8um/adapter-sqlite-vec`](packages/adapters/sqlite-vec) | SQLite + sqlite-vec - zero-infra local dev | Alpha |
+| [`@d8um/embedding-local`](packages/embeddings/local) | Local embeddings (bge-small-en-v1.5, MIT, ONNX) | Alpha |
+| [`@d8um/hosted`](packages/hosted) | Hosted client SDK | Alpha |
 | **Cognitive Memory** | | |
-| `@d8um/memory` | Memory types, working memory, extraction, scoping | Alpha |
-| `@d8um/memory-graph` | Embedded graph - BFS/DFS traversal, no external DB | Alpha |
-| `@d8um/consolidation` | Decay, forgetting, consolidation, correction jobs | Alpha |
-| `@d8um/mcp-server` | MCP tools + resources for agent frameworks | Alpha |
-| `@d8um/vercel-ai-provider` | Vercel AI SDK memory tools + middleware | Alpha |
+| [`@d8um/memory`](packages/memory) | Memory types, working memory, extraction, scoping | Alpha |
+| [`@d8um/memory-graph`](packages/memory-graph) | Embedded graph - BFS/DFS traversal, no external DB | Alpha |
+| [`@d8um/consolidation`](packages/consolidation) | Decay, forgetting, consolidation, correction jobs | Alpha |
+| [`@d8um/mcp-server`](packages/mcp-server) | MCP tools + resources for agent frameworks | Alpha |
+| [`@d8um/vercel-ai-provider`](packages/vercel-ai-provider) | Vercel AI SDK memory tools + middleware | Alpha |
 | **Integrations** | | |
-| `@d8um/integration-slack` | Messages, channels, users | Alpha |
-| `@d8um/integration-google-drive` | Files and folders | Alpha |
-| `@d8um/integration-google-calendar` | Events | Alpha |
-| `@d8um/integration-gmail` | Messages, threads, labels | Alpha |
-| `@d8um/integration-hubspot` | Contacts, companies, deals | Alpha |
-| `@d8um/integration-gong` | Calls, transcripts, users | Alpha |
-| `@d8um/integration-fathom` | Call recordings, transcripts | Alpha |
-| `@d8um/integration-salesforce` | Contacts, accounts, opportunities, leads | Alpha |
-| `@d8um/integration-attio` | Contacts, companies, tasks | Alpha |
-| `@d8um/integration-linear` | Issues, projects, teams | Alpha |
+| [`@d8um/integration-core`](packages/integration-core) | Shared integration types (IntegrationDefinition) | Alpha |
+| [`@d8um/integration-slack`](packages/integration-slack) | Messages, channels, users | Alpha |
+| [`@d8um/integration-google-drive`](packages/integration-google-drive) | Files and folders | Alpha |
+| [`@d8um/integration-google-calendar`](packages/integration-google-calendar) | Events | Alpha |
+| [`@d8um/integration-gmail`](packages/integration-gmail) | Messages, threads, labels | Alpha |
+| [`@d8um/integration-hubspot`](packages/integration-hubspot) | Contacts, companies, deals | Alpha |
+| [`@d8um/integration-gong`](packages/integration-gong) | Calls, transcripts, users | Alpha |
+| [`@d8um/integration-fathom`](packages/integration-fathom) | Call recordings, transcripts | Alpha |
+| [`@d8um/integration-salesforce`](packages/integration-salesforce) | Contacts, accounts, opportunities, leads | Alpha |
+| [`@d8um/integration-attio`](packages/integration-attio) | Contacts, companies, tasks | Alpha |
+| [`@d8um/integration-linear`](packages/integration-linear) | Issues, projects, teams | Alpha |
 
 ## Guides
 

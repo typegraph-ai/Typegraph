@@ -56,6 +56,25 @@ importers:
         specifier: ^5.4.0
         version: 5.9.3
 
+  packages/consolidation:
+    dependencies:
+      '@d8um/core':
+        specifier: workspace:*
+        version: link:../core
+      '@d8um/memory':
+        specifier: workspace:*
+        version: link:../memory
+      '@d8um/memory-graph':
+        specifier: workspace:*
+        version: link:../memory-graph
+    devDependencies:
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^1.0.0
+        version: 1.6.1(@types/node@20.19.37)
+
   packages/core:
     dependencies:
       cheerio:

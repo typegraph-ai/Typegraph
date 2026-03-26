@@ -3,15 +3,15 @@
 </p>
 
 <p align="center">
-  <strong>One SDK. Every data source. Context, ready for your LLM agent.</strong>
+  <strong>A context and memory SDK for your LLM agent.</strong>
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> &nbsp;&bull;&nbsp;
+  <a href="#cognitive-memory">Cognitive Memory</a> &nbsp;&bull;&nbsp;
   <a href="#how-it-works">How It Works</a> &nbsp;&bull;&nbsp;
-  <a href="#embedding-providers">Embedding</a> &nbsp;&bull;&nbsp;
   <a href="#packages">Packages</a> &nbsp;&bull;&nbsp;
-  <a href="#api-overview">API</a> &nbsp;&bull;&nbsp;
+  <a href="#guides">Guides</a> &nbsp;&bull;&nbsp;
   <a href="#contributing">Contributing</a>
 </p>
 
@@ -21,7 +21,7 @@
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Alpha" />
 </p>
 
-**d8um** (pronounced "datum") is a TypeScript SDK that gives AI agents both **retrieval and memory** in a single composable package. Ingest any data source, search with hybrid retrieval, and give your agent cognitive memory — episodic recall, semantic knowledge, procedural learning — without Python, without a graph database, and without stitching together 6 different tools.
+**d8um** (pronounced "datum") is a TypeScript SDK that gives AI agents both **retrieval and memory** in a single composable package. Ingest any data source, search with hybrid retrieval, and give your agent cognitive memory - episodic recall, semantic knowledge, procedural learning - without Python, without a graph database, and without stitching together a gaggle of different tools.
 
 ## Why d8um?
 
@@ -29,12 +29,12 @@ Building a memory-capable agent in TypeScript today means cobbling together a ve
 
 d8um closes that gap:
 
-- **Retrieval + memory in one SDK** — not two separate tools bolted together
-- **TypeScript-native** — no Python runtime, no managed service, no vendor lock-in
-- **Lightweight infrastructure** — runs on pgvector or SQLite. No Neo4j, no Redis, no Qdrant
-- **Composable** — works alongside your stack, not inside a framework
-- **Per-source embedding models** — different models for different content, merged at query time via RRF
-- **Job system** — schedule memory consolidation, decay, and extraction as recurring tasks
+- **Retrieval + memory in one SDK** - not two separate tools bolted together
+- **TypeScript-native** - no Python runtime, no managed service, no vendor lock-in
+- **Lightweight infrastructure** - runs on pgvector or SQLite. No Neo4j, no Redis, no Qdrant
+- **Composable** - works alongside your stack, not inside a framework
+- **Per-source embedding models** - different models for different content, merged at query time via RRF
+- **Job system** - schedule memory consolidation, decay, and extraction as recurring tasks
 
 ## Quick Start
 
@@ -59,7 +59,7 @@ await d8um.ingest('faq', {
   updatedAt: new Date(),
 })
 
-// Query — hybrid search, score merging, ranked results
+// Query - hybrid search, score merging, ranked results
 const { results } = await d8um.query('how do I configure SSO?')
 
 // Assemble into LLM-ready context
@@ -97,7 +97,7 @@ d8um.jobs.create({ type: 'memory_consolidation', schedule: '0 3 * * *' })
 d8um.jobs.create({ type: 'memory_decay', schedule: '0 * * * *' })
 ```
 
-> **Deep dive:** [Agentic Memory Guide](guides/Agentic%20Memory/overview.md) — memory types, lifecycle, extraction pipeline, landscape analysis
+> **Deep dive:** [Agentic Memory Guide](guides/Agentic%20Memory/overview.md) - memory types, lifecycle, extraction pipeline, landscape analysis
 
 ## How It Works
 
@@ -119,7 +119,7 @@ indexed live cached    ← per-source embedding models
   Prompt-ready context
 ```
 
-> **Deep dive:** [Agentic RAG Guide](guides/Agentic%20RAG/overview.md) — hybrid search, per-model fan-out, embedding providers, architecture
+> **Deep dive:** [Agentic RAG Guide](guides/Agentic%20RAG/overview.md) - hybrid search, per-model fan-out, embedding providers, architecture
 
 ## Packages
 
@@ -128,12 +128,12 @@ indexed live cached    ← per-source embedding models
 | **Core** | | |
 | `@d8um/core` | Query engine, index engine, job registry, built-in jobs | Alpha |
 | `@d8um/adapter-pgvector` | PostgreSQL + pgvector storage | Alpha |
-| `@d8um/adapter-sqlite-vec` | SQLite + sqlite-vec — zero-infra local dev | Alpha |
+| `@d8um/adapter-sqlite-vec` | SQLite + sqlite-vec - zero-infra local dev | Alpha |
 | `@d8um/embedding-local` | Local embeddings (bge-small-en-v1.5, MIT, ONNX) | Alpha |
 | `@d8um/hosted` | Hosted client SDK | Alpha |
 | **Cognitive Memory** | | |
 | `@d8um/memory` | Memory types, working memory, extraction, scoping | Alpha |
-| `@d8um/memory-graph` | Embedded graph — BFS/DFS traversal, no external DB | Alpha |
+| `@d8um/memory-graph` | Embedded graph - BFS/DFS traversal, no external DB | Alpha |
 | `@d8um/consolidation` | Decay, forgetting, consolidation, correction jobs | Alpha |
 | `@d8um/mcp-server` | MCP tools + resources for agent frameworks | Alpha |
 | `@d8um/vercel-ai-provider` | Vercel AI SDK memory tools + middleware | Alpha |
@@ -155,7 +155,7 @@ indexed live cached    ← per-source embedding models
 |-------|-------------------|
 | [Getting Started (Local Dev)](guides/Local%20Dev/getting-started.md) | Zero-infra setup with SQLite + local embeddings |
 | [Self-Hosted Setup](guides/Self%20Hosted/setup.md) | pgvector, cloud embeddings, hybrid search internals |
-| [d8um Cloud](guides/d8um%20Cloud/quickstart.md) | Hosted API — just an API key |
+| [d8um Cloud](guides/d8um%20Cloud/quickstart.md) | Hosted API - just an API key |
 | [Agentic RAG](guides/Agentic%20RAG/overview.md) | Retrieval architecture, embedding providers, landscape analysis |
 | [Agentic Memory](guides/Agentic%20Memory/overview.md) | Cognitive memory system, lifecycle, extraction, landscape analysis |
 
@@ -170,7 +170,7 @@ pnpm typecheck        # Type checking
 
 ## Contributing
 
-d8um is open source and contributions are welcome — new integrations, adapters, bug fixes, or documentation.
+d8um is open source and contributions are welcome - new integrations, adapters, bug fixes, or documentation.
 
 1. Fork the repo
 2. Create a feature branch (`git checkout -b feat/my-feature`)

@@ -73,6 +73,7 @@ export class D8umMemory {
     const record: MemoryRecord = {
       id: randomUUID(),
       category,
+      status: 'active',
       content,
       embedding,
       importance: 0.5,
@@ -138,6 +139,7 @@ Respond with JSON: {"targetContent": "...", "newContent": "...", "subject": "...
     const newFact: SemanticFact = {
       id: randomUUID(),
       category: 'semantic',
+      status: 'active',
       content: parsed.newContent,
       subject: parsed.subject ?? '',
       predicate: parsed.predicate ?? '',

@@ -10,6 +10,7 @@ function makeRecord(id: string, importance: number, daysOld: number): MemoryReco
   return {
     id,
     category: 'semantic',
+    status: 'active',
     content: `Memory ${id}`,
     importance,
     accessCount: 0,

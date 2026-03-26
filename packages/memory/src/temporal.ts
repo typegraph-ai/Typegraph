@@ -1,4 +1,4 @@
-import type { TemporalRecord } from './types/memory.js'
+import type { TemporalRecord, MemoryStatus } from './types/memory.js'
 
 /**
  * Check if a temporal record is active (valid and not expired) at a given point in time.
@@ -73,4 +73,31 @@ export function temporalOverlaps(a: TemporalRecord, b: TemporalRecord): boolean 
   const aEnd = a.invalidAt ?? new Date(8640000000000000) // far future
   const bEnd = b.invalidAt ?? new Date(8640000000000000)
   return a.validAt < bEnd && b.validAt < aEnd
+}
+
+// ── Status Transitions ──
+
+const ALLOWED_TRANSITIONS: Record<MemoryStatus, MemoryStatus[]> = {
+  pending: ['active'],
+  active: ['consolidated', 'invalidated', 'archived'],
+  consolidated: ['archived', 'expired'],
+  invalidated: ['expired'],
+  archived: ['active', 'expired'],
+  expired: [],
+}
+
+/**
+ * Transition a memory record to a new status.
+ * Validates the transition is allowed. Throws if not.
+ * Returns a new status value (does not mutate anything).
+ */
+export function transitionStatus(
+  current: MemoryStatus,
+  next: MemoryStatus,
+): MemoryStatus {
+  const allowed = ALLOWED_TRANSITIONS[current]
+  if (!allowed.includes(next)) {
+    throw new Error(`Invalid status transition: ${current} → ${next}`)
+  }
+  return next
 }

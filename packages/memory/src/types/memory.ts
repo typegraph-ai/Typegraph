@@ -4,6 +4,19 @@ import type { MemoryScope } from './scope.js'
 
 export type MemoryCategory = 'episodic' | 'semantic' | 'procedural'
 
+// ── Memory Lifecycle Status ──
+// Explicit state machine for memory records.
+// Transitions: pending→active, active→consolidated|invalidated|archived,
+//              consolidated→archived|expired, invalidated→expired, archived→active|expired
+
+export type MemoryStatus =
+  | 'pending'       // created, not yet embedded/processed
+  | 'active'        // processed, available for retrieval
+  | 'consolidated'  // episodic promoted to semantic (still queryable, lower priority)
+  | 'invalidated'   // contradicted by newer fact (preserved for history)
+  | 'archived'      // decayed below threshold (queryable with includeArchived flag)
+  | 'expired'       // end of lifecycle (audit trail only)
+
 // ── Bi-temporal Timestamps ──
 // Two timelines: world time (validAt/invalidAt) and system time (createdAt/expiredAt)
 // Inspired by Graphiti's bi-temporal model and Snodgrass (1999)
@@ -24,6 +37,8 @@ export interface TemporalRecord {
 export interface MemoryRecord extends TemporalRecord {
   id: string
   category: MemoryCategory
+  /** Lifecycle status — drives query filtering and allowed operations */
+  status: MemoryStatus
   /** Human-readable content */
   content: string
   /** Vector embedding for semantic search */

@@ -17,6 +17,7 @@ function makeFact(overrides?: Partial<SemanticFact>): SemanticFact {
   return {
     id: 'fact-1',
     category: 'semantic',
+    status: 'active',
     content: 'Alice works at Google',
     subject: 'Alice',
     predicate: 'works_at',

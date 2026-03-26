@@ -144,6 +144,7 @@ Respond with only valid JSON: [{"content": "...", "subject": "...", "predicate":
             const semanticFact: SemanticFact = {
               id: crypto.randomUUID(),
               category: 'semantic',
+              status: 'active',
               content: fact.content,
               subject: fact.subject,
               predicate: fact.predicate,
@@ -167,7 +168,7 @@ Respond with only valid JSON: [{"content": "...", "subject": "...", "predicate":
 
         // Mark episodes as consolidated
         for (const ep of batch) {
-          const updated: EpisodicMemory = { ...ep, consolidatedAt: new Date() }
+          const updated: EpisodicMemory = { ...ep, status: 'consolidated', consolidatedAt: new Date() }
           await this.store.upsert(updated)
         }
       } catch {
@@ -225,6 +226,7 @@ Respond with only valid JSON: [{"trigger": "...", "steps": ["..."], "confidence"
           const proceduralMemory: ProceduralMemory = {
             id: crypto.randomUUID(),
             category: 'procedural',
+            status: 'active',
             content: `When: ${proc.trigger}\nSteps: ${proc.steps.join(' → ')}`,
             trigger: proc.trigger,
             steps: proc.steps,

@@ -165,6 +165,7 @@ export class MemoryExtractor {
     return {
       id: randomUUID(),
       category: 'episodic',
+      status: 'active',
       content,
       importance: 0.5,
       accessCount: 0,
@@ -187,6 +188,7 @@ export class MemoryExtractor {
     return {
       id: randomUUID(),
       category: 'semantic',
+      status: 'active',
       content: candidate.content,
       importance: candidate.importance,
       accessCount: 0,

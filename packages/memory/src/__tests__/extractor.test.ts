@@ -110,6 +110,7 @@ describe('MemoryExtractor', () => {
       const existing: SemanticFact[] = [{
         id: 'existing-1',
         category: 'semantic',
+        status: 'active',
         content: 'Alice works at a tech company',
         subject: 'Alice',
         predicate: 'works_at',
@@ -145,6 +146,7 @@ describe('MemoryExtractor', () => {
       const existing: SemanticFact[] = [{
         id: 'existing-1',
         category: 'semantic',
+        status: 'active',
         content: 'Something',
         subject: 'X',
         predicate: 'is',

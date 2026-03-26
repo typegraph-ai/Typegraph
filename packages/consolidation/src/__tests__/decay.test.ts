@@ -9,6 +9,7 @@ function makeRecord(overrides?: Partial<MemoryRecord>): MemoryRecord {
   return {
     id: 'r1',
     category: 'semantic',
+    status: 'active',
     content: 'Test memory',
     importance: 0.5,
     accessCount: 0,

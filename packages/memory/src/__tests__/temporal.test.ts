@@ -6,6 +6,7 @@ import {
   expireRecord,
   createTemporal,
   temporalOverlaps,
+  transitionStatus,
 } from '../temporal.js'
 import type { TemporalRecord } from '../types/memory.js'
 
@@ -147,5 +148,55 @@ describe('temporalOverlaps', () => {
     const a = makeRecord({ validAt: new Date('2025-01-01') }) // no invalidAt
     const b = makeRecord({ validAt: new Date('2030-01-01') })
     expect(temporalOverlaps(a, b)).toBe(true)
+  })
+})
+
+describe('transitionStatus', () => {
+  it('allows pending → active', () => {
+    expect(transitionStatus('pending', 'active')).toBe('active')
+  })
+
+  it('allows active → consolidated', () => {
+    expect(transitionStatus('active', 'consolidated')).toBe('consolidated')
+  })
+
+  it('allows active → invalidated', () => {
+    expect(transitionStatus('active', 'invalidated')).toBe('invalidated')
+  })
+
+  it('allows active → archived', () => {
+    expect(transitionStatus('active', 'archived')).toBe('archived')
+  })
+
+  it('allows archived → active (reactivation)', () => {
+    expect(transitionStatus('archived', 'active')).toBe('active')
+  })
+
+  it('allows archived → expired', () => {
+    expect(transitionStatus('archived', 'expired')).toBe('expired')
+  })
+
+  it('allows invalidated → expired', () => {
+    expect(transitionStatus('invalidated', 'expired')).toBe('expired')
+  })
+
+  it('allows consolidated → archived', () => {
+    expect(transitionStatus('consolidated', 'archived')).toBe('archived')
+  })
+
+  it('allows consolidated → expired', () => {
+    expect(transitionStatus('consolidated', 'expired')).toBe('expired')
+  })
+
+  it('throws on invalid transition: pending → archived', () => {
+    expect(() => transitionStatus('pending', 'archived')).toThrow('Invalid status transition')
+  })
+
+  it('throws on invalid transition: expired → active', () => {
+    expect(() => transitionStatus('expired', 'active')).toThrow('Invalid status transition')
+  })
+
+  it('throws on invalid transition: active → pending', () => {
+    expect(() => transitionStatus('active', 'pending')).toThrow('Invalid status transition')
   })
 })

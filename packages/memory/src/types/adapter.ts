@@ -2,6 +2,7 @@ import type { MemoryScope } from './scope.js'
 import type {
   MemoryRecord,
   MemoryCategory,
+  MemoryStatus,
   SemanticEntity,
   SemanticEdge,
 } from './memory.js'
@@ -11,6 +12,8 @@ import type {
 export interface MemoryFilter {
   scope?: MemoryScope | undefined
   category?: MemoryCategory | MemoryCategory[] | undefined
+  /** Filter by lifecycle status */
+  status?: MemoryStatus | MemoryStatus[] | undefined
   /** Only return records that are valid (not invalidated) at this time */
   activeAt?: Date | undefined
   /** Minimum importance threshold (0-1) */

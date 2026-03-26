@@ -75,6 +75,7 @@ export class MemoryCorrector {
       const newFact: SemanticFact = {
         id: randomUUID(),
         category: 'semantic',
+        status: 'active',
         content: parsed.newContent,
         subject: parsed.subject ?? '',
         predicate: parsed.predicate ?? '',

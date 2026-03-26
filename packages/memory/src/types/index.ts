@@ -1,5 +1,6 @@
 export type {
   MemoryCategory,
+  MemoryStatus,
   TemporalRecord,
   MemoryRecord,
   EpisodicMemory,

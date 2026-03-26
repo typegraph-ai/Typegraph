@@ -102,6 +102,7 @@ export class ForgettingEngine {
       const summaryRecord: MemoryRecord = {
         ...group[0]!,
         id: crypto.randomUUID(),
+        status: 'active',
         content: summaryContent.trim(),
         importance: maxImportance,
         accessCount: 0,

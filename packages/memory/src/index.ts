@@ -1,6 +1,7 @@
 // Types
 export type {
   MemoryCategory,
+  MemoryStatus,
   TemporalRecord,
   MemoryRecord,
   EpisodicMemory,
@@ -29,6 +30,7 @@ export {
   expireRecord,
   createTemporal,
   temporalOverlaps,
+  transitionStatus,
 } from './temporal.js'
 
 // Working memory

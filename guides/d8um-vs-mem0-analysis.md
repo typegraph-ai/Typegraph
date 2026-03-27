@@ -12,9 +12,11 @@
 |---|---|---|
 | **Primary language** | TypeScript-native | Python-first; TS SDK is a port |
 | **npm package** | `@d8um/core` + composable packages | `mem0ai` (single package) |
-| **GitHub stars** | Early-stage (alpha) | ~48K |
+| **GitHub stars** | Early-stage (alpha) | ~51.2K |
+| **Funding** | N/A | $24M (October 2025) |
 | **License** | MIT | Apache 2.0 |
-| **Managed cloud** | d8um Cloud (API key) | Mem0 Platform (tiered pricing) |
+| **Managed cloud** | d8um Cloud (API key) | Mem0 Platform (Free / Standard $19/mo / Pro $249/mo) |
+| **Notable adopters** | Early-stage | Netflix, Lemonade, Rocket Money |
 | **Self-hosted** | Yes (Postgres/SQLite) | Yes (bring your own infra) |
 
 **Key takeaway:** Mem0 has a far larger community and ecosystem. d8um is newer but was built from the ground up in TypeScript rather than ported, which shows in API ergonomics and type safety.
@@ -129,7 +131,7 @@ Mem0 Memory instance
 
 | Integration | d8um | Mem0 TS SDK |
 |---|---|---|
-| **MCP server** | Yes (`@d8um/mcp-server`) - 6 tools: remember, recall, recall_facts, forget, correct, add_conversation | No official TS MCP server (community implementations exist) |
+| **MCP server** | Yes (`@d8um/mcp-server`) - 6 tools: remember, recall, recall_facts, forget, correct, add_conversation | OpenMemory MCP Server (local-first, dashboard UI, works with Cursor/VS Code/Claude Desktop) |
 | **Vercel AI SDK** | Yes (`@d8um/vercel-ai-provider`) - memory tools + auto-context middleware | Yes (`@mem0/vercel-ai-provider`) |
 | **LangChain** | No built-in integration | Yes (Python; limited TS) |
 | **CrewAI** | No | Yes (Python) |
@@ -233,6 +235,10 @@ await memory.delete('memory-id')
 8. **Custom prompts** - `customPrompt` config option to override the system prompt used for memory extraction.
 9. **Larger community** - ~48K GitHub stars, more tutorials, more third-party integrations, more battle-tested.
 10. **History store flexibility** - Supabase, SQLite, or custom providers for memory audit logs.
+11. **OpenMemory Chrome Extension** - Cross-tool memory sharing across ChatGPT, Claude, Perplexity, Grok, Gemini directly in the browser.
+12. **OpenMemory MCP Server** - Local-first memory layer with built-in dashboard UI (localhost:3000), compatible with Cursor, VS Code, Claude Desktop, Cline, Windsurf.
+13. **Enterprise features** - SOC 2 & HIPAA compliant, BYOK encryption on managed platform.
+14. **Published research** - arxiv paper (2504.19413) backing the approach with benchmark results.
 
 ---
 
@@ -276,7 +282,8 @@ await memory.delete('memory-id')
 | **Community size** | Small | Large (~48K stars) |
 | **Documentation** | Comprehensive guides | Comprehensive docs site |
 | **Known TS SDK bugs** | Early-stage, fewer reported | Graph memory hardcoded to OpenAI; static Ollama require breaks non-Ollama apps |
-| **Benchmark scores** | Not independently benchmarked yet | 49% on LongMemEval (arxiv 2603.04814) |
+| **Benchmark scores** | Not independently benchmarked yet | 49% on LongMemEval (vs OMEGA 95.4%, Letta 83.2%) |
+| **Published research** | No | arxiv 2504.19413 |
 
 ---
 

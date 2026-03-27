@@ -114,3 +114,8 @@ export type { PgMemoryAdapterConfig } from './adapters/pgvector.js'
 
 export { d8umMemory } from './d8um-memory.js'
 export type { d8umMemoryConfig } from './d8um-memory.js'
+
+// ── Graph Bridge ──
+
+export { createGraphBridge } from './graph-bridge.js'
+export type { CreateGraphBridgeConfig } from './graph-bridge.js'

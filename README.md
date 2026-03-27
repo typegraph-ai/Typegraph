@@ -61,12 +61,13 @@ await d8um.initialize(config)
 // Create a bucket
 const faq = await d8um.buckets.create({ name: 'faq' })
 
-// Ingest a document
-await d8um.ingest(faq.id, {
+// Ingest documents (batched embedding)
+await d8um.ingest(faq.id, [{
   title: 'How do I set up SSO?',
   content: 'Navigate to Settings > Authentication and select your identity provider.',
   updatedAt: new Date(),
-})
+  metadata: {},
+}], { chunkSize: 512, chunkOverlap: 64, deduplicateBy: ['content'] })
 
 // Query - hybrid search, score merging, ranked results
 const { results } = await d8um.query('how do I configure SSO?')

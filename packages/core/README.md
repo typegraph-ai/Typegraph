@@ -20,7 +20,7 @@ const ctx = d8um.initialize({
 
 const source = ctx.sources.create({ name: 'Docs' })
 
-await ctx.ingest(source.id, { id: 'doc-1', content: 'Your content here' }, {})
+await ctx.ingest(source.id, [{ id: 'doc-1', content: 'Your content here', title: 'Doc 1', updatedAt: new Date(), metadata: {} }], { chunkSize: 512, chunkOverlap: 64, deduplicateBy: ['content'] })
 
 const { results } = await ctx.query('How does authentication work?')
 const context = ctx.assemble(results)

@@ -87,13 +87,13 @@ Each document is chunked (512 tokens, 64 overlap) and embedded:
 const bucket = await d.buckets.create({ name: 'nfcorpus' })
 
 for (const doc of corpus) {
-  await d.ingest(bucket.id, {
+  await d.ingest(bucket.id, [{
     id: doc._id,
     title: doc.title,
     content: `${doc.title}\n\n${doc.text}`,
     updatedAt: new Date(),
     metadata: { corpusId: doc._id },
-  }, {
+  }], {
     chunkSize: 512,
     chunkOverlap: 64,
     deduplicateBy: ['content'],

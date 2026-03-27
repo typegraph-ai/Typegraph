@@ -119,8 +119,8 @@ export interface d8umInstance {
     opts?: IndexOpts,
   ): Promise<IndexResult>
 
-  /** Ingest a single document directly into a bucket. No job needed. */
-  ingest(bucketId: string, doc: RawDocument, indexConfig: IndexConfig, opts?: IndexOpts): Promise<IndexResult>
+  /** Ingest documents directly into a bucket. All chunks are embedded in a single batch call. */
+  ingest(bucketId: string, docs: RawDocument[], indexConfig: IndexConfig, opts?: IndexOpts): Promise<IndexResult>
 
   /** Ingest a document with pre-chunked content. */
   ingestWithChunks(bucketId: string, doc: RawDocument, chunks: Chunk[], opts?: IndexOpts): Promise<IndexResult>
@@ -643,7 +643,7 @@ class d8umImpl implements d8umInstance {
 
   async ingest(
     bucketId: string,
-    doc: RawDocument,
+    docs: RawDocument[],
     indexConfig: IndexConfig,
     opts?: IndexOpts
   ): Promise<IndexResult> {
@@ -651,8 +651,13 @@ class d8umImpl implements d8umInstance {
     const bucket = await this.buckets.get(bucketId)
     if (!bucket) throw new Error(`Bucket "${bucketId}" not found`)
     const { defaultChunker: chunker } = await import('./index-engine/chunker.js')
-    const chunks = chunker(doc, indexConfig)
-    return this.ingestWithChunks(bucketId, doc, chunks, opts)
+    const items = docs.map(doc => ({ doc, chunks: chunker(doc, indexConfig) }))
+    const embedding = this.getEmbeddingForBucket(bucketId)
+    const engine = this.createIndexEngine(embedding)
+    await this.config.hooks?.onIndexStart?.(bucketId, opts ?? {})
+    const result = await engine.ingestBatch(bucketId, items, opts, indexConfig)
+    await this.config.hooks?.onIndexComplete?.(bucketId, result)
+    return result
   }
 
   async ingestWithChunks(

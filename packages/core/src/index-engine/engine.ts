@@ -349,6 +349,137 @@ export class IndexEngine {
     }
   }
 
+  /**
+   * Ingest a batch of documents with pre-built chunks.
+   * All chunks across all documents are embedded in a single embedBatch call.
+   */
+  async ingestBatch(
+    bucketId: string,
+    items: Array<{ doc: RawDocument; chunks: Chunk[] }>,
+    opts: IndexOpts = {},
+    indexConfig?: IndexConfig,
+  ): Promise<IndexResult> {
+    const { tenantId, dryRun = false } = opts
+    const modelId = this.embedding.model
+    const startMs = Date.now()
+
+    if (!dryRun) {
+      await this.adapter.ensureModel(modelId, this.embedding.dimensions)
+    }
+
+    const deduplicateBy = indexConfig?.deduplicateBy ?? ['url']
+
+    // Phase 1: Prepare all docs and collect all texts for a single embedBatch call
+    const prepared: Array<{
+      doc: RawDocument
+      chunks: Chunk[]
+      ikey: string
+      contentHash: string
+      documentId: string
+      textOffset: number
+    }> = []
+    const allTexts: string[] = []
+
+    for (const { doc, chunks } of items) {
+      const contentHash = sha256(doc.content)
+      const ikey = resolveIdempotencyKey(doc, deduplicateBy)
+      let documentId = doc.id ?? randomUUID()
+
+      if (this.adapter.upsertDocumentRecord && !dryRun) {
+        const docRecord = await this.adapter.upsertDocumentRecord({
+          bucketId,
+          tenantId,
+          title: doc.title,
+          url: doc.url,
+          contentHash,
+          chunkCount: chunks.length,
+          status: 'processing',
+          documentType: indexConfig?.documentType,
+          sourceType: indexConfig?.sourceType,
+          scope: indexConfig?.scope,
+          metadata: doc.metadata,
+        })
+        documentId = docRecord.id
+      }
+
+      const textOffset = allTexts.length
+      const texts = indexConfig
+        ? chunks.map(c => this.preprocessForEmbedding(c.content, indexConfig))
+        : chunks.map(c => c.content)
+      allTexts.push(...texts)
+
+      prepared.push({ doc, chunks, ikey, contentHash, documentId, textOffset })
+    }
+
+    // Phase 2: Single embedBatch call for all chunks across all documents
+    const allEmbeddings = allTexts.length > 0
+      ? await this.embedding.embedBatch(allTexts)
+      : []
+
+    // Phase 3: Per-document upsert + hash store
+    const result: IndexResult = {
+      bucketId,
+      tenantId,
+      mode: 'upsert',
+      total: items.length,
+      skipped: 0,
+      updated: 0,
+      inserted: 0,
+      pruned: 0,
+      durationMs: 0,
+    }
+
+    for (const item of prepared) {
+      const { doc, chunks, ikey, contentHash, documentId, textOffset } = item
+      const embeddings = allEmbeddings.slice(textOffset, textOffset + chunks.length)
+      const propagated = this.propagateMetadata(doc, indexConfig?.propagateMetadata)
+
+      const embeddedChunks = chunks.map((chunk, i) => ({
+        idempotencyKey: ikey,
+        bucketId,
+        tenantId,
+        documentId,
+        content: chunk.content,
+        embedding: embeddings[i]!,
+        embeddingModel: modelId,
+        chunkIndex: chunk.chunkIndex,
+        totalChunks: chunks.length,
+        metadata: { ...propagated, ...chunk.metadata },
+        indexedAt: new Date(),
+      }))
+
+      if (this.tripleExtractor && !dryRun) {
+        for (const chunk of chunks) {
+          this.tripleExtractor.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex).catch(() => {})
+        }
+      }
+
+      if (!dryRun) {
+        await this.adapter.upsertDocument(modelId, embeddedChunks)
+
+        if (this.adapter.updateDocumentStatus) {
+          await this.adapter.updateDocumentStatus(documentId, 'complete', chunks.length)
+        }
+
+        const storeKey = buildHashStoreKey(tenantId, bucketId, ikey)
+        await this.adapter.hashStore.set(storeKey, {
+          idempotencyKey: ikey,
+          contentHash,
+          bucketId,
+          tenantId,
+          embeddingModel: modelId,
+          indexedAt: new Date(),
+          chunkCount: chunks.length,
+        })
+      }
+
+      result.inserted++
+    }
+
+    result.durationMs = Date.now() - startMs
+    return result
+  }
+
   private preprocessForEmbedding(content: string, indexConfig: IndexConfig): string {
     if (indexConfig.preprocessForEmbedding) {
       return indexConfig.preprocessForEmbedding(content)

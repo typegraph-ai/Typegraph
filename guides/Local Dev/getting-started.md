@@ -80,20 +80,21 @@ d8um_chunks_local_fast_bge_small_en_v1_5_vec
 ## 4) Ingest Documents
 
 ```ts
-// Same API as the hosted and self-hosted options
-await d8um.ingest('faq', {
-  title: 'How do I set up SSO?',
-  content: 'To enable SSO, navigate to Settings > Authentication and select your identity provider. We support SAML 2.0 and OpenID Connect.',
-  updatedAt: new Date(),
-  metadata: {},
-})
-
-await d8um.ingest('faq', {
-  title: 'How do I reset my password?',
-  content: 'Click "Forgot password" on the login page. You will receive a reset link via email within 5 minutes.',
-  updatedAt: new Date(),
-  metadata: {},
-})
+// Same API as the hosted and self-hosted options — batched embedding in a single call
+await d8um.ingest('faq', [
+  {
+    title: 'How do I set up SSO?',
+    content: 'To enable SSO, navigate to Settings > Authentication and select your identity provider. We support SAML 2.0 and OpenID Connect.',
+    updatedAt: new Date(),
+    metadata: {},
+  },
+  {
+    title: 'How do I reset my password?',
+    content: 'Click "Forgot password" on the login page. You will receive a reset link via email within 5 minutes.',
+    updatedAt: new Date(),
+    metadata: {},
+  },
+], { chunkSize: 512, chunkOverlap: 64, deduplicateBy: ['content'] })
 ```
 
 ### Under the Hood: Local Ingestion Pipeline

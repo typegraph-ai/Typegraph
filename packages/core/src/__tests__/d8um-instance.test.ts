@@ -121,8 +121,34 @@ describe('d8umCreate', () => {
       const { bucket, indexConfig } = createMockBucket({ documents: [] })
       registerTestBucket(instance, bucket, embedding)
       const doc = createTestDocument({ content: 'Some content to ingest' })
-      const result = await instance.ingest(bucket.id, doc, indexConfig)
+      const result = await instance.ingest(bucket.id, [doc], indexConfig)
       expect(result.inserted).toBe(1)
+    })
+
+    it('ingests a batch of documents', async () => {
+      const { bucket, indexConfig } = createMockBucket({ documents: [] })
+      registerTestBucket(instance, bucket, embedding)
+      const docs = createTestDocuments(3)
+      const result = await instance.ingest(bucket.id, docs, indexConfig)
+      expect(result.total).toBe(3)
+      expect(result.inserted).toBe(3)
+    })
+
+    it('batches all chunks into a single embedBatch call', async () => {
+      const { bucket, indexConfig } = createMockBucket({ documents: [] })
+      registerTestBucket(instance, bucket, embedding)
+      const docs = createTestDocuments(3)
+      const spy = vi.spyOn(embedding, 'embedBatch')
+      await instance.ingest(bucket.id, docs, indexConfig)
+      expect(spy).toHaveBeenCalledOnce()
+    })
+
+    it('returns zero-count result for empty array', async () => {
+      const { bucket, indexConfig } = createMockBucket({ documents: [] })
+      registerTestBucket(instance, bucket, embedding)
+      const result = await instance.ingest(bucket.id, [], indexConfig)
+      expect(result.total).toBe(0)
+      expect(result.inserted).toBe(0)
     })
   })
 

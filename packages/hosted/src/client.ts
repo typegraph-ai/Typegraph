@@ -146,13 +146,13 @@ export function d8umHosted(config: HostedConfig): d8umHostedInstance {
 
     async ingest(
       bucketId: string,
-      doc: RawDocument,
+      docs: RawDocument[],
       _indexConfig: IndexConfig,
       opts?: IndexOpts
     ): Promise<IndexResult> {
       return client.post<IndexResult>(
         `/v1/buckets/${encodeURIComponent(bucketId)}/ingest`,
-        { doc, ...opts }
+        { docs, ...opts }
       )
     },
 

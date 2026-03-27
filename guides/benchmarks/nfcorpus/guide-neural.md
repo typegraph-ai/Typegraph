@@ -150,7 +150,7 @@ Identical to core — data fetched from HuggingFace Datasets Server REST API.
 Same ingestion call as core, but with LLM triple extraction running automatically:
 
 ```typescript
-await d.ingest(bucket.id, { ... }, { chunkSize: 512, chunkOverlap: 64, deduplicateBy: ['content'] })
+await d.ingest(bucket.id, [{ ... }], { chunkSize: 512, chunkOverlap: 64, deduplicateBy: ['content'] })
 ```
 
 Behind the scenes, for each chunk:

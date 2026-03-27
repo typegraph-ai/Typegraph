@@ -104,19 +104,20 @@ Each embedding model gets its own table. If you later switch models or use diffe
 // Send documents to your FAQ source - d8um handles chunking and embedding under the hood
 //    document id is optional - d8um generates an UUID id if none is sent, and automatically deduplicates by content hash
 
-await d8um.ingest('faq', {
-  title: 'How do I set up SSO?',
-  content: 'To enable SSO, navigate to Settings > Authentication and select your identity provider. We support SAML 2.0 and OpenID Connect.',
-  updatedAt: new Date(),
-  metadata: {},
-})
-
-await d8um.ingest('faq', {
-  title: 'How do I reset my password?',
-  content: 'Click "Forgot password" on the login page. You will receive a reset link via email within 5 minutes.',
-  updatedAt: new Date(),
-  metadata: {},
-})
+await d8um.ingest('faq', [
+  {
+    title: 'How do I set up SSO?',
+    content: 'To enable SSO, navigate to Settings > Authentication and select your identity provider. We support SAML 2.0 and OpenID Connect.',
+    updatedAt: new Date(),
+    metadata: {},
+  },
+  {
+    title: 'How do I reset my password?',
+    content: 'Click "Forgot password" on the login page. You will receive a reset link via email within 5 minutes.',
+    updatedAt: new Date(),
+    metadata: {},
+  },
+], { chunkSize: 512, chunkOverlap: 64, deduplicateBy: ['content'] })
 ```
 
 ### Under the Hood: Ingestion Pipeline

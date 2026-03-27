@@ -240,13 +240,13 @@ async function main() {
     try {
       await d.ingest(
         bucket.id,
-        {
+        [{
           id: docId,
           title,
           content: title ? `${title}\n\n${text}` : text,
           updatedAt: new Date(),
           metadata: { corpusId: docId },
-        },
+        }],
         {
           chunkSize: CHUNK_SIZE,
           chunkOverlap: CHUNK_OVERLAP,

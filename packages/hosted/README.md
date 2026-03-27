@@ -17,7 +17,7 @@ const ctx = d8umHosted({ apiKey: process.env.D8UM_API_KEY! })
 
 const bucket = ctx.buckets.create({ name: 'Knowledge Base' })
 
-await ctx.ingest(bucket.id, { id: 'doc-1', content: 'Your content here' }, {})
+await ctx.ingest(bucket.id, [{ id: 'doc-1', content: 'Your content here', title: 'Doc 1', updatedAt: new Date(), metadata: {} }], { chunkSize: 512, chunkOverlap: 64, deduplicateBy: ['content'] })
 
 const { results } = await ctx.query('How does billing work?')
 const context = ctx.assemble(results)

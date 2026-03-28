@@ -1,0 +1,6 @@
+{
+  "status": "ok",
+  "query": "SELECT 'license_entities' AS tbl, COUNT(*) AS rows FROM bench_license_neural_entities\nUNION ALL SELECT 'license_edges', COUNT(*) FROM bench_license_neural_edges\nUNION ALL SELECT 'license_memories', COUNT(*) FROM bench_license_neural_memories\nUNION ALL SELECT 'au_tax_entities', COUNT(*) FROM bench_au_tax_neural_entities\nUNION ALL SELECT 'au_tax_edges', COUNT(*) FROM bench_au_tax_neural_edges",
+  "rows": 5,
+  "output": "tbl,rows\nlicense_entities,2103\nlicense_edges,2367\nlicense_memories,0\nau_tax_entities,4264\nau_tax_edges,3729"
+}

@@ -33,13 +33,11 @@ jobs:
 
           add_entry() {
             local ds="$1" var="$2" seed="$3"
-            local timeout=15
+            local timeout=60
             if [ "$seed" = "true" ] && [ "$var" = "neural" ]; then
               timeout=360
-            elif [ "$seed" = "true" ]; then
-              timeout=60
             elif [ "$var" = "neural" ]; then
-              timeout=30
+              timeout=120
             fi
             ENTRIES+=("{\"dataset\":\"$ds\",\"variant\":\"$var\",\"seed\":$seed,\"timeout\":$timeout}")
           }

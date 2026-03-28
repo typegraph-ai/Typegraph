@@ -2,7 +2,7 @@
 /**
  * AU Tax Guidance Retrieval Benchmark — d8um Graph (Neural Search)
  *
- * Reseed with fixed neural pipeline (RRF merge + PPR score propagation + edge weight accumulation).
+ * Reseed with fixed neural pipeline (PPR score propagation + log-scaled edge weight accumulation).
  *
  * Runs the isaacus/australian-tax-guidance-retrieval benchmark
  * using d8um graph with neural search (hybrid + memory recall + PPR graph traversal).

@@ -189,6 +189,7 @@ class d8umImpl implements d8umInstance {
       }
       if (this.adapter.upsertBucket) {
         const persisted = await this.adapter.upsertBucket(bucket)
+        this._buckets.set(persisted.id, persisted)
         this.bucketEmbeddings.set(persisted.id, this.defaultEmbedding)
         return persisted
       }

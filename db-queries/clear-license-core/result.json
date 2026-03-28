@@ -1,0 +1,6 @@
+{
+  "status": "ok",
+  "query": "-- Clear license-tldr core data for reseed with 2048 chunk size\n-- Bucket ID: 2c119c78-3318-4801-8041-9f755e680dec (name: license-tldr)\n\nTRUNCATE TABLE bench_license_core__gateway_openai_text_embedding_3_small;\nTRUNCATE TABLE bench_license_core__registry;\nDELETE FROM d8um_hashes WHERE bucket_id = '2c119c78-3318-4801-8041-9f755e680dec';\nDELETE FROM d8um_documents WHERE bucket_id = '2c119c78-3318-4801-8041-9f755e680dec';",
+  "rows": 4,
+  "output": "TRUNCATE TABLE\nTRUNCATE TABLE\nDELETE 0\nDELETE 0"
+}

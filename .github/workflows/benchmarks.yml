@@ -325,11 +325,39 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add benchmarks/${{ matrix.dataset }}/${{ matrix.variant }}/history.json
-          git diff --cached --quiet && exit 0
-          git commit -m "bench: update ${{ matrix.dataset }}/${{ matrix.variant }} history [skip ci]"
-          git pull --rebase origin ${{ github.ref_name }}
-          git push origin HEAD:${{ github.ref_name }}
+          HIST_FILE="benchmarks/${{ matrix.dataset }}/${{ matrix.variant }}/history.json"
+          RESULT_FILE="/tmp/bench-result.json"
+          for attempt in 1 2 3 4 5; do
+            # Always start fresh from remote
+            git fetch origin ${{ github.ref_name }}
+            git reset --hard origin/${{ github.ref_name }}
+            # Re-apply our history entry on top of latest remote
+            node -e "
+              const fs = require('fs');
+              const result = JSON.parse(fs.readFileSync('$RESULT_FILE', 'utf8'));
+              let history = [];
+              try { history = JSON.parse(fs.readFileSync('$HIST_FILE', 'utf8')); } catch {}
+              const entry = {
+                commit: '${{ github.sha }}'.slice(0, 7),
+                date: new Date().toISOString().slice(0, 10),
+                metrics: result.metrics,
+                avgQueryMs: result.timing.avgQueryMs,
+                config: result.config || {},
+              };
+              history.push(entry);
+              fs.writeFileSync('$HIST_FILE', JSON.stringify(history, null, 2) + '\n');
+            "
+            git add "$HIST_FILE"
+            git diff --cached --quiet && { echo "History already up to date"; exit 0; }
+            git commit -m "bench: update ${{ matrix.dataset }}/${{ matrix.variant }} history [skip ci]"
+            if git push origin HEAD:${{ github.ref_name }}; then
+              echo "History pushed on attempt $attempt"
+              exit 0
+            fi
+            echo "Push failed (attempt $attempt), retrying..."
+            sleep $((attempt * 2))
+          done
+          echo "::warning::Failed to push history update after 5 attempts"
 
   summary:
     needs: [parse, run]

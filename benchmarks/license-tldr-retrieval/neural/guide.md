@@ -15,3 +15,4 @@ npx tsx --env-file=.env license-tldr-retrieval/neural/run.ts
 
 - Whether knowledge graph helps bridge the gap between TLDR descriptions and full license texts
 - Entity extraction on license-specific terminology
+- PPR graph traversal effectiveness on small, specialized corpora

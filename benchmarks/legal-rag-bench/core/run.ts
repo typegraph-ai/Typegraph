@@ -103,11 +103,7 @@ async function main() {
         const docId = String(doc.id)
         const title = String(doc.title ?? '')
         const text = String(doc.text ?? '')
-        const footnotes = String(doc.footnotes ?? '')
-        const content = [
-          title ? `${title}\n\n${text}` : text,
-          footnotes ? `\n\nFootnotes:\n${footnotes}` : '',
-        ].join('')
+        const content = title ? `${title}\n\n${text}` : text
         return {
           id: docId, title, content,
           updatedAt: new Date(),
@@ -142,7 +138,7 @@ async function main() {
   }
   console.log()
 
-  console.log(`Phase 4: Running ${qa.length} queries (mode: fast / pure vector)...`)
+  console.log(`Phase 4: Running ${qa.length} queries (mode: hybrid)...`)
   const queryStart = performance.now()
   const allResults = new Map<string, string[]>()
   let queriesDone = 0
@@ -154,7 +150,7 @@ async function main() {
     const queryId = String(q.id)
 
     const response = await d.query(q.question, {
-      mode: 'fast', count: K, buckets: [bucket!.id],
+      mode: 'hybrid', count: K, buckets: [bucket!.id],
     })
 
     const retrievedIds = response.results
@@ -202,7 +198,7 @@ async function main() {
   const result: BenchmarkResult = {
     benchmark: 'Legal RAG Bench (isaacus)',
     dataset: 'legal-rag-bench',
-    mode: 'fast', variant: 'core',
+    mode: 'hybrid', variant: 'core',
     corpus: corpus.length, queries: scored, k: K, metrics,
     timing: {
       ingestionSeconds: ingestDuration ? Number(ingestDuration.toFixed(1)) : undefined,
@@ -212,7 +208,7 @@ async function main() {
     config: {
       embedding: EMBEDDING_MODEL, embeddingDims: EMBEDDING_DIMS,
       chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP,
-      includesFootnotes: true,
+      includesFootnotes: false,
     },
   }
 

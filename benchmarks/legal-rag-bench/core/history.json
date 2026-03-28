@@ -1,1 +1,20 @@
-[]
+[
+  {
+    "commit": "8450656",
+    "date": "2026-03-28",
+    "metrics": {
+      "nDCG@10": 0,
+      "MAP@10": 0,
+      "Recall@10": 0,
+      "Precision@10": 0
+    },
+    "avgQueryMs": 658.5,
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "chunkSize": 512,
+      "chunkOverlap": 64,
+      "includesFootnotes": true
+    }
+  }
+]

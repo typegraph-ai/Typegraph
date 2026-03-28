@@ -41,9 +41,9 @@ fanout_percentiles AS (
 ),
 seed_cost_estimate AS (
   SELECT
-    ROUND(p50 * 10, 0) AS est_1hop_edges_10_median_seeds,
-    ROUND(p75 * 10, 0) AS est_1hop_edges_10_p75_seeds,
-    ROUND(p90 * 10, 0) AS est_1hop_edges_10_p90_seeds
+    ROUND((p50 * 10)::numeric, 0) AS est_1hop_edges_10_median_seeds,
+    ROUND((p75 * 10)::numeric, 0) AS est_1hop_edges_10_p75_seeds,
+    ROUND((p90 * 10)::numeric, 0) AS est_1hop_edges_10_p90_seeds
   FROM fanout_percentiles
 ),
 index_info AS (

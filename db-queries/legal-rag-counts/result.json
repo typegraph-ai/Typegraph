@@ -1,0 +1,5 @@
+{
+  "status": "error",
+  "query": "-- Count documents and chunks for legal-rag-bench, check metadata propagation\nSELECT 'documents' AS table_name, COUNT(*) AS row_count FROM bench_legalrag_core__documents\nUNION ALL\nSELECT 'chunks', COUNT(*) FROM bench_legalrag_core__model_1\nUNION ALL\nSELECT 'chunks_with_corpusId', COUNT(*) FROM bench_legalrag_core__model_1 WHERE metadata->>'corpusId' IS NOT NULL\nUNION ALL\nSELECT 'chunks_without_corpusId', COUNT(*) FROM bench_legalrag_core__model_1 WHERE metadata->>'corpusId' IS NULL\nUNION ALL\nSELECT 'hashes', COUNT(*) FROM d8um_hashes WHERE store_key LIKE '%legalrag%'\nORDER BY table_name;",
+  "error": "ERROR:  relation \"bench_legalrag_core__documents\" does not exist\nLINE 2: ...uments' AS table_name, COUNT(*) AS row_count FROM bench_lega...\n                                                             ^"
+}

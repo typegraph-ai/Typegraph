@@ -196,6 +196,80 @@ For estimating seed times (~3 docs/s embedding throughput):
 - PR comments show comparison table (d8um vs top-3 baselines) + delta from previous run
 - Only nDCG@10 has cross-system baselines; MAP/Recall/Precision are d8um-internal tracking only
 
+### Clearing Benchmark Data for Reseed
+
+**When to clear:** Before reseeding a benchmark with changed chunk size, embedding model, or ingestion config. The hash store will skip unchanged content, so just running `--seed` again won't re-chunk with new settings.
+
+**Important:** `--seed` does NOT drop tables. You must manually clear data via a db-query, then reseed.
+
+#### Tables to clear per variant
+
+**Core variant** (e.g., `bench_license_core_`):
+```sql
+TRUNCATE TABLE {prefix}_gateway_openai_text_embedding_3_small;
+TRUNCATE TABLE {prefix}_registry;
+DELETE FROM d8um_hashes WHERE bucket_id = (SELECT id FROM d8um_buckets WHERE name = '{bucket_name}');
+DELETE FROM d8um_documents WHERE bucket_id = (SELECT id FROM d8um_buckets WHERE name = '{bucket_name}');
+```
+
+**Neural variant** (e.g., `bench_license_neural_`) — same as core PLUS graph tables:
+```sql
+TRUNCATE TABLE {prefix}_gateway_openai_text_embedding_3_small;
+TRUNCATE TABLE {prefix}_registry;
+TRUNCATE TABLE {prefix}memories;
+TRUNCATE TABLE {prefix}entities;
+TRUNCATE TABLE {prefix}edges;
+DELETE FROM d8um_hashes WHERE bucket_id = (SELECT id FROM d8um_buckets WHERE name = '{bucket_name}');
+DELETE FROM d8um_documents WHERE bucket_id = (SELECT id FROM d8um_buckets WHERE name = '{bucket_name}');
+```
+
+Note: neural graph tables use `{prefix}memories` (no extra underscore), e.g. `bench_license_neural_memories`.
+
+#### Complete prefix/bucket reference
+
+| Dataset | Variant | TABLE_PREFIX | BUCKET_NAME |
+|---------|---------|--------------|-------------|
+| nfcorpus | core | `bench_nfcorpus_core_` | `nfcorpus` |
+| nfcorpus | neural | `bench_nfcorpus_neural_` | `nfcorpus-neural` |
+| australian-tax | core | `bench_au_tax_core_` | `au-tax-guidance` |
+| australian-tax | neural | `bench_au_tax_neural_` | `au-tax-guidance-neural` |
+| license-tldr | core | `bench_license_core_` | `license-tldr` |
+| license-tldr | neural | `bench_license_neural_` | `license-tldr-neural` |
+| contractual-clause | core | `bench_contract_core_` | `contractual-clause` |
+| contractual-clause | neural | `bench_contract_neural_` | `contractual-clause-neural` |
+| mleb-scalr | core | `bench_mleb_core_` | `mleb-scalr` |
+| mleb-scalr | neural | `bench_mleb_neural_` | `mleb-scalr-neural` |
+| legal-rag-bench | core | `bench_legalrag_core_` | `legal-rag-bench` |
+| legal-rag-bench | neural | `bench_legalrag_neural_` | `legal-rag-bench-neural` |
+
+#### Procedure
+
+1. Write SQL to `db-queries/clear-{name}/query.sql` using the templates above
+2. Use `SELECT id FROM d8um_buckets WHERE name = '{bucket_name}'` in the WHERE clause (avoids hardcoding UUIDs)
+3. Commit and push (do NOT use `[skip ci]`) — wait for `result.json`
+4. Verify all statements show `TRUNCATE TABLE` or `DELETE N`
+5. Then push a commit with `[bench:{dataset}/{variant}:seed]` to reseed
+
+### Benchmark Results Readout
+
+When asked for a readout on benchmark results, pull data from the **history files in the repo**, not from PR comments or commit messages.
+
+#### Where results live
+
+- **History files**: `benchmarks/{dataset}/{variant}/history-{mode}.json` (e.g., `history-hybrid.json`, `history-fast.json`, `history-neural.json`)
+- **Legacy history**: `benchmarks/{dataset}/{variant}/history.json` (pre-dual-mode runs)
+- **Baselines**: `benchmarks/{dataset}/baselines.json`
+
+#### How to produce a readout
+
+1. Read all `history-*.json` files for each dataset/variant that has been run
+2. Read each dataset's `baselines.json` for the external comparison targets
+3. Present a table per dataset showing: commit, mode, chunk size, nDCG@10, MAP@10, Recall@10, Precision@10, delta vs text-embedding-3-small baseline
+4. Highlight the best result per dataset and whether it beats baseline
+5. Call out notable patterns (e.g., fast > hybrid, neural = core, chunk ratio issues)
+
+**Do NOT rely on PR comments** — they may be paginated, unavailable, or stale. The history JSON files are the source of truth for all benchmark results.
+
 ### Neon Postgres Compatibility
 
 - Cannot use expressions (e.g. `COALESCE`) in `PRIMARY KEY` constraints — use `DEFAULT ''` instead

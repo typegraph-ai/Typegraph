@@ -48,6 +48,20 @@ export function precision(retrieved: string[], relevant: Set<string>, k: number)
   return topK.length === 0 ? 0 : hits / topK.length
 }
 
+export function reciprocalRank(retrieved: string[], relevant: Set<string>, k: number): number {
+  for (let i = 0; i < Math.min(retrieved.length, k); i++) {
+    if (relevant.has(retrieved[i]!)) return 1 / (i + 1)
+  }
+  return 0
+}
+
+export function hitAtK(retrieved: string[], relevant: Set<string>, k: number): number {
+  for (let i = 0; i < Math.min(retrieved.length, k); i++) {
+    if (relevant.has(retrieved[i]!)) return 1
+  }
+  return 0
+}
+
 export function deduplicateToDocuments(
   results: Array<{ metadata: Record<string, unknown> }>,
   limit: number,
@@ -97,6 +111,53 @@ export function scoreAllQueries(
       'MAP@10': sumAP / scored,
       'Recall@10': sumRecall / scored,
       'Precision@10': sumPrecision / scored,
+    },
+    scored,
+  }
+}
+
+/**
+ * Extended scoring: standard 4 metrics + MRR@K and Hit@K.
+ * Used by benchmarks that report MRR and Hit (e.g. MultiHop-RAG).
+ */
+export function scoreAllQueriesExtended(
+  allResults: Map<string, string[]>,
+  qrelsMap: Map<string, Map<string, number>>,
+  k: number,
+) {
+  let sumNDCG = 0
+  let sumAP = 0
+  let sumRecall = 0
+  let sumPrecision = 0
+  let sumMRR = 0
+  let sumHit = 0
+  let scored = 0
+
+  for (const [queryId, retrieved] of allResults) {
+    const rels = qrelsMap.get(queryId)
+    if (!rels) continue
+
+    const relevantSet = new Set(
+      [...rels.entries()].filter(([, score]) => score > 0).map(([id]) => id),
+    )
+
+    sumNDCG += ndcg(retrieved, rels, k)
+    sumAP += averagePrecision(retrieved, relevantSet, k)
+    sumRecall += recall(retrieved, relevantSet, k)
+    sumPrecision += precision(retrieved, relevantSet, k)
+    sumMRR += reciprocalRank(retrieved, relevantSet, k)
+    sumHit += hitAtK(retrieved, relevantSet, k)
+    scored++
+  }
+
+  return {
+    metrics: {
+      'nDCG@10': sumNDCG / scored,
+      'MAP@10': sumAP / scored,
+      'Recall@10': sumRecall / scored,
+      'Precision@10': sumPrecision / scored,
+      'MRR@10': sumMRR / scored,
+      'Hit@10': sumHit / scored,
     },
     scored,
   }

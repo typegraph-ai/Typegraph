@@ -96,7 +96,7 @@ After pushing, pull the branch to get the result file, or use GitHub MCP tools t
 
 `.github/workflows/db-inspect.yml` — Locked to actors `fIa5h` and `claude` only. Has `contents: write` permission to push results back.
 
-## Benchmark Datasets (6 datasets × 2 variants = 12 benchmarks)
+## Benchmark Datasets (7 datasets × 2 variants = 14 benchmarks)
 
 | Dataset | Description |
 |---------|-------------|
@@ -106,6 +106,7 @@ After pushing, pull the branch to get the result file, or use GitHub MCP tools t
 | license-tldr-retrieval | Software license summaries |
 | mleb-scalr | Multi-language evaluation benchmark |
 | legal-rag-bench | Legal RAG evaluation |
+| multihop-rag | Multi-hop QA over news articles (COLM 2024) |
 
 ## Metrics
 
@@ -187,7 +188,8 @@ For estimating seed times (~3 docs/s embedding throughput):
 | australian-tax-guidance-retrieval | ~105 | ~112 | ~35s |
 | nfcorpus | ~3,633 | ~323 | ~20min |
 | legal-rag-bench | 4,876 | 100 | ~27min |
-| mleb-scalr | unknown | unknown | unknown |
+| mleb-scalr | 523 | 120 | ~3min |
+| multihop-rag | 609 | ~2,556 | ~3min |
 
 ### Baselines & History Files
 
@@ -241,6 +243,8 @@ Note: neural graph tables use `{prefix}memories` (no extra underscore), e.g. `be
 | mleb-scalr | neural | `bench_mleb_neural_` | `mleb-scalr-neural` |
 | legal-rag-bench | core | `bench_legalrag_core_` | `legal-rag-bench` |
 | legal-rag-bench | neural | `bench_legalrag_neural_` | `legal-rag-bench-neural` |
+| multihop-rag | core | `bench_multihop_core_` | `multihop-rag` |
+| multihop-rag | neural | `bench_multihop_neural_` | `multihop-rag-neural` |
 
 #### Procedure
 

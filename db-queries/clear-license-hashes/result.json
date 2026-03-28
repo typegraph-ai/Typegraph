@@ -1,0 +1,6 @@
+{
+  "status": "ok",
+  "query": "DELETE FROM d8um_hashes WHERE bucket_id = 'license-tldr-neural'",
+  "rows": 1,
+  "output": "DELETE 0"
+}

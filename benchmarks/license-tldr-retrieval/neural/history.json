@@ -36,5 +36,24 @@
       "chunkOverlap": 64,
       "tripleExtractionErrors": 0
     }
+  },
+  {
+    "commit": "4826fde",
+    "date": "2026-03-28",
+    "metrics": {
+      "nDCG@10": 0.5969853067601341,
+      "MAP@10": 0.5433455433455433,
+      "Recall@10": 0.7692307692307693,
+      "Precision@10": 0.13354700854700852
+    },
+    "avgQueryMs": 1035.4,
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "llm": "google/gemini-3.1-flash-lite-preview",
+      "chunkSize": 512,
+      "chunkOverlap": 64,
+      "tripleExtractionErrors": 0
+    }
   }
 ]

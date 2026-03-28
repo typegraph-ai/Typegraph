@@ -24,3 +24,4 @@ npx tsx --env-file=.env australian-tax-guidance-retrieval/core/run.ts           
 
 - Hybrid search (vector + BM25, RRF fusion) on domain-specific legal/tax content
 - Small corpus — tests precision on focused documents rather than scale
+- Baseline for comparing neural variant (graph-augmented) performance

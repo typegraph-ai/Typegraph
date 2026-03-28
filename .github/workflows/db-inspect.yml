@@ -5,6 +5,9 @@ on:
     paths:
       - 'db-queries/**/query.sql'
 
+permissions:
+  contents: write
+
 jobs:
   run-query:
     runs-on: ubuntu-latest

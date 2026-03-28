@@ -143,18 +143,6 @@ jobs:
           RESULT=$(sed -n '/^---BENCH_RESULT_JSON---$/,/^---END_BENCH_RESULT_JSON---$/{ /^---/d; p; }' /tmp/bench-output.txt)
           # Save to file for artifact upload and subsequent steps
           echo "$RESULT" > /tmp/bench-result.json
-          # Set result JSON as output
-          {
-            echo "json<<BENCH_EOF"
-            echo "$RESULT"
-            echo "BENCH_EOF"
-          } >> "$GITHUB_OUTPUT"
-          # Save full output (last 80 lines) for error reporting
-          {
-            echo "log<<BENCH_LOG_EOF"
-            tail -80 /tmp/bench-output.txt
-            echo "BENCH_LOG_EOF"
-          } >> "$GITHUB_OUTPUT"
           exit $EXIT_CODE
       - name: Upload result artifact
         if: always()
@@ -169,6 +157,8 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
+
             const branch = context.ref.replace('refs/heads/', '');
             const prs = await github.rest.pulls.list({
               owner: context.repo.owner,
@@ -182,43 +172,64 @@ jobs:
             }
             const prNumber = prs.data[0].number;
 
-            const resultJson = `${{ steps.bench.outputs.json }}`;
-            if (!resultJson || !resultJson.trim()) {
-              const log = `${{ steps.bench.outputs.log }}`;
-              const logBlock = log && log.trim()
-                ? `\n<details><summary>Output</summary>\n\n\`\`\`\n${log.trim()}\n\`\`\`\n\n</details>`
+            // Read result JSON from file (not from step output) to avoid template literal escaping issues
+            let resultJson = '';
+            try {
+              resultJson = fs.readFileSync('/tmp/bench-result.json', 'utf8').trim();
+            } catch (e) {
+              // File may not exist if benchmark crashed very early
+            }
+
+            let result;
+            try {
+              if (resultJson) result = JSON.parse(resultJson);
+            } catch (e) {
+              // Invalid JSON — treat as failure
+            }
+
+            if (!result || !result.metrics) {
+              // Read full output log for error details
+              let log = '';
+              try {
+                const full = fs.readFileSync('/tmp/bench-output.txt', 'utf8');
+                const lines = full.split('\n');
+                log = lines.slice(-80).join('\n').trim();
+              } catch (e) {
+                // No output file
+              }
+              const logBlock = log
+                ? '\n<details><summary>Output (last 80 lines)</summary>\n\n```\n' + log + '\n```\n\n</details>'
                 : '';
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: prNumber,
-                body: `## Benchmark Failed: ${{ matrix.dataset }}/${{ matrix.variant }}\n\nNo result JSON was produced. The benchmark likely crashed before completing.\n\n[View logs](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})${logBlock}`,
+                body: '## Benchmark Failed: ${{ matrix.dataset }}/${{ matrix.variant }}\n\nNo result JSON was produced. The benchmark likely crashed before completing.\n\n[View logs](' + context.serverUrl + '/' + context.repo.owner + '/' + context.repo.repo + '/actions/runs/' + context.runId + ')' + logBlock,
               });
               return;
             }
 
-            const result = JSON.parse(resultJson);
             const m = result.metrics;
             const t = result.timing;
             const seedLabel = '${{ matrix.seed }}' === 'true' ? ' (seeded)' : '';
 
             const lines = [
-              `## Benchmark: ${result.benchmark} — ${result.variant} (${result.mode})${seedLabel}`,
+              '## Benchmark: ' + result.benchmark + ' — ' + result.variant + ' (' + result.mode + ')' + seedLabel,
               '',
               '| Metric | Value |',
               '|--------|-------|',
-              `| nDCG@10 | ${m['nDCG@10'].toFixed(4)} |`,
-              `| MAP@10 | ${m['MAP@10'].toFixed(4)} |`,
-              `| Recall@10 | ${m['Recall@10'].toFixed(4)} |`,
-              `| Precision@10 | ${m['Precision@10'].toFixed(4)} |`,
+              '| nDCG@10 | ' + m['nDCG@10'].toFixed(4) + ' |',
+              '| MAP@10 | ' + m['MAP@10'].toFixed(4) + ' |',
+              '| Recall@10 | ' + m['Recall@10'].toFixed(4) + ' |',
+              '| Precision@10 | ' + m['Precision@10'].toFixed(4) + ' |',
               '',
-              `**Corpus:** ${(result.corpus ?? 0).toLocaleString()} docs | **Queries:** ${result.queries} | **Mode:** ${result.mode}`,
+              '**Corpus:** ' + (result.corpus ?? 0).toLocaleString() + ' docs | **Queries:** ' + result.queries + ' | **Mode:** ' + result.mode,
             ];
 
             if (t.ingestionSeconds != null) {
-              lines.push(`**Timing:** ingest ${t.ingestionSeconds.toFixed(1)}s, avg query ${t.avgQueryMs.toFixed(1)}ms, total ${Math.floor(t.totalSeconds / 60)}m${Math.round(t.totalSeconds % 60)}s`);
+              lines.push('**Timing:** ingest ' + t.ingestionSeconds.toFixed(1) + 's, avg query ' + t.avgQueryMs.toFixed(1) + 'ms, total ' + Math.floor(t.totalSeconds / 60) + 'm' + Math.round(t.totalSeconds % 60) + 's');
             } else {
-              lines.push(`**Timing:** avg query ${t.avgQueryMs.toFixed(1)}ms, total ${Math.floor(t.totalSeconds / 60)}m${Math.round(t.totalSeconds % 60)}s`);
+              lines.push('**Timing:** avg query ' + t.avgQueryMs.toFixed(1) + 'ms, total ' + Math.floor(t.totalSeconds / 60) + 'm' + Math.round(t.totalSeconds % 60) + 's');
             }
 
             lines.push('', '<details><summary>Full JSON</summary>', '', '```json', JSON.stringify(result, null, 2), '```', '', '</details>');

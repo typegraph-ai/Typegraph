@@ -90,5 +90,25 @@
       "includesFootnotes": true,
       "queryFetch": 50
     }
+  },
+  {
+    "commit": "e8e2e8e",
+    "date": "2026-03-28",
+    "metrics": {
+      "nDCG@10": 0.33481948454066296,
+      "MAP@10": 0.29000396825396824,
+      "Recall@10": 0.48,
+      "Precision@10": 0.04799999999999999
+    },
+    "avgQueryMs": 748.4,
+    "mode": "fast",
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "chunkSize": 2048,
+      "chunkOverlap": 256,
+      "includesFootnotes": true,
+      "queryFetch": 50
+    }
   }
 ]

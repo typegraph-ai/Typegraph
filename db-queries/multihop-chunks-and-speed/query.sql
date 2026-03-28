@@ -7,7 +7,7 @@ WITH chunk_stats AS (
     ROUND(AVG(total_chunks)::numeric, 1) AS avg_chunks_per_doc,
     MIN(total_chunks) AS min_chunks_per_doc,
     MAX(total_chunks) AS max_chunks_per_doc
-  FROM bench_multihop_neural_gateway_openai_text_embedding_3_small
+  FROM bench_multihop_neural__gateway_openai_text_embedding_3_small
 ),
 chunk_len_distribution AS (
   SELECT
@@ -19,7 +19,7 @@ chunk_len_distribution AS (
       ELSE '2000+'
     END AS bucket,
     COUNT(*) AS cnt
-  FROM bench_multihop_neural_gateway_openai_text_embedding_3_small
+  FROM bench_multihop_neural__gateway_openai_text_embedding_3_small
   GROUP BY bucket
 ),
 edge_fanout AS (

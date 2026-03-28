@@ -3,8 +3,8 @@ WITH counts AS (
     (SELECT COUNT(*) FROM bench_multihop_neural_entities) AS entity_count,
     (SELECT COUNT(*) FROM bench_multihop_neural_edges) AS edge_count,
     (SELECT COUNT(*) FROM bench_multihop_neural_memories) AS memory_count,
-    (SELECT COUNT(*) FROM bench_multihop_neural_gateway_openai_text_embedding_3_small) AS chunk_count,
-    (SELECT COUNT(DISTINCT document_id) FROM bench_multihop_neural_gateway_openai_text_embedding_3_small) AS document_count
+    (SELECT COUNT(*) FROM bench_multihop_neural__gateway_openai_text_embedding_3_small) AS chunk_count,
+    (SELECT COUNT(DISTINCT document_id) FROM bench_multihop_neural__gateway_openai_text_embedding_3_small) AS document_count
 ),
 entity_types AS (
   SELECT entity_type, COUNT(*) AS cnt

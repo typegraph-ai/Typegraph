@@ -1,0 +1,5 @@
+{
+  "dataset": "multihop-rag",
+  "description": "Multi-hop QA retrieval over 609 news articles (yixuantt/MultiHopRAG, COLM 2024)",
+  "baselines": []
+}

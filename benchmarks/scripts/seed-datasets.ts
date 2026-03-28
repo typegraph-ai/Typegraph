@@ -316,6 +316,156 @@ async function main() {
     console.log()
   }
 
+  // ── MultiHop-RAG: custom BEIR-format transform ──
+  // Downloaded raw, then transformed to BEIR format with evidence→document qrels.
+  // Separate from the main loop because it needs cross-source post-processing.
+
+  const mhBlobPrefix = 'datasets/multihop-rag'
+  const mhCorpusPath = `${mhBlobPrefix}/corpus.json`
+  const mhQueriesPath = `${mhBlobPrefix}/queries.json`
+  const mhQrelsPath = `${mhBlobPrefix}/qrels.json`
+
+  const mhAllExist = await blobExists(mhCorpusPath)
+    && await blobExists(mhQueriesPath)
+    && await blobExists(mhQrelsPath)
+
+  if (mhAllExist) {
+    console.log(`── multihop-rag ${'─'.repeat(26)}`)
+    console.log('  corpus   skipped (already in blob storage)')
+    console.log('  queries  skipped (already in blob storage)')
+    console.log('  qrels    skipped (already in blob storage)')
+    console.log()
+    totalSkipped += 3
+  } else {
+    console.log(`── multihop-rag ${'─'.repeat(26)}`)
+
+    // Fetch parquet index (one API call, cached)
+    const mhHfDataset = 'yixuantt/MultiHopRAG'
+    if (!parquetCache.has(mhHfDataset)) {
+      process.stdout.write('  fetching parquet index...')
+      const files = await getParquetUrls(mhHfDataset)
+      parquetCache.set(mhHfDataset, files)
+      process.stdout.write('\r' + ' '.repeat(60) + '\r')
+      await sleep(300)
+    }
+
+    const mhParquetFiles = parquetCache.get(mhHfDataset)!
+
+    // Download corpus
+    const corpusFiles = mhParquetFiles.filter(f => f.config === 'corpus' && f.split === 'train')
+    const rawCorpus: Record<string, unknown>[] = []
+    for (const file of corpusFiles) {
+      process.stdout.write(`\r  corpus   downloading (${(file.size / 1024).toFixed(0)} KB)...`)
+      const buf = await downloadParquet(file.url)
+      process.stdout.write(`\r  corpus   parsing...` + ' '.repeat(30))
+      rawCorpus.push(...await parseParquet(buf))
+    }
+
+    // Download queries
+    const queryFiles = mhParquetFiles.filter(f => f.config === 'MultiHopRAG' && f.split === 'train')
+    const rawQueries: Record<string, unknown>[] = []
+    for (const file of queryFiles) {
+      process.stdout.write(`\r  queries  downloading (${(file.size / 1024).toFixed(0)} KB)...`)
+      const buf = await downloadParquet(file.url)
+      process.stdout.write(`\r  queries  parsing...` + ' '.repeat(30))
+      rawQueries.push(...await parseParquet(buf))
+    }
+
+    // Transform corpus to BEIR format: {_id, title, text}
+    const beirCorpus = rawCorpus.map((doc, i) => ({
+      _id: String(i),
+      title: String(doc['title'] ?? ''),
+      text: String(doc['body'] ?? doc['text'] ?? ''),
+    }))
+
+    // Pre-normalize corpus for evidence matching
+    const normalize = (s: string) => s.replace(/[\s\n]+/g, '')
+    const normalizedDocs = beirCorpus.map(doc => ({
+      id: doc._id,
+      normalized: normalize(doc.text),
+    }))
+
+    // Transform queries + generate qrels via evidence→document substring matching
+    const beirQueries: { _id: string; text: string }[] = []
+    const beirQrels: { 'query-id': string; 'corpus-id': string; score: number }[] = []
+    let nullFiltered = 0
+    let unmatchedEvidence = 0
+
+    for (let qi = 0; qi < rawQueries.length; qi++) {
+      const q = rawQueries[qi]!
+      if (String(q['question_type'] ?? '') === 'null_query') {
+        nullFiltered++
+        continue
+      }
+
+      const queryId = String(beirQueries.length)
+      beirQueries.push({ _id: queryId, text: String(q['query'] ?? q['question'] ?? '') })
+
+      // Extract evidence list — handle both array-of-strings and array-of-objects
+      const evidenceRaw = q['evidence_list'] ?? q['gold_list'] ?? q['fact_list'] ?? []
+      const evidences: string[] = Array.isArray(evidenceRaw)
+        ? evidenceRaw.map((e: unknown) =>
+            typeof e === 'string' ? e : String((e as Record<string, unknown>)['fact'] ?? (e as Record<string, unknown>)['text'] ?? e),
+          )
+        : []
+
+      const matchedDocIds = new Set<string>()
+      for (const ev of evidences) {
+        const normEv = normalize(ev)
+        if (!normEv) continue
+        for (const doc of normalizedDocs) {
+          if (doc.normalized.includes(normEv)) {
+            matchedDocIds.add(doc.id)
+          }
+        }
+        if (matchedDocIds.size === 0) unmatchedEvidence++
+      }
+
+      for (const docId of matchedDocIds) {
+        beirQrels.push({ 'query-id': queryId, 'corpus-id': docId, score: 1 })
+      }
+    }
+
+    process.stdout.write('\r' + ' '.repeat(60) + '\r')
+    console.log(`  corpus   ${beirCorpus.length} docs (transformed to BEIR format)`)
+    console.log(`  queries  ${beirQueries.length} queries (${nullFiltered} null_query filtered)`)
+    console.log(`  qrels    ${beirQrels.length} relevance judgments`)
+    if (unmatchedEvidence > 0) {
+      console.log(`  warning  ${unmatchedEvidence} evidence snippets had no corpus match`)
+    }
+
+    // Upload all three
+    const uploads: [string, unknown[]][] = [
+      [mhCorpusPath, beirCorpus],
+      [mhQueriesPath, beirQueries],
+      [mhQrelsPath, beirQrels],
+    ]
+
+    for (const [blobPath, data] of uploads) {
+      const label = blobPath.split('/').pop()!.replace('.json', '').padEnd(8)
+      if (await blobExists(blobPath)) {
+        console.log(`  ${label} skipped (already in blob storage)`)
+        totalSkipped++
+        continue
+      }
+      process.stdout.write(`  ${label} uploading...`)
+      const json = JSON.stringify(data, (_key, value) =>
+        typeof value === 'bigint' ? Number(value) : value,
+      )
+      await put(blobPath, json, {
+        access: 'private',
+        contentType: 'application/json',
+        addRandomSuffix: false,
+      })
+      const jsonKB = (json.length / 1024).toFixed(0)
+      console.log(`\r  ${label} ✓ (${jsonKB} KB) → ${blobPath}`)
+      totalUploaded++
+      await sleep(300)
+    }
+
+    console.log()
+  }
+
   // Summary
   console.log('══════════════════════════════════════════════════')
   console.log(`  Uploaded: ${totalUploaded}  Skipped: ${totalSkipped}`)

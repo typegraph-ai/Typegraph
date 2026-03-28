@@ -7,6 +7,7 @@ export interface BenchmarkMetrics {
   'MAP@10': number
   'Recall@10': number
   'Precision@10': number
+  [key: string]: number
 }
 
 export interface BenchmarkResult {
@@ -33,10 +34,9 @@ export function formatMarkdown(result: BenchmarkResult): string {
   lines.push('')
   lines.push(`| Metric | Value |`)
   lines.push(`|--------|-------|`)
-  lines.push(`| nDCG@${result.k} | ${result.metrics['nDCG@10'].toFixed(4)} |`)
-  lines.push(`| MAP@${result.k} | ${result.metrics['MAP@10'].toFixed(4)} |`)
-  lines.push(`| Recall@${result.k} | ${result.metrics['Recall@10'].toFixed(4)} |`)
-  lines.push(`| Precision@${result.k} | ${result.metrics['Precision@10'].toFixed(4)} |`)
+  for (const [name, value] of Object.entries(result.metrics)) {
+    lines.push(`| ${name} | ${value.toFixed(4)} |`)
+  }
   lines.push('')
   lines.push(`**Corpus:** ${result.corpus.toLocaleString()} docs | **Queries:** ${result.queries} | **Mode:** ${result.mode}`)
   lines.push('')
@@ -63,10 +63,9 @@ export function printResults(result: BenchmarkResult): void {
   console.log(`  Mode:          ${result.mode}`)
   console.log()
   console.log('  ── Retrieval Scores ──')
-  console.log(`  nDCG@${result.k}:       ${result.metrics['nDCG@10'].toFixed(4)}`)
-  console.log(`  MAP@${result.k}:        ${result.metrics['MAP@10'].toFixed(4)}`)
-  console.log(`  Recall@${result.k}:     ${result.metrics['Recall@10'].toFixed(4)}`)
-  console.log(`  Precision@${result.k}:  ${result.metrics['Precision@10'].toFixed(4)}`)
+  for (const [name, value] of Object.entries(result.metrics)) {
+    console.log(`  ${name.padEnd(14)} ${value.toFixed(4)}`)
+  }
   console.log()
   console.log('  ── Timing ──')
   if (result.timing.ingestionSeconds != null) {

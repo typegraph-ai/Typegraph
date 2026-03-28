@@ -26,7 +26,7 @@ jobs:
         id: parse
         shell: bash
         run: |
-          DATASETS="nfcorpus australian-tax-guidance-retrieval contractual-clause-retrieval license-tldr-retrieval mleb-scalr legal-rag-bench"
+          DATASETS="nfcorpus australian-tax-guidance-retrieval contractual-clause-retrieval license-tldr-retrieval mleb-scalr legal-rag-bench multihop-rag"
           VARIANTS="core neural"
 
           ENTRIES=()
@@ -222,7 +222,7 @@ jobs:
               console.log('No baselines.json found for ' + dataset);
             }
 
-            const metricNames = ['nDCG@10', 'MAP@10', 'Recall@10', 'Precision@10'];
+            const metricNames = Object.keys(m).filter(k => typeof m[k] === 'number');
             const baselineCols = baselines.filter(b => b.metrics['nDCG@10'] != null).slice(0, 3);
 
             // Process each result (hybrid + fast)
@@ -422,18 +422,29 @@ jobs:
               return;
             }
 
+            // Collect all metric names across all results
+            const allMetricNames = new Set();
+            for (const r of results) {
+              for (const k of Object.keys(r.metrics)) allMetricNames.add(k);
+            }
+            const metricCols = [...allMetricNames];
+
             const rows = results.map(r => {
               const m = r.metrics;
               const t = r.timing;
               const mode = r.mode || 'hybrid';
-              return `| ${r.dataset} | ${r.variant} | ${mode} | ${m['nDCG@10'].toFixed(4)} | ${m['MAP@10'].toFixed(4)} | ${m['Recall@10'].toFixed(4)} | ${m['Precision@10'].toFixed(4)} | ${t.avgQueryMs.toFixed(1)}ms |`;
+              const metricVals = metricCols.map(k => m[k] != null ? m[k].toFixed(4) : '—').join(' | ');
+              return `| ${r.dataset} | ${r.variant} | ${mode} | ${metricVals} | ${t.avgQueryMs.toFixed(1)}ms |`;
             });
+
+            const metricHeaders = metricCols.join(' | ');
+            const metricSeparators = metricCols.map(() => '------').join(' | ');
 
             const body = [
               '## Benchmark Results Summary',
               '',
-              '| Dataset | Variant | Mode | nDCG@10 | MAP@10 | Recall@10 | P@10 | Avg Query |',
-              '|---------|---------|------|---------|--------|-----------|------|-----------|',
+              `| Dataset | Variant | Mode | ${metricHeaders} | Avg Query |`,
+              `|---------|---------|------|${metricSeparators}|-----------|`,
               ...rows,
               '',
               `Commit: ${context.sha.slice(0, 7)} | [Workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,

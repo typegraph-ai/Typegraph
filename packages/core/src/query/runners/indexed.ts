@@ -21,6 +21,7 @@ export class IndexedRunner {
     vectorOnly?: boolean
   ): Promise<NormalizedResult[]> {
     const allResults: NormalizedResult[] = []
+    const fetchCount = count * 3
 
     for (const [modelId, group] of sourcesByModel) {
       const queryEmbedding = await group.embedding.embed(text)
@@ -33,7 +34,7 @@ export class IndexedRunner {
       // Prefer searchWithDocuments if available and documentFilter is set
       if (this.adapter.searchWithDocuments && documentFilter) {
         const chunks = await this.adapter.searchWithDocuments(modelId, queryEmbedding, text, {
-          count,
+          count: fetchCount,
           filter,
           documentFilter,
         })
@@ -75,8 +76,8 @@ export class IndexedRunner {
       } else {
         // Fall back to standard hybrid/vector search (or vector-only in fast mode)
         const chunks = (!vectorOnly && this.adapter.hybridSearch)
-          ? await this.adapter.hybridSearch(modelId, queryEmbedding, text, { count, filter })
-          : await this.adapter.search(modelId, queryEmbedding, { count, filter })
+          ? await this.adapter.hybridSearch(modelId, queryEmbedding, text, { count: fetchCount, filter })
+          : await this.adapter.search(modelId, queryEmbedding, { count: fetchCount, filter })
 
         for (const chunk of chunks) {
           if (group.bucketIds.length > 1 && !group.bucketIds.includes(chunk.bucketId)) {
@@ -108,6 +109,17 @@ export class IndexedRunner {
       }
     }
 
-    return allResults
+    // Document-level dedup: keep highest-scoring chunk per document
+    const docBest = new Map<string, NormalizedResult>()
+    for (const r of allResults) {
+      const existing = docBest.get(r.documentId)
+      if (!existing || r.normalizedScore > existing.normalizedScore) {
+        docBest.set(r.documentId, r)
+      }
+    }
+
+    return [...docBest.values()]
+      .sort((a, b) => b.normalizedScore - a.normalizedScore)
+      .slice(0, count)
   }
 }

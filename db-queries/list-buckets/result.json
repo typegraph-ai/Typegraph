@@ -1,0 +1,6 @@
+{
+  "status": "ok",
+  "query": "SELECT id, name, created_at FROM d8um_buckets ORDER BY created_at",
+  "rows": 5,
+  "output": "id,name,created_at\n304c888a-debd-40b1-9025-845674972b70,nfcorpus,2026-03-28 02:08:23.272831+00\n785b3595-580f-4451-bc8d-1a934b598b20,legal-rag-bench,2026-03-28 02:20:52.975787+00\n2c119c78-3318-4801-8041-9f755e680dec,license-tldr,2026-03-28 02:41:08.317397+00\nf8ae6099-d491-40e9-98f9-4e908c06cbaa,license-tldr-neural,2026-03-28 05:19:04.193735+00\nb50ecd0f-b30b-4921-96c5-fafe221b4301,au-tax-guidance-neural,2026-03-28 05:57:48.464694+00"
+}

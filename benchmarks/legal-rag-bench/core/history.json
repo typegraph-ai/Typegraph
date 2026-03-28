@@ -34,5 +34,41 @@
       "chunkOverlap": 64,
       "includesFootnotes": true
     }
+  },
+  {
+    "commit": "557d711",
+    "date": "2026-03-28",
+    "metrics": {
+      "nDCG@10": 0.28941613756213513,
+      "MAP@10": 0.2493730158730159,
+      "Recall@10": 0.42,
+      "Precision@10": 0.04427777777777778
+    },
+    "avgQueryMs": 808.3,
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "chunkSize": 512,
+      "chunkOverlap": 64,
+      "includesFootnotes": true
+    }
+  },
+  {
+    "commit": "a56ffb1",
+    "date": "2026-03-28",
+    "metrics": {
+      "nDCG@10": 0.2771843879639637,
+      "MAP@10": 0.24166666666666667,
+      "Recall@10": 0.39,
+      "Precision@10": 0.052523809523809535
+    },
+    "avgQueryMs": 381.7,
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "chunkSize": 512,
+      "chunkOverlap": 64,
+      "includesFootnotes": false
+    }
   }
 ]

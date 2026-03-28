@@ -27,7 +27,7 @@ import { gateway } from '@ai-sdk/gateway'
 import { neon } from '@neondatabase/serverless'
 import { createBenchmarkAdapter } from '../../lib/adapter.js'
 import { loadCorpus, loadQueries, loadQrels, buildQrelsMap } from '../../lib/datasets.js'
-import { scoreAllQueries } from '../../lib/metrics.js'
+import { scoreAllQueries, deduplicateToDocuments } from '../../lib/metrics.js'
 import { printResults, type BenchmarkResult } from '../../lib/report.js'
 
 // ── Configuration ──
@@ -39,9 +39,10 @@ const TABLE_PREFIX = 'bench_license_neural_'
 const EMBEDDING_MODEL = 'openai/text-embedding-3-small'
 const EMBEDDING_DIMS = 1536
 const LLM_MODEL = 'google/gemini-3.1-flash-lite-preview'
-const CHUNK_SIZE = 512
-const CHUNK_OVERLAP = 64
+const CHUNK_SIZE = 2048
+const CHUNK_OVERLAP = 256
 const K = 10
+const QUERY_FETCH = K * 5
 
 const shouldSeed = process.argv.includes('--seed')
 
@@ -81,6 +82,7 @@ async function main() {
     entitiesTable: `${TABLE_PREFIX}entities`,
     edgesTable: `${TABLE_PREFIX}edges`,
   })
+  await memoryStore.initialize()
 
   const graph = createGraphBridge({
     memoryStore,
@@ -229,17 +231,11 @@ async function main() {
 
     const response = await d.query(queryText, {
       mode: 'neural',
-      count: K,
+      count: QUERY_FETCH,
       buckets: [bucket!.id],
     })
 
-    const retrievedIds = response.results
-      .map(r => r.metadata['corpusId'] as string)
-      
-      .filter(Boolean)
-      .filter((id, i, arr) => arr.indexOf(id) === i)
-
-    allResults.set(queryId, retrievedIds)
+    allResults.set(queryId, deduplicateToDocuments(response.results, K))
 
     queriesDone++
     if (queriesDone % 20 === 0 || queriesDone === testQueries.length) {

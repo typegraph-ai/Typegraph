@@ -168,11 +168,14 @@ export class IndexEngine {
           indexedAt: new Date(),
         }))
 
-        // Extract triples for entity graph (non-blocking)
+        // Extract triples for entity graph — await before hash store write
+        // to ensure graph state is persisted before marking document as processed
         if (this.tripleExtractor && !dryRun) {
-          for (const chunk of chunks) {
-            this.tripleExtractor.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex).catch(() => {})
-          }
+          await Promise.allSettled(
+            chunks.map(chunk =>
+              this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex)
+            )
+          )
         }
 
         if (!dryRun) {
@@ -304,11 +307,13 @@ export class IndexEngine {
         indexedAt: new Date(),
       }))
 
-      // Extract triples for entity graph (non-blocking)
+      // Extract triples for entity graph — await before hash store write
       if (this.tripleExtractor && !dryRun) {
-        for (const chunk of chunks) {
-          this.tripleExtractor.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex).catch(() => {})
-        }
+        await Promise.allSettled(
+          chunks.map(chunk =>
+            this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex)
+          )
+        )
       }
 
       if (!dryRun) {
@@ -466,10 +471,13 @@ export class IndexEngine {
         indexedAt: new Date(),
       }))
 
+      // Extract triples for entity graph — await before hash store write
       if (this.tripleExtractor && !dryRun) {
-        for (const chunk of chunks) {
-          this.tripleExtractor.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex).catch(() => {})
-        }
+        await Promise.allSettled(
+          chunks.map(chunk =>
+            this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex)
+          )
+        )
       }
 
       if (!dryRun) {

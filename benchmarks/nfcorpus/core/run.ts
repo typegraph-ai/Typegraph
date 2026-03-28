@@ -1,28 +1,23 @@
 #!/usr/bin/env npx tsx
 /**
- * NFCorpus Benchmark — d8um Core (Hybrid Search)
+ * NFCorpus Benchmark — d8um Core (Hybrid + Fast)
  *
  * Runs the full BEIR NFCorpus benchmark (3,633 docs, 323 queries)
- * using d8um core with hybrid search (vector + BM25, RRF fusion).
- *
- * Uses Neon Postgres (pgvector) for persistent storage and
- * Vercel Blob for cached dataset downloads.
+ * using d8um core with both hybrid search and fast (pure vector) search.
  *
  * Required env vars:
- *   NEON_DATABASE_URL       — Neon Postgres connection string
- *   AI_GATEWAY_API_KEY      — AI Gateway API key (embeddings)
- *   BLOB_READ_WRITE_TOKEN   — Vercel Blob token (dataset download)
+ *   NEON_DATABASE_URL, AI_GATEWAY_API_KEY, BLOB_READ_WRITE_TOKEN
  *
  * Usage:
- *   npx tsx nfcorpus/core/run.ts           # query-only (uses existing index)
- *   npx tsx nfcorpus/core/run.ts --seed    # re-index corpus, then query
+ *   npx tsx nfcorpus/core/run.ts           # query-only
+ *   npx tsx nfcorpus/core/run.ts --seed    # re-index
  */
 
 import { d8umCreate } from '@d8um/core'
 import { gateway } from '@ai-sdk/gateway'
 import { createBenchmarkAdapter } from '../../lib/adapter.js'
 import { loadCorpus, loadQueries, loadQrels, buildQrelsMap } from '../../lib/datasets.js'
-import { scoreAllQueries } from '../../lib/metrics.js'
+import { scoreAllQueries, deduplicateToDocuments } from '../../lib/metrics.js'
 import { printResults, type BenchmarkResult } from '../../lib/report.js'
 
 // ── Configuration ──
@@ -32,9 +27,10 @@ const BUCKET_NAME = 'nfcorpus'
 const TABLE_PREFIX = 'bench_nfcorpus_core_'
 const EMBEDDING_MODEL = 'openai/text-embedding-3-small'
 const EMBEDDING_DIMS = 1536
-const CHUNK_SIZE = 512
-const CHUNK_OVERLAP = 64
+const CHUNK_SIZE = 2048
+const CHUNK_OVERLAP = 256
 const K = 10
+const QUERY_FETCH = K * 5
 
 const shouldSeed = process.argv.includes('--seed')
 
@@ -44,15 +40,13 @@ async function main() {
   const totalStart = performance.now()
 
   console.log('╔══════════════════════════════════════════════════════╗')
-  console.log('║  NFCorpus Benchmark — d8um Core (Hybrid Search)      ║')
+  console.log('║  NFCorpus Benchmark — d8um Core (Hybrid + Fast)      ║')
   console.log('╚══════════════════════════════════════════════════════╝')
   console.log()
   console.log(`  Mode: ${shouldSeed ? 'seed + query' : 'query-only (use --seed to re-index)'}`)
   console.log()
 
-  // ── Phase 1: Initialize d8um with Neon pgvector ──
   console.log('Phase 1: Initializing d8um with Neon pgvector...')
-
   const adapter = createBenchmarkAdapter(TABLE_PREFIX)
   const d = await d8umCreate({
     vectorStore: adapter,
@@ -62,10 +56,8 @@ async function main() {
     },
   })
 
-  // Find or create bucket
   const existingBuckets = await d.buckets.list()
   let bucket = existingBuckets.find(b => b.name === BUCKET_NAME)
-
   if (bucket && !shouldSeed) {
     console.log(`  Using existing bucket: ${bucket.name} (${bucket.id})`)
   } else if (bucket && shouldSeed) {
@@ -75,9 +67,7 @@ async function main() {
   }
   console.log()
 
-  // ── Phase 2: Load Dataset from Vercel Blob ──
   console.log('Phase 2: Loading NFCorpus from Vercel Blob...')
-
   const [corpus, queries, qrels] = await Promise.all([
     loadCorpus(DATASET),
     loadQueries(DATASET),
@@ -89,7 +79,6 @@ async function main() {
   console.log(`  Test queries with relevance judgments: ${testQueries.length}`)
   console.log()
 
-  // ── Phase 3: Ingest (if needed) ──
   let ingestDuration: number | undefined
 
   if (!bucket || shouldSeed) {
@@ -118,8 +107,7 @@ async function main() {
         const title = String(doc['title'] ?? '')
         const text = String(doc['text'] ?? '')
         return {
-          id: docId,
-          title,
+          id: docId, title,
           content: title ? `${title}\n\n${text}` : text,
           updatedAt: new Date(),
           metadata: { corpusId: docId },
@@ -127,14 +115,8 @@ async function main() {
       })
 
       const result = await d.ingest(
-        bucket.id,
-        docs,
-        {
-          chunkSize: CHUNK_SIZE,
-          chunkOverlap: CHUNK_OVERLAP,
-          deduplicateBy: ['content'],
-          propagateMetadata: ['metadata.corpusId'],
-        },
+        bucket.id, docs,
+        { chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP, deduplicateBy: ['content'], propagateMetadata: ['metadata.corpusId'] },
       )
 
       ingested += batch.length
@@ -159,79 +141,58 @@ async function main() {
   }
   console.log()
 
-  // ── Phase 4: Run Queries ──
-  console.log(`Phase 4: Running ${testQueries.length} queries (mode: hybrid)...`)
-  const queryStart = performance.now()
+  // ── Query in both modes ──
+  const modes = ['hybrid', 'fast'] as const
+  const benchResults: BenchmarkResult[] = []
+  let phaseNum = 4
 
-  const allResults = new Map<string, string[]>()
-  let queriesDone = 0
+  for (const mode of modes) {
+    console.log(`Phase ${phaseNum}: Running ${testQueries.length} queries (mode: ${mode})...`)
+    const queryStart = performance.now()
+    const allResults = new Map<string, string[]>()
+    let queriesDone = 0
 
-  for (const query of testQueries) {
-    const queryId = String(query['_id'])
-    const queryText = String(query['text'])
+    for (const query of testQueries) {
+      const queryId = String(query['_id'])
+      const response = await d.query(String(query['text']), {
+        mode, count: QUERY_FETCH, buckets: [bucket!.id],
+      })
+      allResults.set(queryId, deduplicateToDocuments(response.results, K))
+      queriesDone++
+      if (queriesDone % 50 === 0 || queriesDone === testQueries.length) {
+        process.stdout.write(`\r  Queries: ${queriesDone}/${testQueries.length}`)
+      }
+    }
 
-    const response = await d.query(queryText, {
-      mode: 'hybrid',
-      count: K,
-      buckets: [bucket!.id],
+    const queryDuration = (performance.now() - queryStart) / 1000
+    const avgQueryMs = (queryDuration * 1000) / testQueries.length
+    console.log(`\n  Queries complete: ${queryDuration.toFixed(1)}s (avg ${avgQueryMs.toFixed(1)}ms/query)`)
+
+    phaseNum++
+    console.log(`Phase ${phaseNum}: Computing IR metrics (${mode})...`)
+    const { metrics, scored } = scoreAllQueries(allResults, qrelsMap, K)
+
+    benchResults.push({
+      benchmark: 'NFCorpus (BEIR)',
+      dataset: DATASET, mode, variant: 'core',
+      corpus: corpus.length, queries: scored, k: K, metrics,
+      timing: {
+        ingestionSeconds: mode === 'hybrid' && ingestDuration ? Number(ingestDuration.toFixed(1)) : undefined,
+        avgQueryMs: Number(avgQueryMs.toFixed(1)),
+        totalSeconds: Number(((performance.now() - totalStart) / 1000).toFixed(1)),
+      },
+      config: { embedding: EMBEDDING_MODEL, embeddingDims: EMBEDDING_DIMS, chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP, queryFetch: QUERY_FETCH },
     })
 
-    const retrievedIds = response.results
-      .map(r => r.metadata['corpusId'] as string)
-      .filter(Boolean)
-      .filter((id, i, arr) => arr.indexOf(id) === i)
-
-    allResults.set(queryId, retrievedIds)
-
-    queriesDone++
-    if (queriesDone % 50 === 0 || queriesDone === testQueries.length) {
-      process.stdout.write(`\r  Queries: ${queriesDone}/${testQueries.length}`)
-    }
+    printResults(benchResults[benchResults.length - 1]!)
+    phaseNum++
+    console.log()
   }
-
-  const queryDuration = (performance.now() - queryStart) / 1000
-  const avgQueryMs = (queryDuration * 1000) / testQueries.length
-  console.log(`\n  Queries complete: ${queryDuration.toFixed(1)}s (avg ${avgQueryMs.toFixed(1)}ms/query)`)
-  console.log()
-
-  // ── Phase 5: Score ──
-  console.log('Phase 5: Computing IR metrics...')
-
-  const { metrics, scored } = scoreAllQueries(allResults, qrelsMap, K)
-  const totalDuration = (performance.now() - totalStart) / 1000
-
-  // ── Phase 6: Results ──
-  const result: BenchmarkResult = {
-    benchmark: 'NFCorpus (BEIR)',
-    dataset: DATASET,
-    mode: 'hybrid',
-    variant: 'core',
-    corpus: corpus.length,
-    queries: scored,
-    k: K,
-    metrics,
-    timing: {
-      ingestionSeconds: ingestDuration ? Number(ingestDuration.toFixed(1)) : undefined,
-      avgQueryMs: Number(avgQueryMs.toFixed(1)),
-      totalSeconds: Number(totalDuration.toFixed(1)),
-    },
-    config: {
-      embedding: EMBEDDING_MODEL,
-      embeddingDims: EMBEDDING_DIMS,
-      chunkSize: CHUNK_SIZE,
-      chunkOverlap: CHUNK_OVERLAP,
-    },
-  }
-
-  printResults(result)
 
   console.log('---BENCH_RESULT_JSON---')
-  console.log(JSON.stringify(result, null, 2))
+  console.log(JSON.stringify(benchResults, null, 2))
   console.log('---END_BENCH_RESULT_JSON---')
   console.log('══════════════════════════════════════════════════════')
 }
 
-main().catch(err => {
-  console.error('Benchmark failed:', err)
-  process.exit(1)
-})
+main().catch(err => { console.error('Benchmark failed:', err); process.exit(1) })

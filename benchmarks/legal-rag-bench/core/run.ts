@@ -1,9 +1,9 @@
 #!/usr/bin/env npx tsx
 /**
- * Legal RAG Bench — d8um Core (Hybrid Search)
+ * Legal RAG Bench — d8um Core (Hybrid + Fast)
  *
  * Runs the isaacus/legal-rag-bench benchmark (4,876 passages, 100 questions)
- * using d8um core with hybrid search (vector + BM25, RRF fusion).
+ * using d8um core with both hybrid search and fast (pure vector) search.
  *
  * This dataset uses a custom format (not BEIR):
  * - Corpus: Victorian Criminal Charge Book passages with footnotes
@@ -21,7 +21,7 @@ import { d8umCreate } from '@d8um/core'
 import { gateway } from '@ai-sdk/gateway'
 import { createBenchmarkAdapter } from '../../lib/adapter.js'
 import { loadLegalRagCorpus, loadLegalRagQa, buildLegalRagQrelsMap } from '../../lib/datasets.js'
-import { scoreAllQueries } from '../../lib/metrics.js'
+import { scoreAllQueries, deduplicateToDocuments } from '../../lib/metrics.js'
 import { printResults, type BenchmarkResult } from '../../lib/report.js'
 
 // ── Configuration ──
@@ -30,9 +30,10 @@ const BUCKET_NAME = 'legal-rag-bench'
 const TABLE_PREFIX = 'bench_legalrag_core_'
 const EMBEDDING_MODEL = 'openai/text-embedding-3-small'
 const EMBEDDING_DIMS = 1536
-const CHUNK_SIZE = 512
-const CHUNK_OVERLAP = 64
+const CHUNK_SIZE = 2048
+const CHUNK_OVERLAP = 256
 const K = 10
+const QUERY_FETCH = K * 5
 
 const shouldSeed = process.argv.includes('--seed')
 
@@ -42,7 +43,7 @@ async function main() {
   const totalStart = performance.now()
 
   console.log('╔══════════════════════════════════════════════════════════════╗')
-  console.log('║  Legal RAG Bench — d8um Core (Hybrid Search)                ║')
+  console.log('║  Legal RAG Bench — d8um Core (Hybrid + Fast)                ║')
   console.log('╚══════════════════════════════════════════════════════════════╝')
   console.log()
   console.log(`  Mode: ${shouldSeed ? 'seed + query' : 'query-only (use --seed to re-index)'}`)
@@ -142,84 +143,63 @@ async function main() {
   }
   console.log()
 
-  console.log(`Phase 4: Running ${qa.length} queries (mode: hybrid)...`)
-  const queryStart = performance.now()
-  const allResults = new Map<string, string[]>()
-  let queriesDone = 0
-  let totalRetrieved = 0
-  let totalWithCorpusId = 0
-  let debugInfo: Record<string, unknown> | undefined
+  // ── Query in both modes ──
+  const modes = ['hybrid', 'fast'] as const
+  const benchResults: BenchmarkResult[] = []
+  let phaseNum = 4
 
-  for (const q of qa) {
-    const queryId = String(q.id)
+  for (const mode of modes) {
+    console.log(`Phase ${phaseNum}: Running ${qa.length} queries (mode: ${mode})...`)
+    const queryStart = performance.now()
+    const allResults = new Map<string, string[]>()
+    let queriesDone = 0
 
-    const response = await d.query(q.question, {
-      mode: 'hybrid', count: K, buckets: [bucket!.id],
-    })
+    for (const q of qa) {
+      const queryId = String(q.id)
+      const response = await d.query(q.question, {
+        mode, count: QUERY_FETCH, buckets: [bucket!.id],
+      })
 
-    const retrievedIds = response.results
-      .map(r => r.metadata['corpusId'] as string)
-      
-      .filter(Boolean)
-      .filter((id, i, arr) => arr.indexOf(id) === i)
+      allResults.set(queryId, deduplicateToDocuments(response.results, K))
 
-    totalRetrieved += response.results.length
-    totalWithCorpusId += retrievedIds.length
-
-    // Capture first query diagnostics for the result JSON
-    if (queriesDone === 0) {
-      const r0 = response.results[0]
-      debugInfo = {
-        firstQuery: q.question.slice(0, 120),
-        expectedRelevantId: q.relevant_passage_id,
-        resultsReturned: response.results.length,
-        resultsWithCorpusId: retrievedIds.length,
-        retrievedIds: retrievedIds.slice(0, 5),
-        firstResultMetadata: r0 ? r0.metadata : null,
-        firstResultContent: r0 ? r0.content?.slice(0, 150) : null,
-        warnings: response.warnings ?? [],
+      queriesDone++
+      if (queriesDone % 20 === 0 || queriesDone === qa.length) {
+        process.stdout.write(`\r  Queries: ${queriesDone}/${qa.length}`)
       }
     }
 
-    allResults.set(queryId, retrievedIds)
+    const queryDuration = (performance.now() - queryStart) / 1000
+    const avgQueryMs = (queryDuration * 1000) / qa.length
+    console.log(`\n  Queries complete: ${queryDuration.toFixed(1)}s (avg ${avgQueryMs.toFixed(1)}ms/query)`)
 
-    queriesDone++
-    if (queriesDone % 20 === 0 || queriesDone === qa.length) {
-      process.stdout.write(`\r  Queries: ${queriesDone}/${qa.length}`)
-    }
+    phaseNum++
+    console.log(`Phase ${phaseNum}: Computing IR metrics (${mode})...`)
+    const { metrics, scored } = scoreAllQueries(allResults, qrelsMap, K)
+
+    benchResults.push({
+      benchmark: 'Legal RAG Bench (isaacus)',
+      dataset: 'legal-rag-bench',
+      mode, variant: 'core',
+      corpus: corpus.length, queries: scored, k: K, metrics,
+      timing: {
+        ingestionSeconds: mode === 'hybrid' && ingestDuration ? Number(ingestDuration.toFixed(1)) : undefined,
+        avgQueryMs: Number(avgQueryMs.toFixed(1)),
+        totalSeconds: Number(((performance.now() - totalStart) / 1000).toFixed(1)),
+      },
+      config: {
+        embedding: EMBEDDING_MODEL, embeddingDims: EMBEDDING_DIMS,
+        chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP,
+        includesFootnotes: true, queryFetch: QUERY_FETCH,
+      },
+    })
+
+    printResults(benchResults[benchResults.length - 1]!)
+    phaseNum++
+    console.log()
   }
-
-  const queryDuration = (performance.now() - queryStart) / 1000
-  const avgQueryMs = (queryDuration * 1000) / qa.length
-  console.log(`\n  Queries complete: ${queryDuration.toFixed(1)}s (avg ${avgQueryMs.toFixed(1)}ms/query)`)
-  console.log(`  Total results returned: ${totalRetrieved}, with corpusId: ${totalWithCorpusId}`)
-  console.log()
-
-  console.log('Phase 5: Computing IR metrics...')
-  const { metrics, scored } = scoreAllQueries(allResults, qrelsMap, K)
-  const totalDuration = (performance.now() - totalStart) / 1000
-
-  const result: BenchmarkResult = {
-    benchmark: 'Legal RAG Bench (isaacus)',
-    dataset: 'legal-rag-bench',
-    mode: 'hybrid', variant: 'core',
-    corpus: corpus.length, queries: scored, k: K, metrics,
-    timing: {
-      ingestionSeconds: ingestDuration ? Number(ingestDuration.toFixed(1)) : undefined,
-      avgQueryMs: Number(avgQueryMs.toFixed(1)),
-      totalSeconds: Number(totalDuration.toFixed(1)),
-    },
-    config: {
-      embedding: EMBEDDING_MODEL, embeddingDims: EMBEDDING_DIMS,
-      chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP,
-      includesFootnotes: true,
-    },
-  }
-
-  printResults(result)
 
   console.log('---BENCH_RESULT_JSON---')
-  console.log(JSON.stringify(result, null, 2))
+  console.log(JSON.stringify(benchResults, null, 2))
   console.log('---END_BENCH_RESULT_JSON---')
   console.log('══════════════════════════════════════════════════════')
 }

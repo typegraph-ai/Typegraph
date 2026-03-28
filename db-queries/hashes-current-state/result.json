@@ -1,0 +1,6 @@
+{
+  "status": "ok",
+  "query": "SELECT bucket_id, COUNT(*) AS cnt FROM d8um_hashes GROUP BY bucket_id ORDER BY cnt DESC",
+  "rows": 4,
+  "output": "bucket_id,cnt\n785b3595-580f-4451-bc8d-1a934b598b20,6763\n304c888a-debd-40b1-9025-845674972b70,822\nb50ecd0f-b30b-4921-96c5-fafe221b4301,105\n2c119c78-3318-4801-8041-9f755e680dec,65"
+}

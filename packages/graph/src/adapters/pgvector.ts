@@ -124,9 +124,22 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   }
 
   async initialize(): Promise<void> {
-    await this.sql(MEMORIES_DDL(this.memoriesTable))
-    await this.sql(ENTITIES_DDL(this.entitiesTable))
-    await this.sql(EDGES_DDL(this.edgesTable))
+    // Neon cannot execute multi-statement prepared statements,
+    // so split each DDL block on semicolons and execute individually.
+    const allDdl = [
+      MEMORIES_DDL(this.memoriesTable),
+      ENTITIES_DDL(this.entitiesTable),
+      EDGES_DDL(this.edgesTable),
+    ]
+    for (const ddl of allDdl) {
+      const statements = ddl
+        .split(';')
+        .map(s => s.trim())
+        .filter(s => s.length > 0)
+      for (const stmt of statements) {
+        await this.sql(stmt)
+      }
+    }
   }
 
   // ── CRUD ──

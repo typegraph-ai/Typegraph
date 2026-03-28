@@ -1,0 +1,6 @@
+{
+  "status": "ok",
+  "query": "SELECT 'chunks' AS metric, COUNT(*) AS count FROM bench_legalrag_core__gateway_openai_text_embedding_3_small\nUNION ALL\nSELECT 'distinct_document_ids', COUNT(DISTINCT document_id) FROM bench_legalrag_core__gateway_openai_text_embedding_3_small\nUNION ALL\nSELECT 'documents_in_bucket', COUNT(*) FROM d8um_documents WHERE bucket_id = '785b3595-580f-4451-bc8d-1a934b598b20';",
+  "rows": 3,
+  "output": "metric,count\nchunks,4859\ndistinct_document_ids,4859\ndocuments_in_bucket,0"
+}

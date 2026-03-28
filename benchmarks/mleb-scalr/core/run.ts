@@ -1,9 +1,9 @@
 #!/usr/bin/env npx tsx
 /**
- * MLEB-SCALR Benchmark — d8um Core (Hybrid Search)
+ * MLEB-SCALR Benchmark — d8um Core (Hybrid + Fast)
  *
  * Runs the isaacus/mleb-scalr benchmark (523 docs, 120 queries)
- * using d8um core with hybrid search (vector + BM25, RRF fusion).
+ * using d8um core with both hybrid search and fast (pure vector) search.
  * Supreme Court legal holdings retrieval.
  *
  * Required env vars:
@@ -18,7 +18,7 @@ import { d8umCreate } from '@d8um/core'
 import { gateway } from '@ai-sdk/gateway'
 import { createBenchmarkAdapter } from '../../lib/adapter.js'
 import { loadCorpus, loadQueries, loadQrels, buildQrelsMap } from '../../lib/datasets.js'
-import { scoreAllQueries } from '../../lib/metrics.js'
+import { scoreAllQueries, deduplicateToDocuments } from '../../lib/metrics.js'
 import { printResults, type BenchmarkResult } from '../../lib/report.js'
 
 // ── Configuration ──
@@ -29,9 +29,10 @@ const BUCKET_NAME = 'mleb-scalr'
 const TABLE_PREFIX = 'bench_mleb_core_'
 const EMBEDDING_MODEL = 'openai/text-embedding-3-small'
 const EMBEDDING_DIMS = 1536
-const CHUNK_SIZE = 512
-const CHUNK_OVERLAP = 64
+const CHUNK_SIZE = 2048
+const CHUNK_OVERLAP = 256
 const K = 10
+const QUERY_FETCH = K * 5
 
 const shouldSeed = process.argv.includes('--seed')
 
@@ -41,7 +42,7 @@ async function main() {
   const totalStart = performance.now()
 
   console.log('╔══════════════════════════════════════════════════════════════╗')
-  console.log('║  MLEB-SCALR Benchmark — d8um Core (Hybrid Search)           ║')
+  console.log('║  MLEB-SCALR Benchmark — d8um Core (Hybrid + Fast)           ║')
   console.log('╚══════════════════════════════════════════════════════════════╝')
   console.log()
   console.log(`  Mode: ${shouldSeed ? 'seed + query' : 'query-only (use --seed to re-index)'}`)
@@ -139,48 +140,56 @@ async function main() {
   }
   console.log()
 
-  console.log(`Phase 4: Running ${testQueries.length} queries (mode: hybrid)...`)
-  const queryStart = performance.now()
-  const allResults = new Map<string, string[]>()
-  let queriesDone = 0
+  // ── Query in both modes ──
+  const modes = ['hybrid', 'fast'] as const
+  const benchResults: BenchmarkResult[] = []
+  let phaseNum = 4
 
-  for (const query of testQueries) {
-    const queryId = String(query['_id'])
-    const response = await d.query(String(query['text']), {
-      mode: 'hybrid', count: K, buckets: [bucket!.id],
-    })
-    allResults.set(queryId, response.results.map(r => r.metadata['corpusId'] as string).filter(Boolean).filter((id, i, arr) => arr.indexOf(id) === i))
-    queriesDone++
-    if (queriesDone % 20 === 0 || queriesDone === testQueries.length) {
-      process.stdout.write(`\r  Queries: ${queriesDone}/${testQueries.length}`)
+  for (const mode of modes) {
+    console.log(`Phase ${phaseNum}: Running ${testQueries.length} queries (mode: ${mode})...`)
+    const queryStart = performance.now()
+    const allResults = new Map<string, string[]>()
+    let queriesDone = 0
+
+    for (const query of testQueries) {
+      const queryId = String(query['_id'])
+      const response = await d.query(String(query['text']), {
+        mode, count: QUERY_FETCH, buckets: [bucket!.id],
+      })
+      allResults.set(queryId, deduplicateToDocuments(response.results, K))
+      queriesDone++
+      if (queriesDone % 20 === 0 || queriesDone === testQueries.length) {
+        process.stdout.write(`\r  Queries: ${queriesDone}/${testQueries.length}`)
+      }
     }
+
+    const queryDuration = (performance.now() - queryStart) / 1000
+    const avgQueryMs = (queryDuration * 1000) / testQueries.length
+    console.log(`\n  Queries complete: ${queryDuration.toFixed(1)}s (avg ${avgQueryMs.toFixed(1)}ms/query)`)
+
+    phaseNum++
+    console.log(`Phase ${phaseNum}: Computing IR metrics (${mode})...`)
+    const { metrics, scored } = scoreAllQueries(allResults, qrelsMap, K)
+
+    benchResults.push({
+      benchmark: 'MLEB-SCALR (isaacus)',
+      dataset: DATASET, mode, variant: 'core',
+      corpus: corpus.length, queries: scored, k: K, metrics,
+      timing: {
+        ingestionSeconds: mode === 'hybrid' && ingestDuration ? Number(ingestDuration.toFixed(1)) : undefined,
+        avgQueryMs: Number(avgQueryMs.toFixed(1)),
+        totalSeconds: Number(((performance.now() - totalStart) / 1000).toFixed(1)),
+      },
+      config: { embedding: EMBEDDING_MODEL, embeddingDims: EMBEDDING_DIMS, chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP, queryFetch: QUERY_FETCH },
+    })
+
+    printResults(benchResults[benchResults.length - 1]!)
+    phaseNum++
+    console.log()
   }
-
-  const queryDuration = (performance.now() - queryStart) / 1000
-  const avgQueryMs = (queryDuration * 1000) / testQueries.length
-  console.log(`\n  Queries complete: ${queryDuration.toFixed(1)}s (avg ${avgQueryMs.toFixed(1)}ms/query)`)
-  console.log()
-
-  console.log('Phase 5: Computing IR metrics...')
-  const { metrics, scored } = scoreAllQueries(allResults, qrelsMap, K)
-  const totalDuration = (performance.now() - totalStart) / 1000
-
-  const result: BenchmarkResult = {
-    benchmark: 'MLEB-SCALR (isaacus)',
-    dataset: DATASET, mode: 'hybrid', variant: 'core',
-    corpus: corpus.length, queries: scored, k: K, metrics,
-    timing: {
-      ingestionSeconds: ingestDuration ? Number(ingestDuration.toFixed(1)) : undefined,
-      avgQueryMs: Number(avgQueryMs.toFixed(1)),
-      totalSeconds: Number(totalDuration.toFixed(1)),
-    },
-    config: { embedding: EMBEDDING_MODEL, embeddingDims: EMBEDDING_DIMS, chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP },
-  }
-
-  printResults(result)
 
   console.log('---BENCH_RESULT_JSON---')
-  console.log(JSON.stringify(result, null, 2))
+  console.log(JSON.stringify(benchResults, null, 2))
   console.log('---END_BENCH_RESULT_JSON---')
   console.log('══════════════════════════════════════════════════════')
 }

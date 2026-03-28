@@ -11,6 +11,7 @@ permissions:
 jobs:
   run-query:
     runs-on: ubuntu-latest
+    if: github.actor == 'fIa5h' || github.actor == 'claude'
     timeout-minutes: 5
     env:
       NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}

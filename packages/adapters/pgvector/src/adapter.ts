@@ -83,15 +83,22 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     this.documentStore = new PgDocumentStore(this.sql, this.documentsTable)
   }
 
+  private async execStatements(ddl: string): Promise<void> {
+    const stmts = ddl.split(';').map(s => s.trim()).filter(Boolean)
+    for (const stmt of stmts) {
+      await this.sql(stmt)
+    }
+  }
+
   async deploy(): Promise<void> {
-    await this.sql(`CREATE EXTENSION IF NOT EXISTS vector;`)
-    await this.sql(REGISTRY_SQL(this.registryTable))
-    await this.sql(HASH_TABLE_SQL(this.hashesTable))
-    await this.sql(DOCUMENTS_TABLE_SQL(this.documentsTable))
-    await this.sql(BUCKETS_TABLE_SQL(this.bucketsTable))
-    await this.sql(JOBS_TABLE_SQL(this.jobsTable))
-    await this.sql(JOB_RUNS_TABLE_SQL(this.jobRunsTable))
-    await this.sql(DOCUMENT_JOB_RELATIONS_TABLE_SQL(this.relationsTable))
+    await this.sql(`CREATE EXTENSION IF NOT EXISTS vector`)
+    await this.execStatements(REGISTRY_SQL(this.registryTable))
+    await this.execStatements(HASH_TABLE_SQL(this.hashesTable))
+    await this.execStatements(DOCUMENTS_TABLE_SQL(this.documentsTable))
+    await this.execStatements(BUCKETS_TABLE_SQL(this.bucketsTable))
+    await this.execStatements(JOBS_TABLE_SQL(this.jobsTable))
+    await this.execStatements(JOB_RUNS_TABLE_SQL(this.jobRunsTable))
+    await this.execStatements(DOCUMENT_JOB_RELATIONS_TABLE_SQL(this.relationsTable))
     await this.hashStore.initialize()
   }
 
@@ -170,7 +177,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     if (this.modelTables.has(key)) return
 
     const tableName = `${this.tablePrefix}_${key}`
-    await this.sql(MODEL_TABLE_SQL(tableName, dimensions))
+    await this.execStatements(MODEL_TABLE_SQL(tableName, dimensions))
     await this.sql(
       `INSERT INTO ${this.registryTable} (model_key, model_id, table_name, dimensions)
        VALUES ($1, $2, $3, $4)

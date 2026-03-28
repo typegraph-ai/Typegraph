@@ -1,0 +1,107 @@
+name: DB Inspect
+
+on:
+  push:
+    paths:
+      - 'db-queries/**/query.sql'
+
+jobs:
+  run-query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 2
+
+      - name: Find new query files
+        id: find
+        run: |
+          # Find query.sql files added/modified in the latest commit
+          QUERIES=$(git diff --name-only HEAD~1 HEAD -- 'db-queries/**/query.sql' 2>/dev/null || echo "")
+          if [ -z "$QUERIES" ]; then
+            echo "No new query files found"
+            echo "has_queries=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_queries=true" >> "$GITHUB_OUTPUT"
+            # Save as JSON array for iteration
+            echo "$QUERIES" | jq -R -s -c 'split("\n") | map(select(. != ""))' > /tmp/query-files.json
+            echo "files=$(cat /tmp/query-files.json)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install psql
+        if: steps.find.outputs.has_queries == 'true'
+        run: sudo apt-get update -qq && sudo apt-get install -yqq postgresql-client > /dev/null 2>&1
+
+      - name: Execute queries and write results
+        if: steps.find.outputs.has_queries == 'true'
+        run: |
+          FILES='${{ steps.find.outputs.files }}'
+          echo "$FILES" | jq -r '.[]' | while read -r QUERY_FILE; do
+            DIR=$(dirname "$QUERY_FILE")
+            RESULT_FILE="$DIR/result.json"
+
+            echo "=== Running: $QUERY_FILE ==="
+            SQL=$(cat "$QUERY_FILE")
+            echo "$SQL"
+            echo "---"
+
+            # Run query, output as JSON rows
+            # Use \t as a format that psql can output, then wrap in JSON
+            RESULT=$(psql "$NEON_DATABASE_URL" -t -A -F $'\t' -c "$SQL" 2>&1) || true
+            EXIT_CODE=$?
+
+            # Get column names
+            COLUMNS=$(psql "$NEON_DATABASE_URL" -t -A -F $'\t' -c "
+              SELECT string_agg(column_name, E'\t')
+              FROM (
+                SELECT column_name FROM information_schema.columns
+                WHERE false
+              ) sub
+            " 2>/dev/null || echo "")
+
+            # Build result JSON
+            if [ $EXIT_CODE -ne 0 ] || echo "$RESULT" | grep -qi "error\|fatal"; then
+              # Check if it's actually an error or just empty results
+              if echo "$RESULT" | grep -qi "ERROR\|FATAL"; then
+                jq -n --arg sql "$SQL" --arg error "$RESULT" \
+                  '{status: "error", query: $sql, error: $error}' > "$RESULT_FILE"
+              else
+                # Might just be empty result, try JSON output
+                psql "$NEON_DATABASE_URL" -c "\\pset format csv" -c "$SQL" > /tmp/csv_out.csv 2>/tmp/csv_err.txt || true
+                if [ -s /tmp/csv_err.txt ] && grep -qi "ERROR" /tmp/csv_err.txt; then
+                  jq -n --arg sql "$SQL" --arg error "$(cat /tmp/csv_err.txt)" \
+                    '{status: "error", query: $sql, error: $error}' > "$RESULT_FILE"
+                else
+                  jq -n --arg sql "$SQL" --arg output "$RESULT" \
+                    '{status: "ok", query: $sql, rows: 0, output: $output}' > "$RESULT_FILE"
+                fi
+              fi
+            else
+              # Success — use psql CSV output for structured data
+              ROW_COUNT=$(echo "$RESULT" | grep -c '.' || echo "0")
+              CSV_OUTPUT=$(psql "$NEON_DATABASE_URL" --csv -c "$SQL" 2>/dev/null) || CSV_OUTPUT=""
+              jq -n --arg sql "$SQL" --argjson rows "$ROW_COUNT" --arg output "$CSV_OUTPUT" \
+                '{status: "ok", query: $sql, rows: $rows, output: $output}' > "$RESULT_FILE"
+            fi
+
+            echo "Result written to $RESULT_FILE"
+            cat "$RESULT_FILE"
+            echo ""
+          done
+
+      - name: Commit results
+        if: steps.find.outputs.has_queries == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add 'db-queries/*/result.json'
+          if git diff --cached --quiet; then
+            echo "No result files to commit"
+          else
+            git commit -m "db-inspect: query results"
+            git push
+          fi

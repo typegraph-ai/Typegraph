@@ -1,0 +1,305 @@
+name: Benchmarks
+
+on:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+    inputs:
+      benchmarks:
+        description: 'Comma-separated: dataset/variant[:seed] (e.g. nfcorpus/core,legal-rag-bench/neural:seed)'
+        required: true
+        type: string
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.parse.outputs.matrix }}
+      has_benchmarks: ${{ steps.parse.outputs.has_benchmarks }}
+    steps:
+      - name: Parse benchmark tags
+        id: parse
+        shell: bash
+        run: |
+          DATASETS="nfcorpus australian-tax-guidance-retrieval contractual-clause-retrieval license-tldr-retrieval mleb-scalr legal-rag-bench"
+          VARIANTS="core neural"
+
+          ENTRIES=()
+
+          add_entry() {
+            local ds="$1" var="$2" seed="$3"
+            local timeout=15
+            if [ "$seed" = "true" ] && [ "$var" = "neural" ]; then
+              timeout=360
+            elif [ "$seed" = "true" ]; then
+              timeout=60
+            elif [ "$var" = "neural" ]; then
+              timeout=30
+            fi
+            ENTRIES+=("{\"dataset\":\"$ds\",\"variant\":\"$var\",\"seed\":$seed,\"timeout\":$timeout}")
+          }
+
+          expand_entry() {
+            local ds="$1" var="$2" seed="$3"
+            local ds_list="$DATASETS"
+            local var_list="$VARIANTS"
+            if [ "$ds" != "all" ]; then
+              ds_list="$ds"
+            fi
+            if [ "$var" != "all" ]; then
+              var_list="$var"
+            fi
+            for d in $ds_list; do
+              for v in $var_list; do
+                add_entry "$d" "$v" "$seed"
+              done
+            done
+          }
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            INPUT="${{ github.event.inputs.benchmarks }}"
+            IFS=',' read -ra TAGS <<< "$INPUT"
+            for tag in "${TAGS[@]}"; do
+              tag=$(echo "$tag" | xargs)
+              if [[ "$tag" =~ ^([a-z0-9-]+)/(core|neural|all)(:seed)?$ ]]; then
+                ds="${BASH_REMATCH[1]}"
+                var="${BASH_REMATCH[2]}"
+                seed="false"
+                if [ -n "${BASH_REMATCH[3]}" ]; then seed="true"; fi
+                expand_entry "$ds" "$var" "$seed"
+              fi
+            done
+          else
+            MSG=$(cat <<'COMMIT_MSG'
+          ${{ github.event.head_commit.message }}
+          COMMIT_MSG
+            )
+            while IFS= read -r match; do
+              if [[ "$match" =~ \[bench:([a-z0-9-]+)/(core|neural|all)(:seed)?\] ]]; then
+                ds="${BASH_REMATCH[1]}"
+                var="${BASH_REMATCH[2]}"
+                seed="false"
+                if [ -n "${BASH_REMATCH[3]}" ]; then seed="true"; fi
+                expand_entry "$ds" "$var" "$seed"
+              fi
+            done < <(echo "$MSG" | grep -oP '\[bench:[^\]]+\]')
+          fi
+
+          if [ ${#ENTRIES[@]} -eq 0 ]; then
+            echo "has_benchmarks=false" >> "$GITHUB_OUTPUT"
+            echo "matrix=[]" >> "$GITHUB_OUTPUT"
+            echo "No benchmark tags found, skipping."
+          else
+            # Deduplicate
+            UNIQUE=$(printf '%s\n' "${ENTRIES[@]}" | sort -u | paste -sd,)
+            MATRIX="[${UNIQUE}]"
+            echo "has_benchmarks=true" >> "$GITHUB_OUTPUT"
+            echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+            echo "Benchmarks to run: ${MATRIX}"
+          fi
+
+  run:
+    needs: parse
+    if: needs.parse.outputs.has_benchmarks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJson(matrix.timeout) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.parse.outputs.matrix) }}
+    concurrency:
+      group: bench-${{ matrix.dataset }}-${{ matrix.variant }}
+      cancel-in-progress: true
+    env:
+      NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - name: Install benchmark dependencies
+        working-directory: benchmarks
+        run: npm install
+      - name: Run benchmark
+        id: bench
+        working-directory: benchmarks
+        run: |
+          SEED_FLAG=""
+          if [ "${{ matrix.seed }}" = "true" ]; then
+            SEED_FLAG="--seed"
+          fi
+          npx tsx ${{ matrix.dataset }}/${{ matrix.variant }}/run.ts $SEED_FLAG | tee /tmp/bench-output.txt
+          # Extract JSON between delimiters
+          RESULT=$(sed -n '/^---BENCH_RESULT_JSON---$/,/^---END_BENCH_RESULT_JSON---$/{ /^---/d; p; }' /tmp/bench-output.txt)
+          # Save to file for artifact upload and subsequent steps
+          echo "$RESULT" > /tmp/bench-result.json
+          # Set as output (escaped for multiline)
+          {
+            echo "json<<BENCH_EOF"
+            echo "$RESULT"
+            echo "BENCH_EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.dataset }}-${{ matrix.variant }}
+          path: /tmp/bench-result.json
+          if-no-files-found: ignore
+      - name: Post results to PR
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const resultJson = `${{ steps.bench.outputs.json }}`;
+            if (!resultJson || !resultJson.trim()) {
+              console.log('No result JSON found, skipping PR comment.');
+              return;
+            }
+
+            const result = JSON.parse(resultJson);
+            const m = result.metrics;
+            const t = result.timing;
+            const seedLabel = '${{ matrix.seed }}' === 'true' ? ' (seeded)' : '';
+
+            const lines = [
+              `## Benchmark: ${result.benchmark} — ${result.variant} (${result.mode})${seedLabel}`,
+              '',
+              '| Metric | Value |',
+              '|--------|-------|',
+              `| nDCG@10 | ${m['nDCG@10'].toFixed(4)} |`,
+              `| MAP@10 | ${m['MAP@10'].toFixed(4)} |`,
+              `| Recall@10 | ${m['Recall@10'].toFixed(4)} |`,
+              `| Precision@10 | ${m['Precision@10'].toFixed(4)} |`,
+              '',
+              `**Corpus:** ${(result.corpus ?? 0).toLocaleString()} docs | **Queries:** ${result.queries} | **Mode:** ${result.mode}`,
+            ];
+
+            if (t.ingestionSeconds != null) {
+              lines.push(`**Timing:** ingest ${t.ingestionSeconds.toFixed(1)}s, avg query ${t.avgQueryMs.toFixed(1)}ms, total ${Math.floor(t.totalSeconds / 60)}m${Math.round(t.totalSeconds % 60)}s`);
+            } else {
+              lines.push(`**Timing:** avg query ${t.avgQueryMs.toFixed(1)}ms, total ${Math.floor(t.totalSeconds / 60)}m${Math.round(t.totalSeconds % 60)}s`);
+            }
+
+            lines.push('', '<details><summary>Full JSON</summary>', '', '```json', JSON.stringify(result, null, 2), '```', '', '</details>');
+
+            const branch = context.ref.replace('refs/heads/', '');
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${branch}`,
+              state: 'open',
+            });
+            if (prs.data.length === 0) {
+              console.log('No open PR for this branch, skipping comment.');
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prs.data[0].number,
+              body: lines.join('\n'),
+            });
+      - name: Post failure to PR
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.ref.replace('refs/heads/', '');
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${branch}`,
+              state: 'open',
+            });
+            if (prs.data.length === 0) return;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prs.data[0].number,
+              body: `## Benchmark Failed: ${{ matrix.dataset }}/${{ matrix.variant }}\n\nThe benchmark run failed. [View logs](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+            });
+
+  summary:
+    needs: [parse, run]
+    if: always() && needs.parse.outputs.has_benchmarks == 'true' && needs.run.result != 'skipped'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all result artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bench-*
+          path: /tmp/results
+      - name: Post summary to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const resultsDir = '/tmp/results';
+            if (!fs.existsSync(resultsDir)) {
+              console.log('No results directory found.');
+              return;
+            }
+
+            const results = [];
+            for (const dir of fs.readdirSync(resultsDir)) {
+              const file = path.join(resultsDir, dir, 'bench-result.json');
+              if (fs.existsSync(file)) {
+                try {
+                  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+                  if (data && data.metrics) results.push(data);
+                } catch (e) {
+                  console.log(`Skipping invalid result: ${file}`);
+                }
+              }
+            }
+
+            if (results.length === 0) {
+              console.log('No valid results to summarize.');
+              return;
+            }
+
+            const rows = results.map(r => {
+              const m = r.metrics;
+              const t = r.timing;
+              return `| ${r.dataset} | ${r.variant} | ${m['nDCG@10'].toFixed(4)} | ${m['MAP@10'].toFixed(4)} | ${m['Recall@10'].toFixed(4)} | ${m['Precision@10'].toFixed(4)} | ${t.avgQueryMs.toFixed(1)}ms |`;
+            });
+
+            const body = [
+              '## Benchmark Results Summary',
+              '',
+              '| Dataset | Variant | nDCG@10 | MAP@10 | Recall@10 | P@10 | Avg Query |',
+              '|---------|---------|---------|--------|-----------|------|-----------|',
+              ...rows,
+              '',
+              `Commit: ${context.sha.slice(0, 7)} | [Workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+            ].join('\n');
+
+            const branch = '${{ github.ref }}'.replace('refs/heads/', '');
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${branch}`,
+              state: 'open',
+            });
+            if (prs.data.length === 0) {
+              console.log('No open PR, skipping summary comment.');
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prs.data[0].number,
+              body,
+            });

@@ -25,12 +25,10 @@ import { d8umCreate, aiSdkLlmProvider } from '@d8um/core'
 import { createGraphBridge, PgMemoryStoreAdapter } from '@d8um/graph'
 import { gateway } from '@ai-sdk/gateway'
 import { neon } from '@neondatabase/serverless'
-import { writeFileSync } from 'fs'
-
 import { createBenchmarkAdapter } from '../../lib/adapter.js'
 import { loadCorpus, loadQueries, loadQrels, buildQrelsMap } from '../../lib/datasets.js'
 import { scoreAllQueries } from '../../lib/metrics.js'
-import { printResults, formatMarkdown, type BenchmarkResult } from '../../lib/report.js'
+import { printResults, type BenchmarkResult } from '../../lib/report.js'
 
 // ── Configuration ──
 
@@ -270,12 +268,9 @@ async function main() {
 
   printResults(result)
 
-  // Save results
-  const resultsJson = './au-tax-results-neural.json'
-  const resultsMd = './au-tax-results-neural.md'
-  writeFileSync(resultsJson, JSON.stringify(result, null, 2))
-  writeFileSync(resultsMd, formatMarkdown(result))
-  console.log(`  Results: ${resultsJson}, ${resultsMd}`)
+  console.log('---BENCH_RESULT_JSON---')
+  console.log(JSON.stringify(result, null, 2))
+  console.log('---END_BENCH_RESULT_JSON---')
   console.log('══════════════════════════════════════════════════════')
 }
 

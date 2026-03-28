@@ -15,12 +15,10 @@
 
 import { d8umCreate } from '@d8um/core'
 import { gateway } from '@ai-sdk/gateway'
-import { writeFileSync } from 'fs'
-
 import { createBenchmarkAdapter } from '../../lib/adapter.js'
 import { loadCorpus, loadQueries, loadQrels, buildQrelsMap } from '../../lib/datasets.js'
 import { scoreAllQueries } from '../../lib/metrics.js'
-import { printResults, formatMarkdown, type BenchmarkResult } from '../../lib/report.js'
+import { printResults, type BenchmarkResult } from '../../lib/report.js'
 
 // ── Configuration ──
 
@@ -154,9 +152,10 @@ async function main() {
   }
 
   printResults(result)
-  writeFileSync('./contract-results-core.json', JSON.stringify(result, null, 2))
-  writeFileSync('./contract-results-core.md', formatMarkdown(result))
-  console.log('  Results: contract-results-core.json, contract-results-core.md')
+
+  console.log('---BENCH_RESULT_JSON---')
+  console.log(JSON.stringify(result, null, 2))
+  console.log('---END_BENCH_RESULT_JSON---')
   console.log('══════════════════════════════════════════════════════')
 }
 

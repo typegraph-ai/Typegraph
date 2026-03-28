@@ -1,0 +1,6 @@
+{
+  "status": "ok",
+  "query": "-- Clear legal-rag-bench core data for reseed with 2048 chunk size\n-- Bucket ID: 785b3595-580f-4451-bc8d-1a934b598b20 (name: legal-rag-bench)\n\nTRUNCATE TABLE bench_legalrag_core__gateway_openai_text_embedding_3_small;\nTRUNCATE TABLE bench_legalrag_core__registry;\nDELETE FROM d8um_hashes WHERE bucket_id = '785b3595-580f-4451-bc8d-1a934b598b20';\nDELETE FROM d8um_documents WHERE bucket_id = '785b3595-580f-4451-bc8d-1a934b598b20';",
+  "rows": 4,
+  "output": "TRUNCATE TABLE\nTRUNCATE TABLE\nDELETE 0\nDELETE 0"
+}

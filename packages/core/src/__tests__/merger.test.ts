@@ -20,9 +20,11 @@ describe('dedupKey', () => {
     expect(dedupKey(r)).toBe('https://example.com/page')
   })
 
-  it('uses documentId::chunkIndex when chunk present', () => {
+  it('uses content hash when chunk present (enables cross-runner merging)', () => {
     const r = makeResult({ url: undefined, documentId: 'doc-1', chunk: { index: 2, total: 5, isNeighbor: false } })
-    expect(dedupKey(r)).toBe('doc-1::2')
+    const key = dedupKey(r)
+    expect(key).toHaveLength(64)
+    expect(key).toMatch(/^[0-9a-f]{64}$/)
   })
 
   it('falls back to content hash (64-char SHA256)', () => {
@@ -30,6 +32,12 @@ describe('dedupKey', () => {
     const key = dedupKey(r)
     expect(key).toHaveLength(64)
     expect(key).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('same content from indexed and graph runners produces same key', () => {
+    const indexed = makeResult({ content: 'shared chunk', mode: 'indexed', chunk: { index: 0, total: 1, isNeighbor: false }, documentId: 'doc-1' })
+    const graph = makeResult({ content: 'shared chunk', mode: 'graph' as any, chunk: undefined, documentId: 'graph-0' })
+    expect(dedupKey(indexed)).toBe(dedupKey(graph))
   })
 })
 
@@ -108,6 +116,17 @@ describe('mergeAndRank', () => {
     // Give live higher weight
     const merged = mergeAndRank([indexed, live], 10, { indexed: 0.1, live: 0.9 })
     expect(merged[0]!.url).toBe('b')
+  })
+
+  it('merges same content from indexed and graph runners with combined RRF score', () => {
+    const indexed = [makeResult({ content: 'shared chunk', mode: 'indexed', normalizedScore: 0.9 })]
+    const graph = [makeResult({ content: 'shared chunk', mode: 'graph' as any, chunk: undefined, documentId: 'graph-0', normalizedScore: 0.8 })]
+    const merged = mergeAndRank([indexed, graph], 10)
+    // Same content should merge into one entry
+    expect(merged).toHaveLength(1)
+    // Combined RRF score should be higher than either individual score
+    const indexedOnly = mergeAndRank([indexed], 10)
+    expect((merged[0] as any).finalScore).toBeGreaterThan((indexedOnly[0] as any).finalScore)
   })
 
   it('handles empty input', () => {

@@ -35,5 +35,5 @@ export interface GraphBridge {
   getAdjacencyList?(entityIds: string[]): Promise<Map<string, Array<{ target: string; weight: number }>>>
 
   /** Get chunk content associated with entities. */
-  getChunksForEntities?(entityIds: string[], limit?: number): Promise<Array<{ content: string; bucketId: string; score: number }>>
+  getChunksForEntities?(entityIds: string[], limit?: number, pprScores?: Map<string, number>): Promise<Array<{ content: string; bucketId: string; score: number }>>
 }

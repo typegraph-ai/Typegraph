@@ -45,8 +45,8 @@ export class GraphRunner {
       .slice(0, count * 2) // fetch more to account for dedup
       .map(([id]) => id)
 
-    // Step 5: Get chunks associated with high-PPR entities
-    const chunks = await this.graph.getChunksForEntities(rankedEntities, count)
+    // Step 5: Get chunks associated with high-PPR entities, passing PPR scores for ranking
+    const chunks = await this.graph.getChunksForEntities(rankedEntities, count, pprScores)
 
     return chunks.map((chunk, i) => ({
       content: chunk.content,

@@ -24,7 +24,8 @@ export interface NormalizedResult {
 
 export function dedupKey(r: NormalizedResult): string {
   if (r.url) return r.url
-  if (r.chunk) return `${r.documentId}::${r.chunk.index}`
+  // Content hash ensures same chunk text from different runners (indexed + graph) merges.
+  // Within a single runner, different chunks already have different content.
   return createHash('sha256').update(r.content).digest('hex')
 }
 

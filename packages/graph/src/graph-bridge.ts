@@ -173,8 +173,11 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
         list = []
         adjacency.set(from, list)
       }
-      // Avoid duplicate edges
-      if (!list.some(e => e.target === to)) {
+      // Accumulate weights: more edges between same entities = stronger connection
+      const existing = list.find(e => e.target === to)
+      if (existing) {
+        existing.weight += weight
+      } else {
         list.push({ target: to, weight })
       }
     }
@@ -220,6 +223,7 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
   async function getChunksForEntities(
     entityIds: string[],
     limit: number = 20,
+    pprScores?: Map<string, number>,
   ): Promise<Array<{ content: string; bucketId: string; score: number }>> {
     const seen = new Set<string>()
     const chunks: Array<{ content: string; bucketId: string; score: number }> = []
@@ -235,7 +239,9 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
           const key = `${bucketId}:${content.slice(0, 100)}`
           if (!seen.has(key)) {
             seen.add(key)
-            chunks.push({ content, bucketId, score: edge.weight })
+            // Use PPR score of the entity that led us to this chunk, fall back to edge weight
+            const score = pprScores?.get(entityId) ?? edge.weight
+            chunks.push({ content, bucketId, score })
           }
         }
       }

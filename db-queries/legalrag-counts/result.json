@@ -1,0 +1,6 @@
+{
+  "status": "ok",
+  "query": "SELECT 'chunks' AS label, COUNT(*) AS cnt FROM bench_legalrag_core__gateway_openai_text_embedding_3_small\nUNION ALL\nSELECT 'with_corpusId', COUNT(*) FROM bench_legalrag_core__gateway_openai_text_embedding_3_small WHERE metadata->>'corpusId' IS NOT NULL\nUNION ALL\nSELECT 'without_corpusId', COUNT(*) FROM bench_legalrag_core__gateway_openai_text_embedding_3_small WHERE metadata->>'corpusId' IS NULL\nORDER BY label;",
+  "rows": 3,
+  "output": "label,cnt\nchunks,6100\nwith_corpusId,5939\nwithout_corpusId,161"
+}

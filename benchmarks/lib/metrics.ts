@@ -48,6 +48,23 @@ export function precision(retrieved: string[], relevant: Set<string>, k: number)
   return topK.length === 0 ? 0 : hits / topK.length
 }
 
+export function deduplicateToDocuments(
+  results: Array<{ metadata: Record<string, unknown> }>,
+  limit: number,
+): string[] {
+  const seen = new Set<string>()
+  const ids: string[] = []
+  for (const r of results) {
+    const id = r.metadata['corpusId'] as string
+    if (id && !seen.has(id)) {
+      seen.add(id)
+      ids.push(id)
+      if (ids.length >= limit) break
+    }
+  }
+  return ids
+}
+
 export function scoreAllQueries(
   allResults: Map<string, string[]>,
   qrelsMap: Map<string, Map<string, number>>,

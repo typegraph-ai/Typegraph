@@ -83,6 +83,7 @@ async function main() {
     entitiesTable: `${TABLE_PREFIX}entities`,
     edgesTable: `${TABLE_PREFIX}edges`,
   })
+  await memoryStore.initialize()
 
   const graph = createGraphBridge({
     memoryStore,

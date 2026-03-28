@@ -1,0 +1,6 @@
+{
+  "status": "ok",
+  "query": "SELECT 'chunks' AS label, COUNT(*) AS cnt FROM bench_license_core__gateway_openai_text_embedding_3_small\nUNION ALL\nSELECT 'with_corpusId', COUNT(*) FROM bench_license_core__gateway_openai_text_embedding_3_small WHERE metadata->>'corpusId' IS NOT NULL\nUNION ALL\nSELECT 'without_corpusId', COUNT(*) FROM bench_license_core__gateway_openai_text_embedding_3_small WHERE metadata->>'corpusId' IS NULL\nUNION ALL\nSELECT 'documents', COUNT(*) FROM d8um_documents\nUNION ALL\nSELECT 'hashes', COUNT(*) FROM d8um_hashes\nUNION ALL\nSELECT 'buckets', COUNT(*) FROM d8um_buckets\nORDER BY label;",
+  "rows": 6,
+  "output": "label,cnt\nbuckets,3\nchunks,374\ndocuments,5747\nhashes,5746\nwith_corpusId,374\nwithout_corpusId,0"
+}

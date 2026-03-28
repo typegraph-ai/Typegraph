@@ -86,29 +86,54 @@ async function main() {
     }
 
     console.log(`Phase 3: Ingesting ${corpus.length} documents...`)
+    console.log(`  Config: chunk_size=${CHUNK_SIZE}, chunk_overlap=${CHUNK_OVERLAP}, embedding=${EMBEDDING_MODEL}`)
     const ingestStart = performance.now()
+
+    const BATCH_SIZE = 30
     let ingested = 0
+    let totalChunks = 0
+    let batchNum = 0
+    const totalBatches = Math.ceil(corpus.length / BATCH_SIZE)
 
-    for (const doc of corpus) {
-      const docId = String(doc['_id'])
-      const title = String(doc['title'] ?? '')
-      const text = String(doc['text'] ?? '')
+    for (let i = 0; i < corpus.length; i += BATCH_SIZE) {
+      batchNum++
+      const batch = corpus.slice(i, i + BATCH_SIZE)
+      const batchStart = performance.now()
 
-      await d.ingest(bucket.id, [{
-        id: docId, title,
-        content: title ? `${title}\n\n${text}` : text,
-        updatedAt: new Date(),
-        metadata: { corpusId: docId },
-      }], { chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP, deduplicateBy: ['content'] })
+      const docs = batch.map(doc => {
+        const docId = String(doc['_id'])
+        const title = String(doc['title'] ?? '')
+        const text = String(doc['text'] ?? '')
+        return {
+          id: docId, title,
+          content: title ? `${title}\n\n${text}` : text,
+          updatedAt: new Date(),
+          metadata: { corpusId: docId },
+        }
+      })
 
-      ingested++
-      if (ingested % 50 === 0 || ingested === corpus.length) {
-        process.stdout.write(`\r  Ingested: ${ingested}/${corpus.length}`)
-      }
+      const result = await d.ingest(
+        bucket.id, docs,
+        { chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP, deduplicateBy: ['content'] },
+      )
+
+      ingested += batch.length
+      totalChunks += result.inserted
+      const batchMs = performance.now() - batchStart
+      const elapsed = (performance.now() - ingestStart) / 1000
+      const docsPerSec = ingested / elapsed
+      const eta = (corpus.length - ingested) / docsPerSec
+
+      console.log(
+        `  Batch ${batchNum}/${totalBatches}: ${batch.length} docs, ` +
+        `${result.inserted} chunks inserted, ${result.skipped} skipped ` +
+        `(${batchMs.toFixed(0)}ms) — ${ingested}/${corpus.length} total, ` +
+        `${docsPerSec.toFixed(0)} docs/s, ETA ${eta.toFixed(0)}s`
+      )
     }
 
     ingestDuration = (performance.now() - ingestStart) / 1000
-    console.log(`\n  Ingestion complete: ${ingestDuration.toFixed(1)}s`)
+    console.log(`  Ingestion complete: ${ingestDuration.toFixed(1)}s, ${ingested} docs, ${totalChunks} chunks (${(ingested / ingestDuration).toFixed(0)} docs/sec)`)
   } else {
     console.log('Phase 3: Skipping ingestion (bucket exists, no --seed flag)')
   }

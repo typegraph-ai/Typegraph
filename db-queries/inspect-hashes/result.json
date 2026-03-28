@@ -1,0 +1,6 @@
+{
+  "status": "ok",
+  "query": "SELECT bucket_id, COUNT(*) AS cnt, MIN(indexed_at) AS earliest, MAX(indexed_at) AS latest\nFROM d8um_hashes\nGROUP BY bucket_id\nORDER BY cnt DESC",
+  "rows": 5,
+  "output": "bucket_id,cnt,earliest,latest\n785b3595-580f-4451-bc8d-1a934b598b20,6763,2026-03-28 02:30:11.161+00,2026-03-28 05:57:55.147+00\n304c888a-debd-40b1-9025-845674972b70,822,2026-03-28 02:08:24.881+00,2026-03-28 02:18:09.647+00\nb50ecd0f-b30b-4921-96c5-fafe221b4301,105,2026-03-28 05:57:55.61+00,2026-03-28 05:59:27.092+00\nf8ae6099-d491-40e9-98f9-4e908c06cbaa,65,2026-03-28 05:19:08.082+00,2026-03-28 05:19:19.065+00\n2c119c78-3318-4801-8041-9f755e680dec,65,2026-03-28 02:44:32.489+00,2026-03-28 02:44:55.325+00"
+}

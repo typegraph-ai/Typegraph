@@ -74,9 +74,9 @@ export const HASH_TABLE_SQL = (hashesTable: string) => `
 
   CREATE TABLE IF NOT EXISTS ${hashesTable}_run_times (
     bucket_id  TEXT NOT NULL,
-    tenant_id  TEXT,
+    tenant_id  TEXT NOT NULL DEFAULT '',
     last_run   TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (bucket_id, COALESCE(tenant_id, ''))
+    PRIMARY KEY (bucket_id, tenant_id)
   );
 `
 

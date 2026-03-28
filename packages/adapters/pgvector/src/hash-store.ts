@@ -81,7 +81,7 @@ export class PgHashStore implements HashStoreAdapter {
   async getLastRunTime(bucketId: string, tenantId?: string): Promise<Date | null> {
     const rows = await this.sql(
       `SELECT last_run FROM ${this.tableName}_run_times
-       WHERE bucket_id = $1 AND COALESCE(tenant_id, '') = COALESCE($2, '')`,
+       WHERE bucket_id = $1 AND tenant_id = COALESCE($2, '')`,
       [bucketId, tenantId ?? null]
     )
     if (rows.length === 0) return null
@@ -91,8 +91,8 @@ export class PgHashStore implements HashStoreAdapter {
   async setLastRunTime(bucketId: string, tenantId: string | undefined, time: Date): Promise<void> {
     await this.sql(
       `INSERT INTO ${this.tableName}_run_times (bucket_id, tenant_id, last_run)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (bucket_id, COALESCE(tenant_id, '')) DO UPDATE SET
+       VALUES ($1, COALESCE($2, ''), $3)
+       ON CONFLICT (bucket_id, tenant_id) DO UPDATE SET
         last_run = EXCLUDED.last_run`,
       [bucketId, tenantId ?? null, time.toISOString()]
     )

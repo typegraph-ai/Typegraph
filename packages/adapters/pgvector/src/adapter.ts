@@ -453,7 +453,8 @@ export class PgVectorAdapter implements VectorStoreAdapter {
           keyword_ranked AS (
             SELECT c.*, ts_rank(c.search_vector, tsq.q) AS kw_score,
                    ROW_NUMBER() OVER (ORDER BY ts_rank(c.search_vector, tsq.q) DESC) AS krank
-            FROM ${table} c, tsq
+            FROM ${table} c
+            CROSS JOIN tsq
             JOIN ${this.documentsTable} d ON c.document_id = d.id
             WHERE c.search_vector @@ tsq.q ${reindexedChunkFilter} ${docFilterClause}
             ORDER BY ts_rank(c.search_vector, tsq.q) DESC

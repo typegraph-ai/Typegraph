@@ -85,9 +85,6 @@ const ENTITIES_DDL = (t: string) => `
 
   CREATE INDEX IF NOT EXISTS ${t}_name_idx ON ${t} (name);
   CREATE INDEX IF NOT EXISTS ${t}_type_idx ON ${t} (entity_type);
-  CREATE INDEX IF NOT EXISTS ${t}_embedding_idx
-    ON ${t} USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 16, ef_construction = 200);
 `
 
 const EDGES_DDL = (t: string) => `
@@ -118,6 +115,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   private memoriesTable: string
   private entitiesTable: string
   private edgesTable: string
+  private hnswIndexCreated = false
 
   constructor(config: PgMemoryAdapterConfig) {
     this.sql = config.sql
@@ -142,6 +140,25 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       for (const stmt of statements) {
         await this.sql(stmt)
       }
+    }
+
+    // Try to create HNSW index on entity embeddings.
+    // This may fail if the table is empty (no embedding dimensions known yet).
+    // In that case, we create it lazily after the first entity with an embedding is inserted.
+    await this.ensureHnswIndex()
+  }
+
+  private async ensureHnswIndex(): Promise<void> {
+    if (this.hnswIndexCreated) return
+    try {
+      await this.sql(
+        `CREATE INDEX IF NOT EXISTS ${this.entitiesTable}_embedding_idx
+         ON ${this.entitiesTable} USING hnsw (embedding vector_cosine_ops)
+         WITH (m = 16, ef_construction = 200)`
+      )
+      this.hnswIndexCreated = true
+    } catch {
+      // Expected to fail if table is empty or column has no dimensions yet
     }
   }
 
@@ -328,6 +345,12 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         entity.temporal.invalidAt?.toISOString() ?? null,
       ]
     )
+
+    // Lazily create HNSW index after first entity with embedding is persisted
+    if (embeddingStr && !this.hnswIndexCreated) {
+      await this.ensureHnswIndex()
+    }
+
     return mapRowToEntity(rows[0]!)
   }
 

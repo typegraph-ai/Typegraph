@@ -51,8 +51,14 @@ async function main() {
   console.log()
 
   if (await blobExists(BLOB_PATH)) {
-    console.log(`  ${BLOB_PATH} already exists in blob storage — skipping`)
-    return
+    // Check if existing blob has actual content (previous run may have uploaded empty array)
+    const { blobs } = await list({ prefix: BLOB_PATH, limit: 1 })
+    const blob = blobs.find(b => b.pathname === BLOB_PATH)
+    if (blob && blob.size > 10) {
+      console.log(`  ${BLOB_PATH} already exists (${(blob.size / 1024).toFixed(0)} KB) — skipping`)
+      return
+    }
+    console.log(`  ${BLOB_PATH} exists but is empty/tiny (${blob?.size ?? 0} bytes) — re-uploading`)
   }
 
   // Fetch parquet index
@@ -81,18 +87,48 @@ async function main() {
   }
   console.log(`  Parsed ${rawQueries.length} raw queries`)
 
+  // Debug: log column names from first row
+  if (rawQueries.length > 0) {
+    const keys = Object.keys(rawQueries[0]!)
+    console.log(`  Columns: ${keys.join(', ')}`)
+    // Show sample of first non-null row
+    const sample = rawQueries.find(q => String(q['question_type'] ?? '') !== 'null_query')
+    if (sample) {
+      for (const key of keys) {
+        const val = sample[key]
+        const preview = typeof val === 'string' ? val.slice(0, 80) : JSON.stringify(val)?.slice(0, 80)
+        console.log(`    ${key}: ${preview}`)
+      }
+    }
+  }
+
   // Extract answers (same ID assignment as seed-datasets.ts)
+  // Try multiple possible field names
+  const ANSWER_FIELDS = ['answer', 'Answer', 'gold_answer', 'response', 'label']
+  const answerField = rawQueries.length > 0
+    ? ANSWER_FIELDS.find(f => rawQueries[0]![f] !== undefined)
+    : undefined
+  if (answerField) {
+    console.log(`  Using answer field: '${answerField}'`)
+  } else {
+    console.log(`  WARNING: No known answer field found in columns`)
+  }
+
   const answers: { _id: string; answer: string }[] = []
   let idx = 0
   for (const q of rawQueries) {
     if (String(q['question_type'] ?? '') === 'null_query') continue
-    const answer = String(q['answer'] ?? '')
+    const answer = String(answerField ? (q[answerField] ?? '') : '')
     if (answer) {
       answers.push({ _id: String(idx), answer })
     }
     idx++
   }
   console.log(`  ${answers.length} answers extracted (${rawQueries.length - answers.length} null/empty filtered)`)
+
+  if (answers.length === 0) {
+    throw new Error('No answers extracted — check column names above and update ANSWER_FIELDS')
+  }
 
   // Upload
   const json = JSON.stringify(answers)

@@ -70,14 +70,14 @@ const MEMORIES_DDL = (t: string) => `
   CREATE INDEX IF NOT EXISTS ${t}_subject_idx ON ${t} (subject);
 `
 
-const ENTITIES_DDL = (t: string) => `
+const ENTITIES_DDL = (t: string, dims?: number) => `
   CREATE TABLE IF NOT EXISTS ${t} (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     entity_type TEXT NOT NULL,
     aliases     TEXT[] DEFAULT '{}',
     properties  JSONB NOT NULL DEFAULT '{}',
-    embedding   VECTOR,
+    embedding   VECTOR${dims ? `(${dims})` : ''},
     scope       JSONB NOT NULL,
     valid_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     invalid_at  TIMESTAMPTZ,
@@ -133,7 +133,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     // so split each DDL block on semicolons and execute individually.
     const allDdl = [
       MEMORIES_DDL(this.memoriesTable),
-      ENTITIES_DDL(this.entitiesTable),
+      ENTITIES_DDL(this.entitiesTable, this.embeddingDimensions),
       EDGES_DDL(this.edgesTable),
     ]
     for (const ddl of allDdl) {
@@ -155,6 +155,15 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   private async ensureHnswIndex(): Promise<void> {
     if (this.hnswIndexCreated) return
     try {
+      // Ensure column has explicit dimensions (required for HNSW on pgvector)
+      // This is a no-op if column already has the correct type.
+      await this.sql(
+        `ALTER TABLE ${this.entitiesTable} ALTER COLUMN embedding TYPE vector(${this.embeddingDimensions})`
+      )
+    } catch {
+      // Column may already be typed — ignore
+    }
+    try {
       await this.sql(
         `CREATE INDEX IF NOT EXISTS ${this.entitiesTable}_embedding_idx
          ON ${this.entitiesTable} USING hnsw (embedding vector_cosine_ops)
@@ -162,20 +171,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       )
       this.hnswIndexCreated = true
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.warn(`[d8um] HNSW index creation failed: ${msg}`)
-
-      // Retry with explicit vector dimensions (untyped VECTOR columns need this)
-      try {
-        await this.sql(
-          `CREATE INDEX IF NOT EXISTS ${this.entitiesTable}_embedding_idx
-           ON ${this.entitiesTable} USING hnsw ((embedding::vector(${this.embeddingDimensions})) vector_cosine_ops)
-           WITH (m = 16, ef_construction = 200)`
-        )
-        this.hnswIndexCreated = true
-      } catch (retryErr: unknown) {
-        console.warn(`[d8um] HNSW index retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`)
-      }
+      console.warn(`[d8um] HNSW index creation failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 

@@ -37,11 +37,12 @@ async function blobExists(pathname: string): Promise<boolean> {
 }
 
 async function parseParquet(buffer: ArrayBuffer): Promise<Record<string, unknown>[]> {
-  const rows: Record<string, unknown>[] = []
+  let rows: Record<string, unknown>[] = []
   await parquetRead({
     file: buffer,
+    rowFormat: 'object',
     compressors,
-    onComplete: (data: Record<string, unknown>[]) => rows.push(...data),
+    onComplete: (data: Record<string, unknown>[]) => { rows = data },
   })
   return rows
 }

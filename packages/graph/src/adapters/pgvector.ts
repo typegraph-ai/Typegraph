@@ -20,6 +20,8 @@ export interface PgMemoryAdapterConfig {
   memoriesTable?: string | undefined
   entitiesTable?: string | undefined
   edgesTable?: string | undefined
+  /** Embedding vector dimensions (e.g. 1536 for text-embedding-3-small). Used for HNSW index creation. */
+  embeddingDimensions?: number | undefined
 }
 
 // ── DDL ──
@@ -116,12 +118,14 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   private entitiesTable: string
   private edgesTable: string
   private hnswIndexCreated = false
+  private readonly embeddingDimensions: number
 
   constructor(config: PgMemoryAdapterConfig) {
     this.sql = config.sql
     this.memoriesTable = config.memoriesTable ?? 'd8um_memories'
     this.entitiesTable = config.entitiesTable ?? 'd8um_semantic_entities'
     this.edgesTable = config.edgesTable ?? 'd8um_semantic_edges'
+    this.embeddingDimensions = config.embeddingDimensions ?? 1536
   }
 
   async initialize(): Promise<void> {
@@ -157,8 +161,21 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          WITH (m = 16, ef_construction = 200)`
       )
       this.hnswIndexCreated = true
-    } catch {
-      // Expected to fail if table is empty or column has no dimensions yet
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn(`[d8um] HNSW index creation failed: ${msg}`)
+
+      // Retry with explicit vector dimensions (untyped VECTOR columns need this)
+      try {
+        await this.sql(
+          `CREATE INDEX IF NOT EXISTS ${this.entitiesTable}_embedding_idx
+           ON ${this.entitiesTable} USING hnsw ((embedding::vector(${this.embeddingDimensions})) vector_cosine_ops)
+           WITH (m = 16, ef_construction = 200)`
+        )
+        this.hnswIndexCreated = true
+      } catch (retryErr: unknown) {
+        console.warn(`[d8um] HNSW index retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`)
+      }
     }
   }
 
@@ -334,7 +351,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name, entity_type = EXCLUDED.entity_type,
          aliases = EXCLUDED.aliases, properties = EXCLUDED.properties,
-         embedding = EXCLUDED.embedding, scope = EXCLUDED.scope,
+         embedding = COALESCE(EXCLUDED.embedding, ${this.entitiesTable}.embedding), scope = EXCLUDED.scope,
          valid_at = EXCLUDED.valid_at, invalid_at = EXCLUDED.invalid_at, updated_at = NOW()
        RETURNING *`,
       [

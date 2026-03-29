@@ -184,7 +184,9 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     const pairKey = [subjectResult.entity.id, objectResult.entity.id].sort().join(':')
     directEdgePairs.add(pairKey)
 
-    // Track entities per chunk for co-occurrence edges
+    // CO_OCCURS edges: only for entities with NO direct edges (disconnected).
+    // Links each disconnected entity to ONE existing entity in the same chunk.
+    // This provides graph connectivity without drowning out explicit relationship signal.
     const chunkKey = `${triple.bucketId}:${triple.chunkIndex ?? 0}`
     let chunkEntities = chunkEntityMap.get(chunkKey)
     if (!chunkEntities) {
@@ -192,27 +194,29 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
       chunkEntityMap.set(chunkKey, chunkEntities)
     }
     const newEntityIds = [subjectResult.entity.id, objectResult.entity.id]
-    const existingIds = [...chunkEntities]
-
     for (const newId of newEntityIds) {
       if (chunkEntities.has(newId)) continue
-      // Create CO_OCCURS edges with existing entities in this chunk
-      for (const existingId of existingIds) {
-        const coKey = [newId, existingId].sort().join(':')
-        if (directEdgePairs.has(coKey)) continue // skip if direct edge exists
 
-        const coEdge: SemanticEdge = {
-          id: randomUUID(),
-          sourceEntityId: newId,
-          targetEntityId: existingId,
-          relation: 'CO_OCCURS',
-          weight: 0.3, // Lower weight than explicit triples
-          properties: { bucketId: triple.bucketId },
-          scope,
-          temporal: createTemporal(),
-          evidence: [],
+      const hasDirectEdges = [...directEdgePairs].some(pair => pair.includes(newId))
+      if (!hasDirectEdges) {
+        const existingIds = [...chunkEntities]
+        if (existingIds.length > 0) {
+          const linkTo = existingIds[0]!
+          const coKey = [newId, linkTo].sort().join(':')
+          if (!directEdgePairs.has(coKey)) {
+            await graph.addEdge({
+              id: randomUUID(),
+              sourceEntityId: newId,
+              targetEntityId: linkTo,
+              relation: 'CO_OCCURS',
+              weight: 0.3,
+              properties: { bucketId: triple.bucketId },
+              scope,
+              temporal: createTemporal(),
+              evidence: [],
+            })
+          }
         }
-        await graph.addEdge(coEdge)
       }
       chunkEntities.add(newId)
     }

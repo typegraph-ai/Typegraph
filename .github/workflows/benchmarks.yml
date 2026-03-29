@@ -321,6 +321,11 @@ jobs:
                 date: new Date().toISOString().slice(0, 10),
                 metrics: m,
                 avgQueryMs: t.avgQueryMs,
+                timing: {
+                  ingestionSeconds: t.ingestionSeconds || null,
+                  avgQueryMs: t.avgQueryMs,
+                  totalSeconds: t.totalSeconds,
+                },
                 mode: result.mode,
                 config: result.config || {},
               };
@@ -356,6 +361,11 @@ jobs:
                   date: new Date().toISOString().slice(0, 10),
                   metrics: result.metrics,
                   avgQueryMs: result.timing.avgQueryMs,
+                  timing: {
+                    ingestionSeconds: result.timing.ingestionSeconds || null,
+                    avgQueryMs: result.timing.avgQueryMs,
+                    totalSeconds: result.timing.totalSeconds,
+                  },
                   mode,
                   config: result.config || {},
                 };

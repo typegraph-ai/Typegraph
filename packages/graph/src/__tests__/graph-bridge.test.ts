@@ -201,9 +201,8 @@ describe('createGraphBridge', () => {
       // Should have 3 entities (Vitamin D reused, + osteoporosis + bone health)
       expect(firstEntityCount).toBe(2)
       expect(entities.size).toBe(3)
-      // 2 explicit edges (prevents, supports) + 1 CO_OCCURS edge (osteoporosis ↔ bone health)
-      expect(edges).toHaveLength(3)
-      expect(edges.filter(e => e.relation === 'CO_OCCURS')).toHaveLength(1)
+      // 2 explicit edges (prevents, supports), 0 CO_OCCURS (all entities have direct edges)
+      expect(edges).toHaveLength(2)
     })
   })
 

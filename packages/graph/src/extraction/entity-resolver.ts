@@ -22,11 +22,21 @@ export class EntityResolver {
   private readonly store: MemoryStoreAdapter
   private readonly embedding: EmbeddingProvider
   private readonly threshold: number
+  // In-memory cache: normalized name → entity. Eliminates duplicates from
+  // DB LIMIT misses and timing races between addTriple calls.
+  private readonly nameCache = new Map<string, SemanticEntity>()
 
   constructor(config: EntityResolverConfig) {
     this.store = config.store
     this.embedding = config.embedding
     this.threshold = config.similarityThreshold ?? 0.78
+  }
+
+  private cacheEntity(entity: SemanticEntity): void {
+    this.nameCache.set(normalizeForComparison(entity.name), entity)
+    for (const alias of entity.aliases) {
+      this.nameCache.set(normalizeForComparison(alias), entity)
+    }
   }
 
   /**
@@ -39,25 +49,45 @@ export class EntityResolver {
     aliases: string[],
     scope: d8umIdentity,
   ): Promise<{ entity: SemanticEntity; isNew: boolean }> {
+    // Phase 0: In-memory cache (instant — catches all prior entities in this session)
+    const normalizedName = normalizeForComparison(name)
+    const cached = this.nameCache.get(normalizedName)
+    if (cached) {
+      const merged = this.merge(cached, { name, entityType, aliases })
+      this.cacheEntity(merged)
+      return { entity: merged, isNew: false }
+    }
+    // Also check aliases against cache
+    for (const alias of aliases) {
+      const cachedByAlias = this.nameCache.get(normalizeForComparison(alias))
+      if (cachedByAlias) {
+        const merged = this.merge(cachedByAlias, { name, entityType, aliases })
+        this.cacheEntity(merged)
+        return { entity: merged, isNew: false }
+      }
+    }
+
     // Phase 1: Alias matching (cheap — uses ILIKE + ANY index)
     if (this.store.findEntities) {
       const candidates = await this.store.findEntities(name, scope, 10)
       const aliasMatch = this.findByAlias(name, aliases, candidates)
       if (aliasMatch) {
         const merged = this.merge(aliasMatch, { name, entityType, aliases })
+        this.cacheEntity(merged)
         return { entity: merged, isNew: false }
       }
 
       // Phase 2: Normalized string matching (catches case/punctuation variants)
-      const normalizedName = normalizeForComparison(name)
       for (const candidate of candidates) {
         if (normalizeForComparison(candidate.name) === normalizedName) {
           const merged = this.merge(candidate, { name, entityType, aliases })
+          this.cacheEntity(merged)
           return { entity: merged, isNew: false }
         }
         for (const alias of candidate.aliases) {
           if (normalizeForComparison(alias) === normalizedName) {
             const merged = this.merge(candidate, { name, entityType, aliases })
+            this.cacheEntity(merged)
             return { entity: merged, isNew: false }
           }
         }
@@ -70,17 +100,11 @@ export class EntityResolver {
       const similar = await this.store.searchEntities(nameEmbedding, scope, 5)
 
       for (const candidate of similar) {
-        // searchEntities returns results ordered by DB cosine similarity,
-        // but the entity's embedding is not returned (set to undefined in mapRowToEntity).
-        // Re-embed and compare if the candidate has no embedding, or use DB ordering.
-        // Since DB already orders by cosine distance, the top result is the best match.
-        // We need to check if the DB-computed similarity meets our threshold.
-        // The candidate.embedding is undefined (optimization in mapRowToEntity),
-        // so we trust the DB ordering and check via re-embedding.
         const candidateEmbedding = await this.embedding.embed(candidate.name)
         const similarity = this.cosineSimilarity(nameEmbedding, candidateEmbedding)
         if (similarity >= this.threshold) {
           const merged = this.merge(candidate, { name, entityType, aliases })
+          this.cacheEntity(merged)
           return { entity: merged, isNew: false }
         }
       }
@@ -99,6 +123,7 @@ export class EntityResolver {
       temporal: createTemporal(),
     }
 
+    this.cacheEntity(entity)
     return { entity, isNew: true }
   }
 

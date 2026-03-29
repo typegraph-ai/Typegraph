@@ -197,6 +197,7 @@ For estimating seed times (~3 docs/s embedding throughput):
 - Run history: `benchmarks/{dataset}/{variant}/history.json` — auto-committed by CI
 - PR comments show comparison table (d8um vs top-3 baselines) + delta from previous run
 - Only nDCG@10 has cross-system baselines; MAP/Recall/Precision are d8um-internal tracking only
+- History entries include a `timing` object with `ingestionSeconds` (if seeded), `avgQueryMs`, and `totalSeconds` — added 2026-03-29; older entries only have root-level `avgQueryMs`
 
 ### Clearing Benchmark Data for Reseed
 
@@ -268,9 +269,10 @@ When asked for a readout on benchmark results, pull data from the **history file
 
 1. Read all `history-*.json` files for each dataset/variant that has been run
 2. Read each dataset's `baselines.json` for the external comparison targets
-3. Present a table per dataset showing: commit, mode, chunk size, nDCG@10, MAP@10, Recall@10, Precision@10, delta vs text-embedding-3-small baseline
-4. Highlight the best result per dataset and whether it beats baseline
-5. Call out notable patterns (e.g., fast > hybrid, neural = core, chunk ratio issues)
+3. Present a table per dataset showing: commit, mode, chunk size, nDCG@10, MAP@10, Recall@10, Precision@10, avg query ms, ingest time (if available), delta vs text-embedding-3-small baseline
+4. Timing data is available in entries from 2026-03-29 onward (the `timing` object); older entries only have root-level `avgQueryMs`
+5. Highlight the best result per dataset and whether it beats baseline
+6. Call out notable patterns (e.g., fast > hybrid, neural = core, chunk ratio issues)
 
 **Do NOT rely on PR comments** — they may be paginated, unavailable, or stale. The history JSON files are the source of truth for all benchmark results.
 

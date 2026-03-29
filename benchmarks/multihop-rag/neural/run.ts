@@ -75,6 +75,7 @@ async function main() {
     memoriesTable: `${TABLE_PREFIX}memories`,
     entitiesTable: `${TABLE_PREFIX}entities`,
     edgesTable: `${TABLE_PREFIX}edges`,
+    embeddingDimensions: EMBEDDING_DIMS,
   })
   await memoryStore.initialize()
 

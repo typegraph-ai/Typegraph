@@ -324,6 +324,7 @@ async function main() {
   const mhCorpusPath = `${mhBlobPrefix}/corpus.json`
   const mhQueriesPath = `${mhBlobPrefix}/queries.json`
   const mhQrelsPath = `${mhBlobPrefix}/qrels.json`
+  const mhAnswersPath = `${mhBlobPrefix}/answers.json`
 
   const mhAllExist = await blobExists(mhCorpusPath)
     && await blobExists(mhQueriesPath)
@@ -399,7 +400,8 @@ async function main() {
       }
 
       const queryId = String(beirQueries.length)
-      beirQueries.push({ _id: queryId, text: String(q['query'] ?? q['question'] ?? '') })
+      const answer = String(q['answer'] ?? '')
+      beirQueries.push({ _id: queryId, text: String(q['query'] ?? q['question'] ?? ''), ...(answer ? { answer } : {}) })
 
       // Extract evidence list — handle both array-of-strings and array-of-objects
       const evidenceRaw = q['evidence_list'] ?? q['gold_list'] ?? q['fact_list'] ?? []
@@ -434,11 +436,17 @@ async function main() {
       console.log(`  warning  ${unmatchedEvidence} evidence snippets had no corpus match`)
     }
 
-    // Upload all three
+    // Build answers blob (queries that have gold answers)
+    const answers = beirQueries
+      .filter((q: { answer?: string }) => q.answer)
+      .map((q: { _id: string; answer?: string }) => ({ _id: q._id, answer: q.answer }))
+
+    // Upload all four
     const uploads: [string, unknown[]][] = [
       [mhCorpusPath, beirCorpus],
       [mhQueriesPath, beirQueries],
       [mhQrelsPath, beirQrels],
+      [mhAnswersPath, answers],
     ]
 
     for (const [blobPath, data] of uploads) {

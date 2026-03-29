@@ -19,10 +19,11 @@
 import { d8umCreate, aiSdkLlmProvider } from '@d8um/core'
 import { createGraphBridge, PgMemoryStoreAdapter } from '@d8um/graph'
 import { gateway } from '@ai-sdk/gateway'
+import { generateText } from 'ai'
 import { neon } from '@neondatabase/serverless'
 import { createBenchmarkAdapter } from '../../lib/adapter.js'
-import { loadCorpus, loadQueries, loadQrels, buildQrelsMap } from '../../lib/datasets.js'
-import { scoreAllQueriesExtended, deduplicateToDocuments } from '../../lib/metrics.js'
+import { loadCorpus, loadQueries, loadQrels, buildQrelsMap, loadAnswers } from '../../lib/datasets.js'
+import { scoreAllQueriesExtended, deduplicateToDocuments, exactMatch, tokenF1 } from '../../lib/metrics.js'
 import { printResults, type BenchmarkResult } from '../../lib/report.js'
 
 // ── Configuration ──
@@ -40,8 +41,19 @@ const K = 10
 const QUERY_FETCH = K * 5
 
 const shouldSeed = process.argv.includes('--seed')
+const evalAnswers = process.argv.includes('--eval-answers')
 
 // ── Main ──
+
+// Catch unhandled errors so we get diagnostics instead of silent death
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED REJECTION:', reason)
+  process.exit(1)
+})
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err)
+  process.exit(1)
+})
 
 async function main() {
   const totalStart = performance.now()
@@ -75,6 +87,7 @@ async function main() {
     memoriesTable: `${TABLE_PREFIX}memories`,
     entitiesTable: `${TABLE_PREFIX}entities`,
     edgesTable: `${TABLE_PREFIX}edges`,
+    embeddingDimensions: EMBEDDING_DIMS,
   })
   await memoryStore.initialize()
 
@@ -173,9 +186,12 @@ async function main() {
       })
 
       try {
+        const mem = process.memoryUsage()
+        console.log(`  [batch ${batchNum}/${totalBatches}] Starting ${batch.length} docs (heap: ${(mem.heapUsed / 1024 / 1024).toFixed(0)}MB / ${(mem.heapTotal / 1024 / 1024).toFixed(0)}MB, rss: ${(mem.rss / 1024 / 1024).toFixed(0)}MB)`)
         const result = await d.ingest(
           bucket.id, docs,
           { chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP, deduplicateBy: ['content'], propagateMetadata: ['metadata.corpusId'] },
+          { concurrency: 5 },
         )
         totalChunks += result.inserted
 
@@ -191,9 +207,10 @@ async function main() {
           `(${batchMs.toFixed(0)}ms) — ${ingested}/${corpus.length} total, ` +
           `${docsPerSec.toFixed(0)} docs/s, ETA ${eta.toFixed(0)}s`
         )
-      } catch {
+      } catch (err) {
         tripleErrors++
         ingested += batch.length
+        console.error(`  Batch ${batchNum} error:`, err instanceof Error ? err.message : err)
         console.log(
           `  Batch ${batchNum}/${totalBatches}: ${batch.length} docs — FAILED (triple extraction error)`
         )
@@ -245,6 +262,46 @@ async function main() {
   console.log('Phase 5: Computing IR metrics...')
 
   const { metrics, scored } = scoreAllQueriesExtended(allResults, qrelsMap, K)
+
+  // ── Phase 5b: Answer-generation evaluation (optional, non-fatal) ──
+  if (evalAnswers) {
+    console.log('Phase 5b: Evaluating answer generation (neural)...')
+    try {
+      const goldAnswers = await loadAnswers(DATASET, BLOB_PREFIX)
+      const corpusMap = new Map(corpus.map(d => [d._id, d]))
+
+      let sumEM = 0, sumF1 = 0, answered = 0
+      for (const [queryId, docIds] of allResults) {
+        const gold = goldAnswers.get(queryId)
+        if (!gold) continue
+
+        const queryText = testQueries.find(q => String(q['_id']) === queryId)?.text ?? ''
+        const context = docIds.slice(0, K)
+          .map(id => corpusMap.get(id)?.text ?? '')
+          .filter(Boolean)
+          .join('\n\n---\n\n')
+
+        const { text: predicted } = await generateText({
+          model: gateway(LLM_MODEL),
+          prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
+        })
+
+        sumEM += exactMatch(predicted, gold)
+        sumF1 += tokenF1(predicted, gold)
+        answered++
+        if (answered % 50 === 0) {
+          process.stdout.write(`\r  Answers: ${answered}/${goldAnswers.size}`)
+        }
+      }
+      console.log(`\n  Answer eval complete: ${answered} queries, EM=${(sumEM / answered).toFixed(4)}, F1=${(sumF1 / answered).toFixed(4)}`)
+      metrics['EM'] = sumEM / answered
+      metrics['F1'] = sumF1 / answered
+    } catch (err) {
+      console.log(`  Answer eval skipped: ${err instanceof Error ? err.message : err}`)
+      console.log('  (Run seed-datasets.ts to upload answers.json, then retry)')
+    }
+  }
+
   const totalDuration = (performance.now() - totalStart) / 1000
 
   // ── Phase 6: Results ──

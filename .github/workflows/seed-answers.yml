@@ -1,0 +1,25 @@
+name: Seed MultiHop-RAG Answers
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    if: github.actor == 'fIa5h' || github.actor == 'claude'
+    env:
+      BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install benchmark dependencies
+        working-directory: benchmarks
+        run: npm install
+      - name: Seed answers.json
+        working-directory: benchmarks
+        run: npx tsx scripts/seed-multihop-answers.ts

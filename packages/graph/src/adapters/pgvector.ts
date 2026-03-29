@@ -20,6 +20,8 @@ export interface PgMemoryAdapterConfig {
   memoriesTable?: string | undefined
   entitiesTable?: string | undefined
   edgesTable?: string | undefined
+  /** Embedding vector dimensions (e.g. 1536 for text-embedding-3-small). Used for HNSW index creation. */
+  embeddingDimensions?: number | undefined
 }
 
 // ── DDL ──
@@ -68,14 +70,14 @@ const MEMORIES_DDL = (t: string) => `
   CREATE INDEX IF NOT EXISTS ${t}_subject_idx ON ${t} (subject);
 `
 
-const ENTITIES_DDL = (t: string) => `
+const ENTITIES_DDL = (t: string, dims?: number) => `
   CREATE TABLE IF NOT EXISTS ${t} (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     entity_type TEXT NOT NULL,
     aliases     TEXT[] DEFAULT '{}',
     properties  JSONB NOT NULL DEFAULT '{}',
-    embedding   VECTOR,
+    embedding   VECTOR${dims ? `(${dims})` : ''},
     scope       JSONB NOT NULL,
     valid_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     invalid_at  TIMESTAMPTZ,
@@ -115,12 +117,15 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   private memoriesTable: string
   private entitiesTable: string
   private edgesTable: string
+  private hnswIndexCreated = false
+  private readonly embeddingDimensions: number
 
   constructor(config: PgMemoryAdapterConfig) {
     this.sql = config.sql
     this.memoriesTable = config.memoriesTable ?? 'd8um_memories'
     this.entitiesTable = config.entitiesTable ?? 'd8um_semantic_entities'
     this.edgesTable = config.edgesTable ?? 'd8um_semantic_edges'
+    this.embeddingDimensions = config.embeddingDimensions ?? 1536
   }
 
   async initialize(): Promise<void> {
@@ -128,7 +133,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     // so split each DDL block on semicolons and execute individually.
     const allDdl = [
       MEMORIES_DDL(this.memoriesTable),
-      ENTITIES_DDL(this.entitiesTable),
+      ENTITIES_DDL(this.entitiesTable, this.embeddingDimensions),
       EDGES_DDL(this.edgesTable),
     ]
     for (const ddl of allDdl) {
@@ -139,6 +144,34 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       for (const stmt of statements) {
         await this.sql(stmt)
       }
+    }
+
+    // Try to create HNSW index on entity embeddings.
+    // This may fail if the table is empty (no embedding dimensions known yet).
+    // In that case, we create it lazily after the first entity with an embedding is inserted.
+    await this.ensureHnswIndex()
+  }
+
+  private async ensureHnswIndex(): Promise<void> {
+    if (this.hnswIndexCreated) return
+    try {
+      // Ensure column has explicit dimensions (required for HNSW on pgvector)
+      // This is a no-op if column already has the correct type.
+      await this.sql(
+        `ALTER TABLE ${this.entitiesTable} ALTER COLUMN embedding TYPE vector(${this.embeddingDimensions})`
+      )
+    } catch {
+      // Column may already be typed — ignore
+    }
+    try {
+      await this.sql(
+        `CREATE INDEX IF NOT EXISTS ${this.entitiesTable}_embedding_idx
+         ON ${this.entitiesTable} USING hnsw (embedding vector_cosine_ops)
+         WITH (m = 16, ef_construction = 200)`
+      )
+      this.hnswIndexCreated = true
+    } catch (err: unknown) {
+      console.warn(`[d8um] HNSW index creation failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -314,7 +347,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name, entity_type = EXCLUDED.entity_type,
          aliases = EXCLUDED.aliases, properties = EXCLUDED.properties,
-         embedding = EXCLUDED.embedding, scope = EXCLUDED.scope,
+         embedding = COALESCE(EXCLUDED.embedding, ${this.entitiesTable}.embedding), scope = EXCLUDED.scope,
          valid_at = EXCLUDED.valid_at, invalid_at = EXCLUDED.invalid_at, updated_at = NOW()
        RETURNING *`,
       [
@@ -325,6 +358,12 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         entity.temporal.invalidAt?.toISOString() ?? null,
       ]
     )
+
+    // Lazily create HNSW index after first entity with embedding is persisted
+    if (embeddingStr && !this.hnswIndexCreated) {
+      await this.ensureHnswIndex()
+    }
+
     return mapRowToEntity(rows[0]!)
   }
 
@@ -401,6 +440,24 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return rows.map(mapRowToEdge)
   }
 
+  async getEdgesBatch(entityIds: string[], direction: 'in' | 'out' | 'both' = 'both'): Promise<SemanticEdge[]> {
+    if (entityIds.length === 0) return []
+    const placeholders = entityIds.map((_, i) => `$${i + 1}`).join(',')
+    let where: string
+    if (direction === 'out') {
+      where = `source_entity_id IN (${placeholders})`
+    } else if (direction === 'in') {
+      where = `target_entity_id IN (${placeholders})`
+    } else {
+      where = `(source_entity_id IN (${placeholders}) OR target_entity_id IN (${placeholders}))`
+    }
+    const rows = await this.sql(
+      `SELECT * FROM ${this.edgesTable} WHERE ${where} AND invalid_at IS NULL`,
+      entityIds
+    )
+    return rows.map(mapRowToEdge)
+  }
+
   async findEdges(sourceId: string, targetId: string, relation?: string): Promise<SemanticEdge[]> {
     const conditions = ['source_entity_id = $1', 'target_entity_id = $2']
     const params: unknown[] = [sourceId, targetId]
@@ -474,12 +531,17 @@ function mapRowToMemory(row: Record<string, unknown>): MemoryRecord {
 }
 
 function mapRowToEntity(row: Record<string, unknown>): SemanticEntity {
+  const props = parseJson(row.properties)
+  // Stash pgvector similarity score (if present from searchEntities query) as transient property
+  if (row.similarity != null) {
+    props._similarity = row.similarity as number
+  }
   return {
     id: row.id as string,
     name: row.name as string,
     entityType: row.entity_type as string,
     aliases: row.aliases as string[] ?? [],
-    properties: parseJson(row.properties),
+    properties: props,
     embedding: undefined,
     scope: parseJson(row.scope) as d8umIdentity,
     temporal: {

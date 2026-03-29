@@ -1,5 +1,11 @@
 {
   "dataset": "multihop-rag",
   "description": "Multi-hop QA retrieval over 609 news articles (yixuantt/MultiHopRAG, COLM 2024)",
-  "baselines": []
+  "baselines": [
+    {
+      "system": "voyage-02 + bge-reranker-large (chunk=256)",
+      "metrics": { "nDCG@10": 0.7467 },
+      "source": "MultiHop-RAG paper (Tang & Yang, COLM 2024) Table 5 — Hit@10 (paper does not report nDCG; this is Hit@10 as rough proxy)"
+    }
+  ]
 }

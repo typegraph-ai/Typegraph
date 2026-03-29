@@ -81,6 +81,7 @@ async function main() {
     memoriesTable: `${TABLE_PREFIX}memories`,
     entitiesTable: `${TABLE_PREFIX}entities`,
     edgesTable: `${TABLE_PREFIX}edges`,
+    embeddingDimensions: EMBEDDING_DIMS,
   })
   await memoryStore.initialize()
 
@@ -183,6 +184,7 @@ async function main() {
         const result = await d.ingest(
           bucket.id, docs,
           { chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP, deduplicateBy: ['content'], propagateMetadata: ['metadata.corpusId'] },
+          { concurrency: 5 },
         )
         totalChunks += result.inserted
 

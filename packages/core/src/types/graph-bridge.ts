@@ -25,8 +25,23 @@ export interface GraphBridge {
   /** Recall memories by semantic similarity. */
   recall(query: string, identity: d8umIdentity, opts?: { limit?: number; types?: string[] }): Promise<unknown[]>
 
+  /** Check if the memory store has any active memories. Used to skip memory runner when empty. */
+  hasMemories?(): Promise<boolean>
+
   /** Store an extracted triple in the entity graph. Used during document indexing. */
-  addTriple?(triple: { subject: string; predicate: string; object: string; content: string; bucketId: string; chunkIndex?: number }): Promise<void>
+  addTriple?(triple: {
+    subject: string
+    subjectType?: string
+    subjectAliases?: string[]
+    predicate: string
+    object: string
+    objectType?: string
+    objectAliases?: string[]
+    confidence?: number
+    content: string
+    bucketId: string
+    chunkIndex?: number
+  }): Promise<void>
 
   /** Search entities by embedding similarity. Used during graph-augmented retrieval. */
   searchEntities?(query: string, identity: d8umIdentity, limit?: number): Promise<Array<{ id: string; name: string; entityType: string }>>

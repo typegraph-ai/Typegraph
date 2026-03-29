@@ -1,0 +1,6 @@
+{
+  "status": "ok",
+  "query": "-- Clear license-tldr neural to verify embedding perf + concurrency fix\n-- Testing on small dataset before retrying multihop-rag\n\nTRUNCATE TABLE bench_license_neural__gateway_openai_text_embedding_3_small;\nTRUNCATE TABLE bench_license_neural__registry;\nTRUNCATE TABLE bench_license_neural_memories;\nTRUNCATE TABLE bench_license_neural_entities;\nTRUNCATE TABLE bench_license_neural_edges;\nDELETE FROM d8um_hashes WHERE bucket_id = (SELECT id FROM d8um_buckets WHERE name = 'license-tldr-neural');\nDELETE FROM d8um_documents WHERE bucket_id = (SELECT id FROM d8um_buckets WHERE name = 'license-tldr-neural');",
+  "rows": 7,
+  "output": "TRUNCATE TABLE\nTRUNCATE TABLE\nTRUNCATE TABLE\nTRUNCATE TABLE\nTRUNCATE TABLE\nDELETE 0\nDELETE 0"
+}

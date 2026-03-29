@@ -1,0 +1,44 @@
+[
+  {
+    "commit": "f924498",
+    "date": "2026-03-28",
+    "metrics": {
+      "nDCG@10": 0.6428908453693529,
+      "MAP@10": 0.5146382817724292,
+      "Recall@10": 0.7884331116038459,
+      "Precision@10": 0.20270509977826917,
+      "MRR@10": 0.7029155668180044,
+      "Hit@10": 0.9804878048780488
+    },
+    "avgQueryMs": 633.9,
+    "mode": "hybrid",
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "chunkSize": 2048,
+      "chunkOverlap": 256,
+      "queryFetch": 50
+    }
+  },
+  {
+    "commit": "f924498",
+    "date": "2026-03-28",
+    "metrics": {
+      "nDCG@10": 0.6428908453693529,
+      "MAP@10": 0.5146382817724292,
+      "Recall@10": 0.7884331116038459,
+      "Precision@10": 0.20270509977826917,
+      "MRR@10": 0.7029155668180044,
+      "Hit@10": 0.9804878048780488
+    },
+    "avgQueryMs": 633.9,
+    "mode": "hybrid",
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "chunkSize": 2048,
+      "chunkOverlap": 256,
+      "queryFetch": 50
+    }
+  }
+]

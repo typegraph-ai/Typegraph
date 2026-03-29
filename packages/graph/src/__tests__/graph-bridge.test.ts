@@ -164,7 +164,7 @@ describe('createGraphBridge', () => {
         bucketId: 'doc-2',
       })
 
-      expect(edges[0]!.relation).toBe('WORKS_AT')
+      expect(edges[0]!.relation).toBe('WORKS_FOR')
     })
 
     it('resolves duplicate entities on repeated addTriple calls', async () => {
@@ -201,6 +201,7 @@ describe('createGraphBridge', () => {
       // Should have 3 entities (Vitamin D reused, + osteoporosis + bone health)
       expect(firstEntityCount).toBe(2)
       expect(entities.size).toBe(3)
+      // 2 explicit edges (prevents, supports), 0 CO_OCCURS (all entities have direct edges)
       expect(edges).toHaveLength(2)
     })
   })

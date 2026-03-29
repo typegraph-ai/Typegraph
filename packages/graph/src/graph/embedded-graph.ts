@@ -72,6 +72,27 @@ export class EmbeddedGraph {
   }
 
   /**
+   * Get edges for multiple entities in a single batch query.
+   * Falls back to sequential getEdges() if batch not supported.
+   */
+  async getEdgesBatch(
+    entityIds: string[],
+    direction: 'in' | 'out' | 'both' = 'both',
+  ): Promise<SemanticEdge[]> {
+    if (this.store.getEdgesBatch) {
+      return this.store.getEdgesBatch(entityIds, direction)
+    }
+    // Fallback to sequential
+    if (!this.store.getEdges) return []
+    const results: SemanticEdge[] = []
+    for (const id of entityIds) {
+      const edges = await this.store.getEdges(id, direction)
+      results.push(...edges)
+    }
+    return results
+  }
+
+  /**
    * Breadth-first traversal from a starting entity.
    * Returns all entities reachable within the given depth.
    */

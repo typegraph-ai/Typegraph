@@ -33,13 +33,11 @@ jobs:
 
           add_entry() {
             local ds="$1" var="$2" seed="$3"
-            local timeout=15
+            local timeout=60
             if [ "$seed" = "true" ] && [ "$var" = "neural" ]; then
               timeout=360
-            elif [ "$seed" = "true" ]; then
-              timeout=60
             elif [ "$var" = "neural" ]; then
-              timeout=30
+              timeout=120
             fi
             ENTRIES+=("{\"dataset\":\"$ds\",\"variant\":\"$var\",\"seed\":$seed,\"timeout\":$timeout}")
           }
@@ -139,8 +137,12 @@ jobs:
           if [ "${{ matrix.seed }}" = "true" ]; then
             SEED_FLAG="--seed"
           fi
+          EVAL_FLAG=""
+          if [ "${{ matrix.dataset }}" = "multihop-rag" ]; then
+            EVAL_FLAG="--eval-answers"
+          fi
           set +e
-          npx tsx ${{ matrix.dataset }}/${{ matrix.variant }}/run.ts $SEED_FLAG 2>&1 | tee /tmp/bench-output.txt
+          NODE_OPTIONS="--max-old-space-size=4096" npx tsx ${{ matrix.dataset }}/${{ matrix.variant }}/run.ts $SEED_FLAG $EVAL_FLAG 2>&1 | tee /tmp/bench-output.txt
           EXIT_CODE=${PIPESTATUS[0]}
           set -e
           # Extract JSON between delimiters
@@ -222,12 +224,12 @@ jobs:
               console.log('No baselines.json found for ' + dataset);
             }
 
-            const metricNames = Object.keys(m).filter(k => typeof m[k] === 'number');
             const baselineCols = baselines.filter(b => b.metrics['nDCG@10'] != null).slice(0, 3);
 
             // Process each result (hybrid + fast)
             for (const result of results) {
               const m = result.metrics;
+              const metricNames = Object.keys(m).filter(k => typeof m[k] === 'number');
               const t = result.timing;
 
               // Load mode-specific history
@@ -323,6 +325,11 @@ jobs:
                 date: new Date().toISOString().slice(0, 10),
                 metrics: m,
                 avgQueryMs: t.avgQueryMs,
+                timing: {
+                  ingestionSeconds: t.ingestionSeconds || null,
+                  avgQueryMs: t.avgQueryMs,
+                  totalSeconds: t.totalSeconds,
+                },
                 mode: result.mode,
                 config: result.config || {},
               };
@@ -358,6 +365,11 @@ jobs:
                   date: new Date().toISOString().slice(0, 10),
                   metrics: result.metrics,
                   avgQueryMs: result.timing.avgQueryMs,
+                  timing: {
+                    ingestionSeconds: result.timing.ingestionSeconds || null,
+                    avgQueryMs: result.timing.avgQueryMs,
+                    totalSeconds: result.timing.totalSeconds,
+                  },
                   mode,
                   config: result.config || {},
                 };

@@ -7,7 +7,11 @@ export interface BenchmarkMetrics {
   'MAP@10': number
   'Recall@10': number
   'Precision@10': number
-  [key: string]: number
+  'MRR@10'?: number
+  'Hit@10'?: number
+  'EM'?: number      // Exact Match (answer generation)
+  'F1'?: number      // Token F1 (answer generation)
+  [key: string]: number | undefined
 }
 
 export interface BenchmarkResult {
@@ -35,7 +39,7 @@ export function formatMarkdown(result: BenchmarkResult): string {
   lines.push(`| Metric | Value |`)
   lines.push(`|--------|-------|`)
   for (const [name, value] of Object.entries(result.metrics)) {
-    lines.push(`| ${name} | ${value.toFixed(4)} |`)
+    if (value != null) lines.push(`| ${name} | ${value.toFixed(4)} |`)
   }
   lines.push('')
   lines.push(`**Corpus:** ${result.corpus.toLocaleString()} docs | **Queries:** ${result.queries} | **Mode:** ${result.mode}`)
@@ -64,7 +68,7 @@ export function printResults(result: BenchmarkResult): void {
   console.log()
   console.log('  ── Retrieval Scores ──')
   for (const [name, value] of Object.entries(result.metrics)) {
-    console.log(`  ${name.padEnd(14)} ${value.toFixed(4)}`)
+    if (value != null) console.log(`  ${name.padEnd(14)} ${value.toFixed(4)}`)
   }
   console.log()
   console.log('  ── Timing ──')

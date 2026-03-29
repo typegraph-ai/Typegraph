@@ -175,7 +175,7 @@ Core and neural variants are fully isolated — no DB cleanup needed between the
 - Concurrency groups prevent the same dataset/variant from running in parallel
 - History commit step uses fetch/reset/re-apply pattern (not rebase) for concurrent push safety
 - `contents: write` permission is required for both PR comments and history commits
-- Build is scoped: `pnpm turbo run build --filter=@d8um/adapter-pgvector`
+- Build is scoped: `pnpm turbo run build --filter=@d8um/adapter-pgvector --filter=@d8um/graph` (includes `@d8um/core` as transitive dependency)
 
 ### Corpus Sizes
 
@@ -197,6 +197,7 @@ For estimating seed times (~3 docs/s embedding throughput):
 - Run history: `benchmarks/{dataset}/{variant}/history.json` — auto-committed by CI
 - PR comments show comparison table (d8um vs top-3 baselines) + delta from previous run
 - Only nDCG@10 has cross-system baselines; MAP/Recall/Precision are d8um-internal tracking only
+- History entries include a `timing` object with `ingestionSeconds` (if seeded), `avgQueryMs`, and `totalSeconds` — added 2026-03-29; older entries only have root-level `avgQueryMs`
 
 ### Clearing Benchmark Data for Reseed
 
@@ -268,11 +269,70 @@ When asked for a readout on benchmark results, pull data from the **history file
 
 1. Read all `history-*.json` files for each dataset/variant that has been run
 2. Read each dataset's `baselines.json` for the external comparison targets
-3. Present a table per dataset showing: commit, mode, chunk size, nDCG@10, MAP@10, Recall@10, Precision@10, delta vs text-embedding-3-small baseline
-4. Highlight the best result per dataset and whether it beats baseline
-5. Call out notable patterns (e.g., fast > hybrid, neural = core, chunk ratio issues)
+3. Present a table per dataset showing: commit, mode, chunk size, nDCG@10, MAP@10, Recall@10, Precision@10, avg query ms, ingest time (if available), delta vs text-embedding-3-small baseline
+4. Timing data is available in entries from 2026-03-29 onward (the `timing` object); older entries only have root-level `avgQueryMs`
+5. Highlight the best result per dataset and whether it beats baseline
+6. Call out notable patterns (e.g., fast > hybrid, neural = core, chunk ratio issues)
 
 **Do NOT rely on PR comments** — they may be paginated, unavailable, or stale. The history JSON files are the source of truth for all benchmark results.
+
+### Neural Ingestion Performance
+
+Neural ingestion is much slower than core due to 2 LLM calls per chunk (entity extraction + relationship extraction) plus embedding calls for entity resolution.
+
+**Concurrency:** The `concurrency` option in `IndexOpts` controls parallel document processing during ingest. Neural runners use `concurrency: 5` (default: 1 sequential). Higher values give proportional speedup but increase API rate limit risk and memory pressure.
+
+**Extraction timeout:** All `extractFromChunk` calls are wrapped with a 120-second timeout (`withTimeout` in engine.ts). If an LLM call hangs, the extraction is abandoned and the document continues without triples.
+
+**Memory:** Neural seed on large datasets (600+ docs) requires `NODE_OPTIONS="--max-old-space-size=4096"` — set in the workflow. Default Node.js heap (~1.7GB) causes silent OOM kills on GitHub Actions runners.
+
+**Estimated neural seed times** (with concurrency=5):
+
+| Dataset | Corpus | Est. Neural Seed Time |
+|---------|--------|-----------------------|
+| license-tldr-retrieval | 65 | ~96s |
+| multihop-rag | 609 | ~33min |
+| nfcorpus | ~3,633 | ~3-4h (untested) |
+
+### Inspecting Graph Health
+
+After seeding a neural benchmark, run a DB analysis query to verify graph quality. This catches regressions in entity resolution, embedding coverage, and edge quality.
+
+**Standard inspection query template:**
+```sql
+-- 1. Entity count + embedding coverage (target: 100%)
+SELECT COUNT(*) AS total, COUNT(embedding) AS with_embedding,
+  ROUND(COUNT(embedding)::numeric / NULLIF(COUNT(*), 0) * 100, 1) AS pct
+FROM {prefix}entities;
+
+-- 2. Edge distribution (CO_OCCURS should be 0 or near-0)
+SELECT relation, COUNT(*) FROM {prefix}edges GROUP BY relation ORDER BY COUNT(*) DESC LIMIT 20;
+
+-- 3. HNSW index (must exist for fast entity search)
+SELECT indexname, indexdef FROM pg_indexes
+WHERE tablename = '{prefix}entities' AND indexname LIKE '%embedding%';
+
+-- 4. Entity duplicates (case-insensitive, target: <10 pairs)
+SELECT LOWER(name), COUNT(*) FROM {prefix}entities
+GROUP BY LOWER(name) HAVING COUNT(*) > 1 ORDER BY COUNT(*) DESC LIMIT 20;
+
+-- 5. Entity type distribution
+SELECT entity_type, COUNT(*) FROM {prefix}entities GROUP BY entity_type ORDER BY COUNT(*) DESC;
+```
+
+**Healthy graph indicators:**
+- Embedding coverage: 100%
+- CO_OCCURS edges: 0 (all entities have direct relationship edges)
+- HNSW index: present with `vector_cosine_ops`, m=16, ef_construction=200
+- Entity duplicates: <10 pairs (minor duplicates from concurrent processing are acceptable)
+- Diverse predicates: 15+ distinct relation types, no single predicate >20% of edges
+- Edges per entity: 1.0–3.0 (sparse, informative graph)
+
+**Known issues to watch for:**
+- CO_OCCURS explosion: If >100 CO_OCCURS edges, the disconnected-entity guard in graph-bridge.ts may have regressed
+- Embedding loss: If coverage <100%, check COALESCE in `upsertEntity` ON CONFLICT clause
+- HNSW failure: Neon pgvector 0.8.0 requires typed `VECTOR(dims)` columns — check `ensureHnswIndex()` in pgvector adapter
+- Entity duplicates: Concurrent processing can race past the in-memory cache — acceptable at <5% rate
 
 ### Neon Postgres Compatibility
 
@@ -332,3 +392,84 @@ When asked for a readout on benchmark results, pull data from the **history file
 The MLEB baselines embed entire documents as single vectors. A chunked retrieval system must compensate by over-fetching and aggregating at the document level, otherwise chunk-level noise destroys ranking quality. The combination of SDK-level dedup (3x over-fetch) + benchmark-level dedup (5x over-fetch) + larger chunks (4x) closed the gap.
 
 For legal-rag-bench specifically, fast (pure vector) outperforms hybrid (vector + BM25 RRF). This suggests BM25 may hurt on long legal documents where keyword matching adds noise. The gap to baseline (0.3348 vs 0.3704) may require further tuning of RRF weights or larger over-fetch multipliers.
+
+### 2026-03-29 — Neural graph pipeline production-ready (PR #10)
+
+**Goal:** Make `neural` mode (hybrid + PPR graph traversal) outperform `core` mode by fixing graph quality issues and making the pipeline fast enough to run on real datasets.
+
+**Root causes found via graph inspection:** After initial neural seeding, DB analysis revealed 4 critical issues destroying graph quality:
+
+1. **CO_OCCURS explosion** (22,021 edges vs 371 explicit): O(N²) combinatorial pairing per chunk
+2. **Embedding loss** (45.9% coverage): `mapRowToEntity` returns `embedding: undefined` → merge spreads it → `upsertEntity` overwrites with NULL
+3. **HNSW index failure**: Neon pgvector 0.8.0 requires typed `VECTOR(dims)` columns, not untyped `VECTOR`
+4. **Entity duplicates** (15 pairs): `findEntities` ILIKE with LIMIT 10 misses exact matches when many partial matches exist
+
+#### Changes made
+
+1. **CO_OCCURS guard** (`packages/graph/src/graph-bridge.ts`)
+   - Only creates CO_OCCURS edges for entities with NO direct relationship edges (disconnected)
+   - Max 1 CO_OCCURS per entity per chunk
+   - Result: 0 CO_OCCURS edges (all entities had direct edges)
+
+2. **Embedding COALESCE** (`packages/graph/src/adapters/pgvector.ts`)
+   - `ON CONFLICT SET embedding = COALESCE(EXCLUDED.embedding, table.embedding)`
+   - Preserves existing embeddings when merge spreads `undefined` from mapRowToEntity
+   - Result: 100% embedding coverage
+
+3. **HNSW index creation** (`packages/graph/src/adapters/pgvector.ts`)
+   - `ensureHnswIndex()` first ALTERs column to `vector(dims)` then creates index
+   - Catches "already typed" error gracefully
+   - Passes `embeddingDimensions` config through adapter → all 7 neural runners updated
+
+4. **In-memory entity cache** (`packages/graph/src/extraction/entity-resolver.ts`)
+   - Phase 0: `nameCache` (Map<string, SemanticEntity>) checked before all DB lookups
+   - `cacheEntity()` indexes by normalized name + all aliases
+   - Result: 15 → 8 duplicate pairs (remaining from concurrent processing races)
+
+5. **Eliminate redundant embedding calls** (`packages/graph/src/extraction/entity-resolver.ts`, `adapters/pgvector.ts`)
+   - Entity resolver Phase 3: use pgvector's `_similarity` score from `searchEntities` instead of re-embedding each candidate (saves 2-6 `embed()` calls per entity)
+   - Reuse Phase 3 embedding for new entity creation (saves 1 call)
+   - `mapRowToEntity` stashes `row.similarity` as `properties._similarity`
+   - Predicate normalizer: cache resolved predicates by normalized text
+
+6. **Concurrent document processing** (`packages/core/src/index-engine/engine.ts`, `types/index-types.ts`)
+   - New `concurrency` option in `IndexOpts` — semaphore-based parallel doc processing
+   - Both `indexWithConnector` and `ingestBatch` paths support concurrency
+   - Safe error handling: `.catch()` wrapper prevents unhandled promise rejections from crashing Node.js
+   - All 7 neural runners set `concurrency: 5`
+
+7. **Extraction timeout** (`packages/core/src/index-engine/engine.ts`)
+   - `withTimeout(extractFromChunk(...), 120_000)` — 2-minute timeout per chunk
+   - Prevents hung LLM calls from blocking entire batches
+   - On timeout, extraction is abandoned; document still stored with chunks, just without triples
+
+8. **4GB heap for CI** (`.github/workflows/benchmarks.yml`)
+   - `NODE_OPTIONS="--max-old-space-size=4096"` prevents OOM kills on GitHub Actions
+   - Default ~1.7GB heap insufficient for 600+ doc neural ingestion
+
+#### Results — multihop-rag (609 docs, 2255 queries)
+
+| Mode | nDCG@10 | MAP@10 | Recall@10 | MRR@10 | Hit@10 | Avg Query |
+|------|---------|--------|-----------|--------|--------|-----------|
+| **neural** | 0.6427 | 0.5143 | 0.7883 | 0.7028 | 0.9805 | 3984ms |
+| hybrid (core) | 0.6429 | 0.5146 | 0.7884 | 0.7029 | 0.9805 | 634ms |
+| fast (core) | **0.6459** | **0.5180** | **0.7914** | **0.7055** | **0.9814** | 708ms |
+
+Neural matches core quality (delta <0.001) but queries are 6x slower due to PPR graph traversal overhead. The graph does not yet provide retrieval quality lift on this dataset.
+
+#### Performance improvements
+
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| Neural ingest (license-tldr, 65 docs) | 401.4s | 95.6s | **4.2x faster** |
+| Neural ingest (multihop-rag, 609 docs) | ~29h est. | 33min | **~53x faster** |
+| Neural query (multihop-rag) | 7942ms | 3984ms | **2x faster** |
+| Embedding calls per entity | 3-7 | 1 | **3-7x fewer** |
+
+#### Key learnings
+
+- **Graph inspection is essential after seeding.** The standard DB analysis query (entities + edges + HNSW + duplicates) catches quality regressions immediately. Without it, you run benchmarks on a broken graph and waste hours.
+- **OOM is silent on GitHub Actions.** Node.js default heap (~1.7GB) is insufficient for neural ingestion of 600+ docs. The process is killed with SIGKILL — no error handlers fire, no stack trace. Always set `--max-old-space-size=4096`.
+- **Concurrent processing needs error safety.** `Promise.race` in a semaphore loop leaves orphaned promises on failure. Those must be wrapped with `.catch()` or Node.js crashes on `unhandledRejection`.
+- **pgvector similarity scores eliminate re-embedding.** `searchEntities` already computes cosine similarity — stash it on the entity properties instead of re-embedding each candidate name.
+- **Neural ≈ core on multihop-rag.** The PPR graph traversal adds latency without improving ranking. This dataset may not benefit from entity-level graph traversal because the queries are answerable from keyword/vector similarity alone. Datasets requiring cross-document entity reasoning (e.g., "which companies were involved in both X and Y?") are more likely to show neural > core.

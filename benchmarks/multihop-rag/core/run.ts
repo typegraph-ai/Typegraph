@@ -16,9 +16,10 @@
 
 import { d8umCreate } from '@d8um/core'
 import { gateway } from '@ai-sdk/gateway'
+import { generateText } from 'ai'
 import { createBenchmarkAdapter } from '../../lib/adapter.js'
-import { loadCorpus, loadQueries, loadQrels, buildQrelsMap } from '../../lib/datasets.js'
-import { scoreAllQueriesExtended, deduplicateToDocuments } from '../../lib/metrics.js'
+import { loadCorpus, loadQueries, loadQrels, buildQrelsMap, loadAnswers } from '../../lib/datasets.js'
+import { scoreAllQueriesExtended, deduplicateToDocuments, exactMatch, tokenF1 } from '../../lib/metrics.js'
 import { printResults, type BenchmarkResult } from '../../lib/report.js'
 
 // ── Configuration ──
@@ -33,8 +34,10 @@ const CHUNK_SIZE = 2048
 const CHUNK_OVERLAP = 256
 const K = 10
 const QUERY_FETCH = K * 5
+const LLM_MODEL = 'google/gemini-3.1-flash-lite-preview'
 
 const shouldSeed = process.argv.includes('--seed')
+const evalAnswers = process.argv.includes('--eval-answers')
 
 // ── Main ──
 
@@ -170,6 +173,46 @@ async function main() {
     phaseNum++
     console.log(`Phase ${phaseNum}: Computing IR metrics (${mode})...`)
     const { metrics, scored } = scoreAllQueriesExtended(allResults, qrelsMap, K)
+
+    // ── Answer-generation evaluation (optional, non-fatal) ──
+    if (evalAnswers) {
+      phaseNum++
+      console.log(`Phase ${phaseNum}: Evaluating answer generation (${mode})...`)
+      try {
+        const goldAnswers = await loadAnswers(DATASET, BLOB_PREFIX)
+        const corpusMap = new Map(corpus.map(d => [d._id, d]))
+
+        let sumEM = 0, sumF1 = 0, answered = 0
+        for (const [queryId, docIds] of allResults) {
+          const gold = goldAnswers.get(queryId)
+          if (!gold) continue
+
+          const queryText = testQueries.find(q => String(q['_id']) === queryId)?.text ?? ''
+          const context = docIds.slice(0, K)
+            .map(id => corpusMap.get(id)?.text ?? '')
+            .filter(Boolean)
+            .join('\n\n---\n\n')
+
+          const { text: predicted } = await generateText({
+            model: gateway(LLM_MODEL),
+            prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
+          })
+
+          sumEM += exactMatch(predicted, gold)
+          sumF1 += tokenF1(predicted, gold)
+          answered++
+          if (answered % 50 === 0) {
+            process.stdout.write(`\r  Answers: ${answered}/${goldAnswers.size}`)
+          }
+        }
+        console.log(`\n  Answer eval complete: ${answered} queries, EM=${(sumEM / answered).toFixed(4)}, F1=${(sumF1 / answered).toFixed(4)}`)
+        metrics['EM'] = sumEM / answered
+        metrics['F1'] = sumF1 / answered
+      } catch (err) {
+        console.log(`  Answer eval skipped: ${err instanceof Error ? err.message : err}`)
+        console.log('  (Run seed-datasets.ts to upload answers.json, then retry)')
+      }
+    }
 
     benchResults.push({
       benchmark: 'MultiHop-RAG (yixuantt)',

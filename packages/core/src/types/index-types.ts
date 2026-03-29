@@ -4,6 +4,8 @@ export interface IndexOpts {
   removeDeleted?: boolean | undefined
   dryRun?: boolean | undefined
   onProgress?: ((event: IndexProgressEvent) => void) | undefined
+  /** Max concurrent documents to process. Default: 1 (sequential). Higher values speed up LLM-heavy pipelines like neural. */
+  concurrency?: number | undefined
 }
 
 export interface IndexProgressEvent {

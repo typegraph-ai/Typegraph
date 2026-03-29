@@ -43,6 +43,16 @@ const shouldSeed = process.argv.includes('--seed')
 
 // ── Main ──
 
+// Catch unhandled errors so we get diagnostics instead of silent death
+process.on('unhandledRejection', (reason) => {
+  console.error('UNHANDLED REJECTION:', reason)
+  process.exit(1)
+})
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err)
+  process.exit(1)
+})
+
 async function main() {
   const totalStart = performance.now()
 
@@ -174,6 +184,7 @@ async function main() {
       })
 
       try {
+        console.log(`  [${new Date().toISOString()}] Starting batch ${batchNum}/${totalBatches} (${batch.length} docs)...`)
         const result = await d.ingest(
           bucket.id, docs,
           { chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP, deduplicateBy: ['content'], propagateMetadata: ['metadata.corpusId'] },
@@ -193,9 +204,10 @@ async function main() {
           `(${batchMs.toFixed(0)}ms) — ${ingested}/${corpus.length} total, ` +
           `${docsPerSec.toFixed(0)} docs/s, ETA ${eta.toFixed(0)}s`
         )
-      } catch {
+      } catch (err) {
         tripleErrors++
         ingested += batch.length
+        console.error(`  Batch ${batchNum} error:`, err instanceof Error ? err.message : err)
         console.log(
           `  Batch ${batchNum}/${totalBatches}: ${batch.length} docs — FAILED (triple extraction error)`
         )

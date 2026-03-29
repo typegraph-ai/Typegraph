@@ -199,5 +199,30 @@
       "chunkOverlap": 256,
       "tripleExtractionErrors": 0
     }
+  },
+  {
+    "commit": "6053056",
+    "date": "2026-03-29",
+    "metrics": {
+      "nDCG@10": 0.6482717985135573,
+      "MAP@10": 0.5900183150183153,
+      "Recall@10": 0.8307692307692308,
+      "Precision@10": 0.08307692307692303
+    },
+    "avgQueryMs": 1838.8,
+    "timing": {
+      "ingestionSeconds": 95.6,
+      "avgQueryMs": 1838.8,
+      "totalSeconds": 218.3
+    },
+    "mode": "neural",
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "llm": "google/gemini-3.1-flash-lite-preview",
+      "chunkSize": 2048,
+      "chunkOverlap": 256,
+      "tripleExtractionErrors": 0
+    }
   }
 ]

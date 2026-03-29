@@ -34,6 +34,7 @@ export class IndexEngine {
       removeDeleted = false,
       dryRun = false,
       onProgress,
+      concurrency = 1,
     } = opts
 
     if (!connector.fetch) throw new Error(`Connector for bucket "${bucketId}" has no fetch()`)
@@ -74,136 +75,147 @@ export class IndexEngine {
 
     const seenKeys = new Set<string>()
 
-    try {
-      for await (const doc of docs) {
-        result.total++
-        const ikey = resolveIdempotencyKey(doc, indexConfig.deduplicateBy)
-        const contentHash = sha256(doc.content)
-        const storeKey = buildHashStoreKey(tenantId, bucketId, ikey)
-        seenKeys.add(ikey)
+    const processDoc = async (doc: RawDocument) => {
+      const ikey = resolveIdempotencyKey(doc, indexConfig.deduplicateBy)
+      const contentHash = sha256(doc.content)
+      const storeKey = buildHashStoreKey(tenantId, bucketId, ikey)
+      seenKeys.add(ikey)
 
-        onProgress?.({
-          ...result,
-          phase: 'hash_check',
-          done: result.skipped + result.updated + result.inserted,
-          failed: 0,
-          current: { idempotencyKey: ikey, reason: 'skipped' },
+      const stored = await this.adapter.hashStore.get(storeKey)
+
+      if (stored?.contentHash === contentHash && stored.embeddingModel === modelId) {
+        const actualChunks = await this.adapter.countChunks(modelId, {
+          bucketId,
+          tenantId,
+          idempotencyKey: ikey,
         })
-
-        const stored = await this.adapter.hashStore.get(storeKey)
-
-        if (stored?.contentHash === contentHash && stored.embeddingModel === modelId) {
-          const actualChunks = await this.adapter.countChunks(modelId, {
-            bucketId,
-            tenantId,
-            idempotencyKey: ikey,
+        if (actualChunks === stored.chunkCount) {
+          result.skipped++
+          onProgress?.({
+            ...result,
+            phase: 'hash_check',
+            done: result.skipped + result.updated + result.inserted,
+            failed: 0,
+            current: { idempotencyKey: ikey, reason: 'skipped' },
           })
-          if (actualChunks === stored.chunkCount) {
-            result.skipped++
-            onProgress?.({
-              ...result,
-              phase: 'hash_check',
-              done: result.skipped + result.updated + result.inserted,
-              failed: 0,
-              current: { idempotencyKey: ikey, reason: 'skipped' },
-            })
-            continue
-          }
+          return
         }
+      }
 
-        if (stored && stored.embeddingModel !== modelId) {
-          await this.adapter.delete(stored.embeddingModel, {
-            bucketId,
-            tenantId,
-            idempotencyKey: ikey,
-          })
-        }
+      if (stored && stored.embeddingModel !== modelId) {
+        await this.adapter.delete(stored.embeddingModel, {
+          bucketId,
+          tenantId,
+          idempotencyKey: ikey,
+        })
+      }
 
-        let documentId = doc.id ?? randomUUID()
-        if (this.adapter.upsertDocumentRecord && !dryRun) {
-          const docRecord = await this.adapter.upsertDocumentRecord({
-            bucketId,
-            tenantId,
-            title: doc.title,
-            url: doc.url,
-            contentHash,
-            chunkCount: 0,
-            status: 'processing',
-            documentType: indexConfig.documentType,
-            sourceType: indexConfig.sourceType,
-            scope: indexConfig.scope,
-            metadata: doc.metadata,
-          })
-          documentId = docRecord.id
-        }
+      let documentId = doc.id ?? randomUUID()
+      if (this.adapter.upsertDocumentRecord && !dryRun) {
+        const docRecord = await this.adapter.upsertDocumentRecord({
+          bucketId,
+          tenantId,
+          title: doc.title,
+          url: doc.url,
+          contentHash,
+          chunkCount: 0,
+          status: 'processing',
+          documentType: indexConfig.documentType,
+          sourceType: indexConfig.sourceType,
+          scope: indexConfig.scope,
+          metadata: doc.metadata,
+        })
+        documentId = docRecord.id
+      }
 
-        const chunks = connector.chunk
-          ? connector.chunk(doc, indexConfig)
-          : defaultChunker(doc, indexConfig)
+      const chunks = connector.chunk
+        ? connector.chunk(doc, indexConfig)
+        : defaultChunker(doc, indexConfig)
 
+      onProgress?.({
+        ...result,
+        phase: 'embed',
+        done: result.skipped + result.updated + result.inserted,
+        failed: 0,
+        current: { idempotencyKey: ikey, reason: stored ? 'hash_changed' : 'new' },
+      })
+
+      const textsForEmbedding = chunks.map(c => this.preprocessForEmbedding(c.content, indexConfig))
+      const embeddings = await this.embedding.embedBatch(textsForEmbedding)
+
+      const propagated = this.propagateMetadata(doc, indexConfig.propagateMetadata)
+
+      const embeddedChunks = chunks.map((chunk, i) => ({
+        idempotencyKey: ikey,
+        bucketId,
+        tenantId,
+        documentId,
+        content: chunk.content,
+        embedding: embeddings[i]!,
+        embeddingModel: modelId,
+        chunkIndex: chunk.chunkIndex,
+        totalChunks: chunks.length,
+        metadata: { ...propagated, ...chunk.metadata },
+        indexedAt: new Date(),
+      }))
+
+      // Extract triples for entity graph — await before hash store write
+      // to ensure graph state is persisted before marking document as processed
+      if (this.tripleExtractor && !dryRun) {
+        await Promise.allSettled(
+          chunks.map(chunk =>
+            this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex)
+          )
+        )
+      }
+
+      if (!dryRun) {
         onProgress?.({
           ...result,
-          phase: 'embed',
+          phase: 'store',
           done: result.skipped + result.updated + result.inserted,
           failed: 0,
           current: { idempotencyKey: ikey, reason: stored ? 'hash_changed' : 'new' },
         })
+        await this.adapter.upsertDocument(modelId, embeddedChunks)
 
-        const textsForEmbedding = chunks.map(c => this.preprocessForEmbedding(c.content, indexConfig))
-        const embeddings = await this.embedding.embedBatch(textsForEmbedding)
+        if (this.adapter.updateDocumentStatus) {
+          await this.adapter.updateDocumentStatus(documentId, 'complete', chunks.length)
+        }
 
-        const propagated = this.propagateMetadata(doc, indexConfig.propagateMetadata)
-
-        const embeddedChunks = chunks.map((chunk, i) => ({
+        await this.adapter.hashStore.set(storeKey, {
           idempotencyKey: ikey,
+          contentHash,
           bucketId,
           tenantId,
-          documentId,
-          content: chunk.content,
-          embedding: embeddings[i]!,
           embeddingModel: modelId,
-          chunkIndex: chunk.chunkIndex,
-          totalChunks: chunks.length,
-          metadata: { ...propagated, ...chunk.metadata },
           indexedAt: new Date(),
-        }))
+          chunkCount: chunks.length,
+        })
+      }
 
-        // Extract triples for entity graph — await before hash store write
-        // to ensure graph state is persisted before marking document as processed
-        if (this.tripleExtractor && !dryRun) {
-          await Promise.allSettled(
-            chunks.map(chunk =>
-              this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex)
-            )
-          )
+      stored ? result.updated++ : result.inserted++
+    }
+
+    try {
+      if (concurrency <= 1) {
+        // Sequential processing (default — preserves existing behavior)
+        for await (const doc of docs) {
+          result.total++
+          await processDoc(doc)
         }
-
-        if (!dryRun) {
-          onProgress?.({
-            ...result,
-            phase: 'store',
-            done: result.skipped + result.updated + result.inserted,
-            failed: 0,
-            current: { idempotencyKey: ikey, reason: stored ? 'hash_changed' : 'new' },
-          })
-          await this.adapter.upsertDocument(modelId, embeddedChunks)
-
-          if (this.adapter.updateDocumentStatus) {
-            await this.adapter.updateDocumentStatus(documentId, 'complete', chunks.length)
+      } else {
+        // Concurrent processing with semaphore
+        const active = new Set<Promise<void>>()
+        for await (const doc of docs) {
+          result.total++
+          const p = processDoc(doc).then(() => { active.delete(p) })
+          active.add(p)
+          if (active.size >= concurrency) {
+            await Promise.race(active)
           }
-
-          await this.adapter.hashStore.set(storeKey, {
-            idempotencyKey: ikey,
-            contentHash,
-            bucketId,
-            tenantId,
-            embeddingModel: modelId,
-            indexedAt: new Date(),
-            chunkCount: chunks.length,
-          })
         }
-
-        stored ? result.updated++ : result.inserted++
+        await Promise.all(active)
       }
     } catch (error) {
       result.durationMs = Date.now() - startMs
@@ -451,8 +463,10 @@ export class IndexEngine {
       ? await this.embedding.embedBatch(allTexts)
       : []
 
-    // Phase 3: Per-document upsert + hash store
-    for (const item of prepared) {
+    // Phase 3: Per-document upsert + hash store (with optional concurrency for triple extraction)
+    const { concurrency = 1 } = opts
+
+    const processItem = async (item: typeof prepared[number]) => {
       const { doc, chunks, ikey, contentHash, documentId, textOffset } = item
       const embeddings = allEmbeddings.slice(textOffset, textOffset + chunks.length)
       const propagated = this.propagateMetadata(doc, indexConfig?.propagateMetadata)
@@ -500,6 +514,23 @@ export class IndexEngine {
       }
 
       result.inserted++
+    }
+
+    if (concurrency <= 1) {
+      for (const item of prepared) {
+        await processItem(item)
+      }
+    } else {
+      // Concurrent processing with semaphore
+      const active = new Set<Promise<void>>()
+      for (const item of prepared) {
+        const p = processItem(item).then(() => { active.delete(p) })
+        active.add(p)
+        if (active.size >= concurrency) {
+          await Promise.race(active)
+        }
+      }
+      await Promise.all(active)
     }
 
     result.durationMs = Date.now() - startMs

@@ -138,6 +138,7 @@ async function main() {
     access: 'private',
     contentType: 'application/json',
     addRandomSuffix: false,
+    allowOverwrite: true,
   })
   console.log(`  Done.`)
 }

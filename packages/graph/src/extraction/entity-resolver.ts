@@ -94,14 +94,16 @@ export class EntityResolver {
       }
     }
 
-    // Phase 3: Vector similarity (most expensive — embedding + cosine)
+    // Phase 3: Vector similarity (uses pgvector similarity score directly — no re-embedding)
+    let nameEmbedding: number[] | undefined
     if (this.store.searchEntities) {
-      const nameEmbedding = await this.embedding.embed(name)
+      nameEmbedding = await this.embedding.embed(name)
       const similar = await this.store.searchEntities(nameEmbedding, scope, 5)
 
       for (const candidate of similar) {
-        const candidateEmbedding = await this.embedding.embed(candidate.name)
-        const similarity = this.cosineSimilarity(nameEmbedding, candidateEmbedding)
+        // Use pgvector's cosine similarity score (stashed by adapter) instead of re-embedding
+        const similarity = (candidate.properties._similarity as number | undefined)
+          ?? this.cosineSimilarity(nameEmbedding, candidate.embedding ?? [])
         if (similarity >= this.threshold) {
           const merged = this.merge(candidate, { name, entityType, aliases })
           this.cacheEntity(merged)
@@ -110,8 +112,10 @@ export class EntityResolver {
       }
     }
 
-    // No match found - create new entity with embedding
-    const nameEmbedding = await this.embedding.embed(name)
+    // No match found - create new entity (reuse embedding from Phase 3 if available)
+    if (!nameEmbedding) {
+      nameEmbedding = await this.embedding.embed(name)
+    }
     const entity: SemanticEntity = {
       id: randomUUID(),
       name,

@@ -531,12 +531,17 @@ function mapRowToMemory(row: Record<string, unknown>): MemoryRecord {
 }
 
 function mapRowToEntity(row: Record<string, unknown>): SemanticEntity {
+  const props = parseJson(row.properties)
+  // Stash pgvector similarity score (if present from searchEntities query) as transient property
+  if (row.similarity != null) {
+    props._similarity = row.similarity as number
+  }
   return {
     id: row.id as string,
     name: row.name as string,
     entityType: row.entity_type as string,
     aliases: row.aliases as string[] ?? [],
-    properties: parseJson(row.properties),
+    properties: props,
     embedding: undefined,
     scope: parseJson(row.scope) as d8umIdentity,
     temporal: {

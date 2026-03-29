@@ -11,6 +11,8 @@ export class PredicateNormalizer {
   private readonly embedding: EmbeddingProvider
   private readonly threshold: number
   private readonly canonicalPredicates = new Map<string, number[]>() // predicate → embedding
+  // Cache: normalized text → canonical predicate (skips embedding for repeated surface forms)
+  private readonly resolvedCache = new Map<string, string>()
 
   constructor(embedding: EmbeddingProvider, threshold = 0.85) {
     this.embedding = embedding
@@ -26,7 +28,12 @@ export class PredicateNormalizer {
     // Exact match — skip embedding
     if (this.canonicalPredicates.has(predicate)) return predicate
 
-    const predicateEmbedding = await this.embedding.embed(predicate.replace(/_/g, ' ').toLowerCase())
+    // Check resolved cache (catches variants we've already mapped)
+    const normalizedText = predicate.replace(/_/g, ' ').toLowerCase()
+    const cached = this.resolvedCache.get(normalizedText)
+    if (cached) return cached
+
+    const predicateEmbedding = await this.embedding.embed(normalizedText)
 
     let bestMatch: string | null = null
     let bestSimilarity = 0
@@ -40,11 +47,13 @@ export class PredicateNormalizer {
     }
 
     if (bestMatch && bestSimilarity >= this.threshold) {
+      this.resolvedCache.set(normalizedText, bestMatch)
       return bestMatch
     }
 
     // Register as new canonical predicate
     this.canonicalPredicates.set(predicate, predicateEmbedding)
+    this.resolvedCache.set(normalizedText, predicate)
     return predicate
   }
 

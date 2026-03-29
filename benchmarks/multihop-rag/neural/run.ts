@@ -19,10 +19,11 @@
 import { d8umCreate, aiSdkLlmProvider } from '@d8um/core'
 import { createGraphBridge, PgMemoryStoreAdapter } from '@d8um/graph'
 import { gateway } from '@ai-sdk/gateway'
+import { generateText } from 'ai'
 import { neon } from '@neondatabase/serverless'
 import { createBenchmarkAdapter } from '../../lib/adapter.js'
-import { loadCorpus, loadQueries, loadQrels, buildQrelsMap } from '../../lib/datasets.js'
-import { scoreAllQueriesExtended, deduplicateToDocuments } from '../../lib/metrics.js'
+import { loadCorpus, loadQueries, loadQrels, buildQrelsMap, loadAnswers } from '../../lib/datasets.js'
+import { scoreAllQueriesExtended, deduplicateToDocuments, exactMatch, tokenF1 } from '../../lib/metrics.js'
 import { printResults, type BenchmarkResult } from '../../lib/report.js'
 
 // ── Configuration ──
@@ -40,6 +41,7 @@ const K = 10
 const QUERY_FETCH = K * 5
 
 const shouldSeed = process.argv.includes('--seed')
+const evalAnswers = process.argv.includes('--eval-answers')
 
 // ── Main ──
 
@@ -260,6 +262,41 @@ async function main() {
   console.log('Phase 5: Computing IR metrics...')
 
   const { metrics, scored } = scoreAllQueriesExtended(allResults, qrelsMap, K)
+
+  // ── Phase 5b: Answer-generation evaluation (optional) ──
+  if (evalAnswers) {
+    console.log('Phase 5b: Evaluating answer generation (neural)...')
+    const goldAnswers = await loadAnswers(DATASET, BLOB_PREFIX)
+    const corpusMap = new Map(corpus.map(d => [d._id, d]))
+
+    let sumEM = 0, sumF1 = 0, answered = 0
+    for (const [queryId, docIds] of allResults) {
+      const gold = goldAnswers.get(queryId)
+      if (!gold) continue
+
+      const queryText = testQueries.find(q => String(q['_id']) === queryId)?.text ?? ''
+      const context = docIds.slice(0, K)
+        .map(id => corpusMap.get(id)?.text ?? '')
+        .filter(Boolean)
+        .join('\n\n---\n\n')
+
+      const { text: predicted } = await generateText({
+        model: gateway(LLM_MODEL),
+        prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
+      })
+
+      sumEM += exactMatch(predicted, gold)
+      sumF1 += tokenF1(predicted, gold)
+      answered++
+      if (answered % 50 === 0) {
+        process.stdout.write(`\r  Answers: ${answered}/${goldAnswers.size}`)
+      }
+    }
+    console.log(`\n  Answer eval complete: ${answered} queries, EM=${(sumEM / answered).toFixed(4)}, F1=${(sumF1 / answered).toFixed(4)}`)
+    metrics['EM'] = sumEM / answered
+    metrics['F1'] = sumF1 / answered
+  }
+
   const totalDuration = (performance.now() - totalStart) / 1000
 
   // ── Phase 6: Results ──

@@ -62,6 +62,30 @@ export function hitAtK(retrieved: string[], relevant: Set<string>, k: number): n
   return 0
 }
 
+// ── Answer-generation evaluation metrics ──
+
+function normalizeAnswer(s: string): string {
+  return s.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim()
+}
+
+export function exactMatch(predicted: string, gold: string): number {
+  return normalizeAnswer(predicted) === normalizeAnswer(gold) ? 1 : 0
+}
+
+export function tokenF1(predicted: string, gold: string): number {
+  const predTokens = normalizeAnswer(predicted).split(/\s+/).filter(Boolean)
+  const goldTokens = normalizeAnswer(gold).split(/\s+/).filter(Boolean)
+  if (goldTokens.length === 0) return predTokens.length === 0 ? 1 : 0
+  const goldSet = new Set(goldTokens)
+  const common = predTokens.filter(t => goldSet.has(t)).length
+  if (common === 0) return 0
+  const precision = common / predTokens.length
+  const recall = common / goldTokens.length
+  return 2 * precision * recall / (precision + recall)
+}
+
+// ── Retrieval helpers ──
+
 export function deduplicateToDocuments(
   results: Array<{ metadata: Record<string, unknown> }>,
   limit: number,

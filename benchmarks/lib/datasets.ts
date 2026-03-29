@@ -63,6 +63,13 @@ async function fetchBlobJson<T>(blobPath: string): Promise<T> {
   return res.json() as Promise<T>
 }
 
+// ── Answer Types ──
+
+export interface AnswerRow {
+  _id: string
+  answer: string
+}
+
 // ── BEIR Dataset Loaders ──
 
 export async function loadCorpus(dataset: string, blobPrefix = 'datasets/beir'): Promise<BeirCorpusRow[]> {
@@ -84,6 +91,15 @@ export async function loadQrels(dataset: string, blobPrefix = 'datasets/beir'): 
   const rows = await fetchBlobJson<BeirQrelRow[]>(`${blobPrefix}/${dataset}/qrels.json`)
   console.log(`  ✓ ${rows.length.toLocaleString()} relevance judgments`)
   return rows
+}
+
+export async function loadAnswers(dataset: string, blobPrefix = 'datasets/beir'): Promise<Map<string, string>> {
+  console.log(`  Loading ${dataset}/answers from blob storage...`)
+  const rows = await fetchBlobJson<AnswerRow[]>(`${blobPrefix}/${dataset}/answers.json`)
+  const map = new Map<string, string>()
+  for (const row of rows) map.set(row._id, row.answer)
+  console.log(`  \u2713 ${map.size.toLocaleString()} gold answers`)
+  return map
 }
 
 /**

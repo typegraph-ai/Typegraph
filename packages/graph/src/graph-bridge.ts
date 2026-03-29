@@ -6,6 +6,7 @@ import type { ConversationMessage } from './extraction/extractor.js'
 import { d8umMemory } from './d8um-memory.js'
 import { EmbeddedGraph } from './graph/embedded-graph.js'
 import { EntityResolver } from './extraction/entity-resolver.js'
+import { PredicateNormalizer } from './extraction/predicate-normalizer.js'
 import { createTemporal } from './temporal.js'
 import { scopeKey } from './types/scope.js'
 import { randomUUID } from 'crypto'
@@ -33,6 +34,7 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
 
   const graph = new EmbeddedGraph(memoryStore)
   const resolver = new EntityResolver({ store: memoryStore, embedding })
+  const predicateNormalizer = new PredicateNormalizer(embedding)
 
   // Cache d8umMemory instances per identity scope
   const memoryCache = new Map<string, d8umMemory>()
@@ -80,6 +82,23 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     })
   }
 
+  // ── Memory check (cached) ──
+
+  let memoriesChecked = false
+  let memoriesExist = false
+
+  async function hasMemories(): Promise<boolean> {
+    if (memoriesChecked) return memoriesExist
+    try {
+      const results = await memoryStore.list({ status: 'active' }, 1)
+      memoriesExist = results.length > 0
+    } catch {
+      memoriesExist = false
+    }
+    memoriesChecked = true
+    return memoriesExist
+  }
+
   // ── Optional methods (graph-augmented retrieval) ──
 
   /**
@@ -87,20 +106,50 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
    * Called by TripleExtractor during document indexing.
    * Resolves entities via EntityResolver, creates edge with chunk provenance.
    */
+  // Generic predicates that add noise without information — filter these out
+  const GENERIC_PREDICATES = new Set([
+    'IS', 'IS_A', 'IS_AN', 'HAS', 'HAS_A', 'RELATED_TO',
+    'ASSOCIATED_WITH', 'INVOLVES', 'INCLUDES', 'CONTAINS',
+  ])
+
+  // Track entities per chunk for co-occurrence edge creation (Improvement 8)
+  // Key: chunk content hash, Value: set of entity IDs seen in that chunk
+  const chunkEntityMap = new Map<string, Set<string>>()
+  // Track direct edges to avoid redundant CO_OCCURS edges
+  const directEdgePairs = new Set<string>()
+
   async function addTriple(triple: {
     subject: string
+    subjectType?: string
+    subjectAliases?: string[]
     predicate: string
     object: string
+    objectType?: string
+    objectAliases?: string[]
+    confidence?: number
     content: string
     bucketId: string
     chunkIndex?: number
   }): Promise<void> {
     const scope = defaultScope
 
+    // Normalize predicate to SCREAMING_SNAKE_CASE
+    let relation = triple.predicate
+      .trim()
+      .toUpperCase()
+      .replace(/[\s-]+/g, '_')
+      .replace(/[^A-Z0-9_]/g, '')
+
+    // Filter out generic predicates that add noise
+    if (GENERIC_PREDICATES.has(relation)) return
+
+    // Cluster semantically equivalent predicates (e.g., PLAYS_FOR ≈ IS_A_PLAYER_FOR)
+    relation = await predicateNormalizer.normalize(relation)
+
     // Resolve subject and object entities (dedup via alias + vector similarity)
     const [subjectResult, objectResult] = await Promise.all([
-      resolver.resolve(triple.subject, 'entity', [], scope),
-      resolver.resolve(triple.object, 'entity', [], scope),
+      resolver.resolve(triple.subject, triple.subjectType ?? 'entity', triple.subjectAliases ?? [], scope),
+      resolver.resolve(triple.object, triple.objectType ?? 'entity', triple.objectAliases ?? [], scope),
     ])
 
     // Persist entities
@@ -109,12 +158,8 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
       graph.addEntity(objectResult.entity),
     ])
 
-    // Normalize predicate to SCREAMING_SNAKE_CASE
-    const relation = triple.predicate
-      .trim()
-      .toUpperCase()
-      .replace(/[\s-]+/g, '_')
-      .replace(/[^A-Z0-9_]/g, '')
+    // Use LLM confidence as edge weight (default 1.0 for backward compat)
+    const weight = triple.confidence ?? 1.0
 
     // Create edge with chunk provenance stored in properties
     const edge: SemanticEdge = {
@@ -122,7 +167,7 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
       sourceEntityId: subjectResult.entity.id,
       targetEntityId: objectResult.entity.id,
       relation,
-      weight: 1.0,
+      weight,
       properties: {
         content: triple.content,
         bucketId: triple.bucketId,
@@ -134,6 +179,43 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     }
 
     await graph.addEdge(edge)
+
+    // Track direct edge pair to avoid redundant CO_OCCURS
+    const pairKey = [subjectResult.entity.id, objectResult.entity.id].sort().join(':')
+    directEdgePairs.add(pairKey)
+
+    // Track entities per chunk for co-occurrence edges
+    const chunkKey = `${triple.bucketId}:${triple.chunkIndex ?? 0}`
+    let chunkEntities = chunkEntityMap.get(chunkKey)
+    if (!chunkEntities) {
+      chunkEntities = new Set()
+      chunkEntityMap.set(chunkKey, chunkEntities)
+    }
+    const newEntityIds = [subjectResult.entity.id, objectResult.entity.id]
+    const existingIds = [...chunkEntities]
+
+    for (const newId of newEntityIds) {
+      if (chunkEntities.has(newId)) continue
+      // Create CO_OCCURS edges with existing entities in this chunk
+      for (const existingId of existingIds) {
+        const coKey = [newId, existingId].sort().join(':')
+        if (directEdgePairs.has(coKey)) continue // skip if direct edge exists
+
+        const coEdge: SemanticEdge = {
+          id: randomUUID(),
+          sourceEntityId: newId,
+          targetEntityId: existingId,
+          relation: 'CO_OCCURS',
+          weight: 0.3, // Lower weight than explicit triples
+          properties: { bucketId: triple.bucketId },
+          scope,
+          temporal: createTemporal(),
+          evidence: [],
+        }
+        await graph.addEdge(coEdge)
+      }
+      chunkEntities.add(newId)
+    }
   }
 
   /**
@@ -186,21 +268,19 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     const allEntityIds = new Set(entityIds)
     const neighborEdges: SemanticEdge[] = []
 
-    // First pass: get edges for seed entities, collect neighbor IDs
-    for (const entityId of entityIds) {
-      const edges = await graph.getEdges(entityId, 'both')
-      for (const edge of edges) {
-        neighborEdges.push(edge)
-        allEntityIds.add(edge.sourceEntityId)
-        allEntityIds.add(edge.targetEntityId)
-      }
+    // First pass: batch-load edges for seed entities, collect neighbor IDs
+    const seedEdges = await graph.getEdgesBatch(entityIds, 'both')
+    for (const edge of seedEdges) {
+      neighborEdges.push(edge)
+      allEntityIds.add(edge.sourceEntityId)
+      allEntityIds.add(edge.targetEntityId)
     }
 
-    // Second pass: get edges for 1-hop neighbors (2-hop expansion)
+    // Second pass: batch-load edges for 1-hop neighbors (2-hop expansion)
     const newNeighborIds = [...allEntityIds].filter(id => !entityIds.includes(id))
-    for (const entityId of newNeighborIds) {
-      const edges = await graph.getEdges(entityId, 'both')
-      neighborEdges.push(...edges)
+    if (newNeighborIds.length > 0) {
+      const hopEdges = await graph.getEdgesBatch(newNeighborIds, 'both')
+      neighborEdges.push(...hopEdges)
     }
 
     // Deduplicate edges by ID and build bidirectional adjacency
@@ -238,21 +318,24 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     const seen = new Set<string>()
     const chunks: Array<{ content: string; bucketId: string; score: number }> = []
 
-    for (const entityId of entityIds) {
-      const edges = await graph.getEdges(entityId, 'both')
-      for (const edge of edges) {
-        const content = edge.properties.content as string | undefined
-        const bucketId = edge.properties.bucketId as string | undefined
+    // Batch-load all edges for the entity list
+    const allEdges = await graph.getEdgesBatch(entityIds, 'both')
 
-        if (content && bucketId) {
-          // Deduplicate by content hash (bucketId + content prefix)
-          const key = `${bucketId}:${content.slice(0, 100)}`
-          if (!seen.has(key)) {
-            seen.add(key)
-            // Use PPR score of the entity that led us to this chunk, fall back to edge weight
-            const score = pprScores?.get(entityId) ?? edge.weight
-            chunks.push({ content, bucketId, score })
-          }
+    // Build entity→edge mapping for PPR score lookup
+    const entityIdSet = new Set(entityIds)
+    for (const edge of allEdges) {
+      const content = edge.properties.content as string | undefined
+      const bucketId = edge.properties.bucketId as string | undefined
+
+      if (content && bucketId) {
+        // Deduplicate by content hash (bucketId + content prefix)
+        const key = `${bucketId}:${content.slice(0, 100)}`
+        if (!seen.has(key)) {
+          seen.add(key)
+          // Use PPR score of the entity that led us to this chunk, fall back to edge weight
+          const linkedEntityId = entityIdSet.has(edge.sourceEntityId) ? edge.sourceEntityId : edge.targetEntityId
+          const score = pprScores?.get(linkedEntityId) ?? edge.weight
+          chunks.push({ content, bucketId, score })
         }
       }
     }
@@ -270,6 +353,7 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     correct,
     addConversationTurn,
     recall,
+    hasMemories,
     addTriple,
     searchEntities,
     getAdjacencyList,

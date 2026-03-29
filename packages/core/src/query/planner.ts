@@ -112,8 +112,14 @@ export class QueryPlanner {
     if (resolvedMode === 'neural' && this.graph) {
       const identity = { tenantId: opts.tenantId, groupId: opts.groupId, userId: opts.userId, agentId: opts.agentId, sessionId: opts.sessionId }
 
+      // Skip memory runner if store has no memories (avoids empty table query per query)
+      const skipMemory = this.graph.hasMemories ? !(await this.graph.hasMemories()) : false
+      const memoryPromise = skipMemory
+        ? Promise.resolve([] as NormalizedResult[])
+        : new MemoryRunner(this.graph).run(text, identity, count).catch(() => [] as NormalizedResult[])
+
       const [memResults, graphResults] = await Promise.all([
-        new MemoryRunner(this.graph).run(text, identity, count).catch(() => [] as NormalizedResult[]),
+        memoryPromise,
         new GraphRunner(this.graph).run(text, identity, count).catch(() => [] as NormalizedResult[]),
       ])
 

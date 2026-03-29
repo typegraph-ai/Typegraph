@@ -85,6 +85,9 @@ const ENTITIES_DDL = (t: string) => `
 
   CREATE INDEX IF NOT EXISTS ${t}_name_idx ON ${t} (name);
   CREATE INDEX IF NOT EXISTS ${t}_type_idx ON ${t} (entity_type);
+  CREATE INDEX IF NOT EXISTS ${t}_embedding_idx
+    ON ${t} USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 200);
 `
 
 const EDGES_DDL = (t: string) => `
@@ -398,6 +401,24 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       query = `SELECT * FROM ${this.edgesTable} WHERE (source_entity_id = $1 OR target_entity_id = $1) AND invalid_at IS NULL`
     }
     const rows = await this.sql(query, params)
+    return rows.map(mapRowToEdge)
+  }
+
+  async getEdgesBatch(entityIds: string[], direction: 'in' | 'out' | 'both' = 'both'): Promise<SemanticEdge[]> {
+    if (entityIds.length === 0) return []
+    const placeholders = entityIds.map((_, i) => `$${i + 1}`).join(',')
+    let where: string
+    if (direction === 'out') {
+      where = `source_entity_id IN (${placeholders})`
+    } else if (direction === 'in') {
+      where = `target_entity_id IN (${placeholders})`
+    } else {
+      where = `(source_entity_id IN (${placeholders}) OR target_entity_id IN (${placeholders}))`
+    }
+    const rows = await this.sql(
+      `SELECT * FROM ${this.edgesTable} WHERE ${where} AND invalid_at IS NULL`,
+      entityIds
+    )
     return rows.map(mapRowToEdge)
   }
 

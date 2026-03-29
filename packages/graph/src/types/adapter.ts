@@ -78,6 +78,7 @@ export interface MemoryStoreAdapter {
 
   upsertEdge?(edge: SemanticEdge): Promise<SemanticEdge>
   getEdges?(entityId: string, direction?: 'in' | 'out' | 'both'): Promise<SemanticEdge[]>
+  getEdgesBatch?(entityIds: string[], direction?: 'in' | 'out' | 'both'): Promise<SemanticEdge[]>
   findEdges?(sourceId: string, targetId: string, relation?: string): Promise<SemanticEdge[]>
   invalidateEdge?(id: string, invalidAt?: Date): Promise<void>
 }

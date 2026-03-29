@@ -218,11 +218,15 @@ export class IndexEngine {
           await processDoc(doc)
         }
       } else {
-        // Concurrent processing with semaphore
+        // Concurrent processing with semaphore.
+        // Wrap processDoc to never reject — prevents unhandled promise rejections
+        // from crashing the process when concurrent promises outlive a failed one.
+        const safeProcessDoc = (doc: RawDocument) =>
+          processDoc(doc).catch(() => { /* errors logged upstream */ })
         const active = new Set<Promise<void>>()
         for await (const doc of docs) {
           result.total++
-          const p = processDoc(doc).then(() => { active.delete(p) })
+          const p = safeProcessDoc(doc).then(() => { active.delete(p) })
           active.add(p)
           if (active.size >= concurrency) {
             await Promise.race(active)
@@ -540,10 +544,15 @@ export class IndexEngine {
         await processItem(item)
       }
     } else {
-      // Concurrent processing with semaphore
+      // Concurrent processing with semaphore.
+      // processItem is wrapped to never reject — errors are swallowed to prevent
+      // unhandled promise rejections from crashing the process when concurrent
+      // promises continue running after one fails.
+      const safeProcessItem = (item: typeof prepared[number]) =>
+        processItem(item).catch(() => { /* logged via triple extraction errors */ })
       const active = new Set<Promise<void>>()
       for (const item of prepared) {
-        const p = processItem(item).then(() => { active.delete(p) })
+        const p = safeProcessItem(item).then(() => { active.delete(p) })
         active.add(p)
         if (active.size >= concurrency) {
           await Promise.race(active)

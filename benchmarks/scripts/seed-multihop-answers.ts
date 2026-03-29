@@ -63,8 +63,12 @@ async function main() {
   const data = (await res.json()) as { parquet_files: { config: string; split: string; url: string }[] }
 
   // Find query parquet files (queries contain the 'answer' field)
-  const queryFiles = data.parquet_files.filter(f => f.config === 'queries' && f.split === 'train')
-  if (queryFiles.length === 0) throw new Error('No query parquet files found')
+  // MultiHopRAG uses config='MultiHopRAG' (not 'queries') for the QA split
+  const queryFiles = data.parquet_files.filter(f => f.config === 'MultiHopRAG' && f.split === 'train')
+  if (queryFiles.length === 0) {
+    const configs = [...new Set(data.parquet_files.map(f => f.config))].join(', ')
+    throw new Error(`No query parquet files found (available configs: ${configs})`)
+  }
   console.log(`  Found ${queryFiles.length} query parquet file(s)`)
 
   // Download and parse

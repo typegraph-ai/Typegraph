@@ -37,7 +37,11 @@ jobs:
             if [ "$seed" = "true" ] && [ "$var" = "neural" ]; then
               timeout=360
             elif [ "$var" = "neural" ]; then
+              timeout=180
+            elif [ "$ds" = "multihop-rag" ] && [ "$seed" = "true" ]; then
               timeout=120
+            elif [ "$ds" = "multihop-rag" ]; then
+              timeout=90
             fi
             ENTRIES+=("{\"dataset\":\"$ds\",\"variant\":\"$var\",\"seed\":$seed,\"timeout\":$timeout}")
           }

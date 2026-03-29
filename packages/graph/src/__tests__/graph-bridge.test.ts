@@ -164,7 +164,7 @@ describe('createGraphBridge', () => {
         bucketId: 'doc-2',
       })
 
-      expect(edges[0]!.relation).toBe('WORKS_AT')
+      expect(edges[0]!.relation).toBe('WORKS_FOR')
     })
 
     it('resolves duplicate entities on repeated addTriple calls', async () => {

@@ -1,7 +1,7 @@
--- Clear multihop-rag neural benchmark data for reseed with fixed graph pipeline
+-- Clear multihop-rag neural data for reseed with embedding perf fix
 -- Neural variant tables use prefix: bench_multihop_neural_
 -- Bucket name: multihop-rag-neural
--- Fixes: CO_OCCURS explosion, embedding COALESCE, HNSW index, entity dedup cache
+-- Perf: eliminated redundant embed() calls in entity resolver + predicate normalizer
 
 TRUNCATE TABLE bench_multihop_neural__gateway_openai_text_embedding_3_small;
 TRUNCATE TABLE bench_multihop_neural__registry;

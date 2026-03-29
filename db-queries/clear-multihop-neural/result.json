@@ -1,6 +1,0 @@
-{
-  "status": "ok",
-  "query": "-- Clear multihop-rag neural benchmark data for reseed with fixed graph pipeline\n-- Neural variant tables use prefix: bench_multihop_neural_\n-- Bucket name: multihop-rag-neural\n-- Fixes: CO_OCCURS explosion, embedding COALESCE, HNSW index, entity dedup cache\n\nTRUNCATE TABLE bench_multihop_neural__gateway_openai_text_embedding_3_small;\nTRUNCATE TABLE bench_multihop_neural__registry;\nTRUNCATE TABLE bench_multihop_neural_memories;\nTRUNCATE TABLE bench_multihop_neural_entities;\nTRUNCATE TABLE bench_multihop_neural_edges;\nDELETE FROM d8um_hashes WHERE bucket_id = (SELECT id FROM d8um_buckets WHERE name = 'multihop-rag-neural');\nDELETE FROM d8um_documents WHERE bucket_id = (SELECT id FROM d8um_buckets WHERE name = 'multihop-rag-neural');",
-  "rows": 7,
-  "output": "TRUNCATE TABLE\nTRUNCATE TABLE\nTRUNCATE TABLE\nTRUNCATE TABLE\nTRUNCATE TABLE\nDELETE 0\nDELETE 0"
-}

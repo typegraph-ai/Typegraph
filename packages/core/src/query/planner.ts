@@ -138,8 +138,8 @@ export class QueryPlanner {
           }
         }
 
-        // Rank-decaying multiplicative boost: graph rank 0 → 1.20×, rank 9 → 1.08×
-        const BOOST_MAX = 0.2
+        // Rank-decaying multiplicative boost: graph rank 0 → 1.10×, rank 9 → 1.04×
+        const BOOST_MAX = 0.1
         const DECAY = 0.15
         for (const r of allResults) {
           const graphRank = graphContentRank.get(r.content)

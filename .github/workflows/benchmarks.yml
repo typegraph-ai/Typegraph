@@ -34,7 +34,9 @@ jobs:
           add_entry() {
             local ds="$1" var="$2" seed="$3" answers_only="${4:-false}" eval_model="${5:-}"
             local timeout=60
-            if [ "$answers_only" = "true" ]; then
+            if [ "$answers_only" = "true" ] && [ "$var" = "neural" ]; then
+              timeout=25
+            elif [ "$answers_only" = "true" ]; then
               timeout=15
             elif [ "$seed" = "true" ] && [ "$var" = "neural" ]; then
               timeout=360

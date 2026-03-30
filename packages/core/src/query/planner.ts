@@ -137,29 +137,7 @@ export class QueryPlanner {
         bucketTimings['__memory__'] = { mode: 'cached', resultCount: memResults.length, durationMs: Date.now() - startMs, status: 'ok' }
       }
       if (graphResults.length > 0) {
-        // Graph as reranker: boost indexed results that also appear in graph output.
-        // Graph PPR chunks are too noisy to compete as a separate RRF runner, but
-        // overlap with indexed results is a strong relevance signal worth amplifying.
-        const graphContentRank = new Map<string, number>()
-        for (let i = 0; i < graphResults.length; i++) {
-          if (!graphContentRank.has(graphResults[i]!.content)) {
-            graphContentRank.set(graphResults[i]!.content, i)
-          }
-        }
-
-        // Rank-decaying multiplicative boost: graph rank 0 → 1.10×, rank 9 → 1.04×
-        const BOOST_MAX = 0.1
-        const DECAY = 0.15
-        for (const r of allResults) {
-          const graphRank = graphContentRank.get(r.content)
-          if (graphRank !== undefined) {
-            r.normalizedScore *= 1 + BOOST_MAX / (1 + graphRank * DECAY)
-          }
-        }
-
-        // Re-sort so boosted order is respected in RRF rank positions
-        allResults.sort((a, b) => b.normalizedScore - a.normalizedScore)
-
+        runnerArrays.push(graphResults)
         bucketTimings['__graph__'] = { mode: 'cached', resultCount: graphResults.length, durationMs: Date.now() - startMs, status: 'ok' }
       }
     }

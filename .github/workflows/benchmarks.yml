@@ -331,18 +331,22 @@ jobs:
 
               if (history.length > 0) {
                 const recent = history.slice(-5).reverse();
+                // Use nDCG@10 as primary metric; fall back to ACC for answer-only runs
+                const primaryMetric = recent[0].metrics['nDCG@10'] != null ? 'nDCG@10' : 'ACC';
                 lines.push('', '<details><summary>Progress (last ' + Math.min(history.length, 5) + ' runs)</summary>', '');
-                lines.push('| Commit | Date | nDCG@10 | Δ | Avg Query |');
+                lines.push('| Commit | Date | ' + primaryMetric + ' | Δ | Avg Query |');
                 lines.push('|--------|------|---------|---|-----------|');
                 for (let i = 0; i < recent.length; i++) {
                   const h = recent[i];
                   const prev = recent[i + 1];
                   let delta = '—';
-                  if (prev) {
-                    const d = h.metrics['nDCG@10'] - prev.metrics['nDCG@10'];
+                  const hVal = h.metrics[primaryMetric];
+                  const prevVal = prev ? prev.metrics[primaryMetric] : null;
+                  if (prevVal != null && hVal != null) {
+                    const d = hVal - prevVal;
                     delta = (d >= 0 ? '+' : '') + d.toFixed(4);
                   }
-                  lines.push('| ' + h.commit + ' | ' + h.date + ' | ' + h.metrics['nDCG@10'].toFixed(4) + ' | ' + delta + ' | ' + h.avgQueryMs.toFixed(1) + 'ms |');
+                  lines.push('| ' + h.commit + ' | ' + h.date + ' | ' + (hVal != null ? hVal.toFixed(4) : '—') + ' | ' + delta + ' | ' + h.avgQueryMs.toFixed(1) + 'ms |');
                 }
                 lines.push('', '</details>');
               }

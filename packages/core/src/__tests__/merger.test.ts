@@ -20,16 +20,17 @@ describe('dedupKey', () => {
     expect(dedupKey(r)).toBe('https://example.com/page')
   })
 
-  it('uses documentId::chunkIndex when chunk present', () => {
+  it('uses content hash when no url (enables cross-runner dedup)', () => {
     const r = makeResult({ url: undefined, documentId: 'doc-1', chunk: { index: 2, total: 5, isNeighbor: false } })
-    expect(dedupKey(r)).toBe('doc-1::2')
-  })
-
-  it('falls back to content hash (64-char SHA256)', () => {
-    const r = makeResult({ url: undefined, chunk: undefined })
     const key = dedupKey(r)
     expect(key).toHaveLength(64)
     expect(key).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('same content from different runners produces same key', () => {
+    const indexed = makeResult({ url: undefined, content: 'shared chunk', documentId: 'doc-1', chunk: { index: 0, total: 1, isNeighbor: false }, mode: 'indexed' })
+    const graph = makeResult({ url: undefined, content: 'shared chunk', documentId: 'graph-0', chunk: undefined, mode: 'graph' })
+    expect(dedupKey(indexed)).toBe(dedupKey(graph))
   })
 
 })

@@ -260,13 +260,17 @@ async function main() {
       const gold = answers.get(queryId)
       if (!gold) continue
 
-      const response = await d.query(queryText, {
-        mode: 'neural',
-        count: QUERY_FETCH,
-        buckets: [bucket!.id],
-      })
-
       try {
+        // 60s timeout per query to prevent hung DB/API connections from stalling the run
+        const response = await Promise.race([
+          d.query(queryText, {
+            mode: 'neural',
+            count: QUERY_FETCH,
+            buckets: [bucket!.id],
+          }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('query timeout (60s)')), 60_000)),
+        ])
+
         const chunks = response.results.slice(0, 6).map(r => r.content)
         const context = chunks.join('\n\n---\n\n')
         const { text: predicted } = await generateText({

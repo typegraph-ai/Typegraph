@@ -137,7 +137,18 @@ export class QueryPlanner {
         bucketTimings['__memory__'] = { mode: 'cached', resultCount: memResults.length, durationMs: Date.now() - startMs, status: 'ok' }
       }
       if (graphResults.length > 0) {
-        runnerArrays.push(graphResults)
+        // Reinforcement-only: keep graph results whose content matches an indexed result.
+        // Graph retrieves from the same chunk pool as indexed search — novel graph results
+        // are noise that displaces better-ranked indexed chunks from top-K.
+        if (allResults.length > 0) {
+          const indexedContent = new Set(allResults.map(r => r.content))
+          const reinforcing = graphResults.filter(r => indexedContent.has(r.content))
+          if (reinforcing.length > 0) {
+            runnerArrays.push(reinforcing)
+          }
+        } else {
+          runnerArrays.push(graphResults)
+        }
         bucketTimings['__graph__'] = { mode: 'cached', resultCount: graphResults.length, durationMs: Date.now() - startMs, status: 'ok' }
       }
     }

@@ -51,11 +51,12 @@ export class GraphRunner {
     return chunks.map((chunk, i) => ({
       content: chunk.content,
       bucketId: chunk.bucketId,
-      documentId: `graph-${i}`,
+      documentId: chunk.documentId ?? `graph-${i}`,
       rawScores: { graph: chunk.score },
       normalizedScore: chunk.score,
       mode: 'graph' as const,
-      metadata: {},
+      metadata: chunk.metadata ?? {},
+      chunk: chunk.chunkIndex !== undefined ? { index: chunk.chunkIndex, total: 1, isNeighbor: false } : undefined,
       tenantId: identity.tenantId,
     }))
   }

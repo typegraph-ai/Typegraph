@@ -130,6 +130,8 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     content: string
     bucketId: string
     chunkIndex?: number
+    documentId?: string
+    metadata?: Record<string, unknown>
   }): Promise<void> {
     const scope = defaultScope
 
@@ -172,6 +174,8 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
         content: triple.content,
         bucketId: triple.bucketId,
         ...(triple.chunkIndex !== undefined ? { chunkIndex: triple.chunkIndex } : {}),
+        ...(triple.documentId ? { documentId: triple.documentId } : {}),
+        ...(triple.metadata ? { metadata: triple.metadata } : {}),
       },
       scope,
       temporal: createTemporal(),
@@ -321,9 +325,9 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     entityIds: string[],
     limit: number = 20,
     pprScores?: Map<string, number>,
-  ): Promise<Array<{ content: string; bucketId: string; score: number }>> {
+  ): Promise<Array<{ content: string; bucketId: string; score: number; documentId?: string; chunkIndex?: number; metadata?: Record<string, unknown> }>> {
     const seen = new Set<string>()
-    const chunks: Array<{ content: string; bucketId: string; score: number }> = []
+    const chunks: Array<{ content: string; bucketId: string; score: number; documentId?: string; chunkIndex?: number; metadata?: Record<string, unknown> }> = []
 
     // Batch-load all edges for the entity list
     const allEdges = await graph.getEdgesBatch(entityIds, 'both')
@@ -353,7 +357,14 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
           const rawPPR = pprScores?.get(linkedEntityId) ?? edge.weight
           const degree = entityDegree.get(linkedEntityId) ?? 1
           const score = rawPPR / Math.sqrt(degree)
-          chunks.push({ content, bucketId, score })
+          const edgeDocId = edge.properties.documentId as string | undefined
+          const chunkIdx = edge.properties.chunkIndex as number | undefined
+          const edgeMeta = edge.properties.metadata as Record<string, unknown> | undefined
+          const chunk: { content: string; bucketId: string; score: number; documentId?: string; chunkIndex?: number; metadata?: Record<string, unknown> } = { content, bucketId, score }
+          if (edgeDocId) chunk.documentId = edgeDocId
+          if (chunkIdx !== undefined) chunk.chunkIndex = chunkIdx
+          if (edgeMeta) chunk.metadata = edgeMeta
+          chunks.push(chunk)
         }
       }
     }

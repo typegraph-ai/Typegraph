@@ -32,9 +32,11 @@ jobs:
           ENTRIES=()
 
           add_entry() {
-            local ds="$1" var="$2" seed="$3"
+            local ds="$1" var="$2" seed="$3" answers_only="${4:-false}" eval_model="${5:-}"
             local timeout=60
-            if [ "$seed" = "true" ] && [ "$var" = "neural" ]; then
+            if [ "$answers_only" = "true" ]; then
+              timeout=30
+            elif [ "$seed" = "true" ] && [ "$var" = "neural" ]; then
               timeout=360
             elif [ "$var" = "neural" ]; then
               timeout=180
@@ -43,11 +45,15 @@ jobs:
             elif [ "$ds" = "multihop-rag" ]; then
               timeout=90
             fi
-            ENTRIES+=("{\"dataset\":\"$ds\",\"variant\":\"$var\",\"seed\":$seed,\"timeout\":$timeout}")
+            local eval_model_json=""
+            if [ -n "$eval_model" ]; then
+              eval_model_json=",\"eval_model\":\"$eval_model\""
+            fi
+            ENTRIES+=("{\"dataset\":\"$ds\",\"variant\":\"$var\",\"seed\":$seed,\"timeout\":$timeout,\"answers_only\":$answers_only${eval_model_json}}")
           }
 
           expand_entry() {
-            local ds="$1" var="$2" seed="$3"
+            local ds="$1" var="$2" seed="$3" answers_only="${4:-false}" eval_model="${5:-}"
             local ds_list="$DATASETS"
             local var_list="$VARIANTS"
             if [ "$ds" != "all" ]; then
@@ -58,7 +64,7 @@ jobs:
             fi
             for d in $ds_list; do
               for v in $var_list; do
-                add_entry "$d" "$v" "$seed"
+                add_entry "$d" "$v" "$seed" "$answers_only" "$eval_model"
               done
             done
           }
@@ -68,12 +74,21 @@ jobs:
             IFS=',' read -ra TAGS <<< "$INPUT"
             for tag in "${TAGS[@]}"; do
               tag=$(echo "$tag" | xargs)
-              if [[ "$tag" =~ ^([a-z0-9-]+)/(core|neural|all)(:seed)?$ ]]; then
+              if [[ "$tag" =~ ^([a-z0-9-]+)/(core|neural|all)(:seed|:answers(:[a-zA-Z0-9/._ -]+)?)?$ ]]; then
                 ds="${BASH_REMATCH[1]}"
                 var="${BASH_REMATCH[2]}"
                 seed="false"
-                if [ -n "${BASH_REMATCH[3]}" ]; then seed="true"; fi
-                expand_entry "$ds" "$var" "$seed"
+                answers_only="false"
+                eval_model=""
+                if [ "${BASH_REMATCH[3]}" = ":seed" ]; then
+                  seed="true"
+                elif [[ "${BASH_REMATCH[3]}" == :answers* ]]; then
+                  answers_only="true"
+                  if [ -n "${BASH_REMATCH[4]}" ]; then
+                    eval_model="${BASH_REMATCH[4]#:}"
+                  fi
+                fi
+                expand_entry "$ds" "$var" "$seed" "$answers_only" "$eval_model"
               fi
             done
           else
@@ -82,12 +97,21 @@ jobs:
           COMMIT_MSG
             )
             while IFS= read -r match; do
-              if [[ "$match" =~ \[bench:([a-z0-9-]+)/(core|neural|all)(:seed)?\] ]]; then
+              if [[ "$match" =~ \[bench:([a-z0-9-]+)/(core|neural|all)(:seed|:answers(:[a-zA-Z0-9/._ -]+)?)?\] ]]; then
                 ds="${BASH_REMATCH[1]}"
                 var="${BASH_REMATCH[2]}"
                 seed="false"
-                if [ -n "${BASH_REMATCH[3]}" ]; then seed="true"; fi
-                expand_entry "$ds" "$var" "$seed"
+                answers_only="false"
+                eval_model=""
+                if [ "${BASH_REMATCH[3]}" = ":seed" ]; then
+                  seed="true"
+                elif [[ "${BASH_REMATCH[3]}" == :answers* ]]; then
+                  answers_only="true"
+                  if [ -n "${BASH_REMATCH[4]}" ]; then
+                    eval_model="${BASH_REMATCH[4]#:}"
+                  fi
+                fi
+                expand_entry "$ds" "$var" "$seed" "$answers_only" "$eval_model"
               fi
             done < <(echo "$MSG" | grep -oP '\[bench:[^\]]+\]')
           fi
@@ -142,9 +166,16 @@ jobs:
             SEED_FLAG="--seed"
           fi
           EVAL_FLAG=""
-          if [ "${{ matrix.dataset }}" = "multihop-rag" ]; then
-            EVAL_FLAG="--eval-answers --eval-answers-limit=100"
+          if [ "${{ matrix.answers_only }}" = "true" ]; then
+            EVAL_FLAG="--eval-answers-only"
+            EVAL_MODEL="${{ matrix.eval_model }}"
+            if [ -n "$EVAL_MODEL" ]; then
+              EVAL_FLAG="$EVAL_FLAG --eval-model=$EVAL_MODEL"
+            fi
+          elif [ "${{ matrix.dataset }}" = "multihop-rag" ]; then
+            EVAL_FLAG="--eval-answers"
           fi
+          echo "Run SEED_FLAG=$SEED_FLAG EVAL_FLAG=$EVAL_FLAG"
           set +e
           NODE_OPTIONS="--max-old-space-size=4096" npx tsx ${{ matrix.dataset }}/${{ matrix.variant }}/run.ts $SEED_FLAG $EVAL_FLAG 2>&1 | tee /tmp/bench-output.txt
           EXIT_CODE=${PIPESTATUS[0]}

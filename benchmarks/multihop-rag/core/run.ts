@@ -19,7 +19,7 @@ import { gateway } from '@ai-sdk/gateway'
 import { generateText } from 'ai'
 import { createBenchmarkAdapter } from '../../lib/adapter.js'
 import { loadCorpus, loadQueries, loadQrels, buildQrelsMap, loadAnswers } from '../../lib/datasets.js'
-import { scoreAllQueriesExtended, deduplicateToDocuments, exactMatch, tokenF1 } from '../../lib/metrics.js'
+import { scoreAllQueriesExtended, deduplicateToDocuments, substringAccuracy, exactMatch, tokenF1 } from '../../lib/metrics.js'
 import { printResults, type BenchmarkResult } from '../../lib/report.js'
 
 // ── Configuration ──
@@ -37,11 +37,12 @@ const QUERY_FETCH = K * 5
 const LLM_MODEL = 'google/gemini-3.1-flash-lite-preview'
 
 const shouldSeed = process.argv.includes('--seed')
-const evalAnswers = process.argv.includes('--eval-answers')
-const evalAnswersLimit = (() => {
-  const arg = process.argv.find(a => a.startsWith('--eval-answers-limit='))
-  return arg ? parseInt(arg.split('=')[1]!, 10) : Infinity
-})()
+const evalAnswers = process.argv.includes('--eval-answers') || process.argv.includes('--eval-answers-only')
+const evalAnswersOnly = process.argv.includes('--eval-answers-only')
+const evalAnswersLimitArg = process.argv.find(a => a.startsWith('--eval-answers-limit='))
+const evalAnswersLimit = evalAnswersLimitArg ? parseInt(evalAnswersLimitArg.split('=')[1]!, 10) : Infinity
+const evalModelArg = process.argv.find(a => a.startsWith('--eval-model='))
+const EVAL_LLM_MODEL = evalModelArg ? evalModelArg.split('=')[1]! : LLM_MODEL
 
 // ── Main ──
 
@@ -75,15 +76,26 @@ async function main() {
   console.log()
 
   console.log('Phase 2: Loading dataset from Vercel Blob...')
-  const [corpus, queries, qrels] = await Promise.all([
+  const loadPromises: [Promise<any>, Promise<any>, Promise<any>, Promise<Map<string, string>> | null] = [
     loadCorpus(DATASET, BLOB_PREFIX),
     loadQueries(DATASET, BLOB_PREFIX),
     loadQrels(DATASET, BLOB_PREFIX),
-  ])
+    evalAnswers ? loadAnswers(DATASET, BLOB_PREFIX) : null,
+  ]
+  const [corpus, queries, qrels, goldAnswers] = await Promise.all(loadPromises.map(p => p ?? Promise.resolve(null))) as [any[], any[], any[], Map<string, string> | null]
 
   const qrelsMap = buildQrelsMap(qrels)
   const testQueries = queries.filter(q => qrelsMap.has(String(q['_id'])))
   console.log(`  Test queries with relevance judgments: ${testQueries.length}`)
+
+  // In eval-answers-only mode, only query the subset with gold answers
+  let answerQuerySet: typeof testQueries
+  if (evalAnswersOnly && goldAnswers) {
+    answerQuerySet = testQueries.filter(q => goldAnswers.has(String(q['_id']))).slice(0, evalAnswersLimit)
+    console.log(`  Answer-only mode: ${answerQuerySet.length} queries (of ${goldAnswers.size} with gold answers)`)
+  } else {
+    answerQuerySet = testQueries
+  }
   console.log()
 
   let ingestDuration: number | undefined
@@ -148,70 +160,87 @@ async function main() {
   console.log()
 
   // ── Query in both modes ──
-  const modes = ['hybrid', 'fast'] as const
+  const modes = evalAnswersOnly ? ['hybrid'] as const : ['hybrid', 'fast'] as const
   const benchResults: BenchmarkResult[] = []
   let phaseNum = 4
 
   for (const mode of modes) {
-    console.log(`Phase ${phaseNum}: Running ${testQueries.length} queries (mode: ${mode})...`)
+    const querySet = evalAnswersOnly ? answerQuerySet : testQueries
+    console.log(`Phase ${phaseNum}: Running ${querySet.length} queries (mode: ${mode})${evalAnswersOnly ? ' [answer-eval-only]' : ''}...`)
     const queryStart = performance.now()
     const allResults = new Map<string, string[]>()
+    const allChunkResults = new Map<string, string[]>()
     let queriesDone = 0
 
-    for (const query of testQueries) {
+    for (const query of querySet) {
       const queryId = String(query['_id'])
       const response = await d.query(String(query['text']), {
         mode, count: QUERY_FETCH, buckets: [bucket!.id],
       })
       allResults.set(queryId, deduplicateToDocuments(response.results, K))
+      if (evalAnswers) {
+        allChunkResults.set(queryId, response.results.slice(0, 6).map(r => r.content))
+      }
       queriesDone++
-      if (queriesDone % 50 === 0 || queriesDone === testQueries.length) {
-        process.stdout.write(`\r  Queries: ${queriesDone}/${testQueries.length}`)
+      if (queriesDone % 50 === 0 || queriesDone === querySet.length) {
+        process.stdout.write(`\r  Queries: ${queriesDone}/${querySet.length}`)
       }
     }
 
     const queryDuration = (performance.now() - queryStart) / 1000
-    const avgQueryMs = (queryDuration * 1000) / testQueries.length
+    const avgQueryMs = (queryDuration * 1000) / querySet.length
     console.log(`\n  Queries complete: ${queryDuration.toFixed(1)}s (avg ${avgQueryMs.toFixed(1)}ms/query)`)
 
-    phaseNum++
-    console.log(`Phase ${phaseNum}: Computing IR metrics (${mode})...`)
-    const { metrics, scored } = scoreAllQueriesExtended(allResults, qrelsMap, K)
+    // ── IR metrics (skip in answer-only mode) ──
+    let metrics: Record<string, number | undefined>
+    let scored: number
+
+    if (evalAnswersOnly) {
+      phaseNum++
+      console.log(`Phase ${phaseNum}: Skipping full IR metrics (answer-only mode)`)
+      metrics = {}
+      scored = querySet.length
+    } else {
+      phaseNum++
+      console.log(`Phase ${phaseNum}: Computing IR metrics (${mode})...`)
+      const irResult = scoreAllQueriesExtended(allResults, qrelsMap, K)
+      metrics = irResult.metrics
+      scored = irResult.scored
+    }
 
     // ── Answer-generation evaluation (optional, non-fatal) ──
     if (evalAnswers) {
       phaseNum++
-      const limitLabel = evalAnswersLimit < Infinity ? ` (limit: ${evalAnswersLimit})` : ''
-      console.log(`Phase ${phaseNum}: Evaluating answer generation (${mode})${limitLabel}...`)
+      console.log(`Phase ${phaseNum}: Evaluating answer generation (${mode}, model: ${EVAL_LLM_MODEL})...`)
       try {
-        const goldAnswers = await loadAnswers(DATASET, BLOB_PREFIX)
-        const corpusMap = new Map(corpus.map(d => [d._id, d]))
+        const answers = goldAnswers ?? await loadAnswers(DATASET, BLOB_PREFIX)
 
-        let sumEM = 0, sumF1 = 0, answered = 0
-        for (const [queryId, docIds] of allResults) {
+        let sumACC = 0, sumEM = 0, sumF1 = 0, answered = 0
+        const targetCount = Math.min(answers.size, evalAnswersLimit)
+        for (const [queryId] of allResults) {
           if (answered >= evalAnswersLimit) break
-          const gold = goldAnswers.get(queryId)
+          const gold = answers.get(queryId)
           if (!gold) continue
 
-          const queryText = testQueries.find(q => String(q['_id']) === queryId)?.text ?? ''
-          const context = docIds.slice(0, K)
-            .map(id => corpusMap.get(id)?.text ?? '')
-            .filter(Boolean)
-            .join('\n\n---\n\n')
+          const queryText = querySet.find(q => String(q['_id']) === queryId)?.text ?? ''
+          const chunks = allChunkResults.get(queryId) ?? []
+          const context = chunks.join('\n\n---\n\n')
 
           const { text: predicted } = await generateText({
-            model: gateway(LLM_MODEL),
+            model: gateway(EVAL_LLM_MODEL),
             prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
           })
 
+          sumACC += substringAccuracy(predicted, gold)
           sumEM += exactMatch(predicted, gold)
           sumF1 += tokenF1(predicted, gold)
           answered++
-          if (answered % 50 === 0 || answered === evalAnswersLimit) {
-            process.stdout.write(`\r  Answers: ${answered}/${Math.min(goldAnswers.size, evalAnswersLimit)}`)
+          if (answered % 50 === 0 || answered === targetCount) {
+            process.stdout.write(`\r  Answers: ${answered}/${targetCount}`)
           }
         }
-        console.log(`\n  Answer eval complete: ${answered} queries, EM=${(sumEM / answered).toFixed(4)}, F1=${(sumF1 / answered).toFixed(4)}`)
+        console.log(`\n  Answer eval complete: ${answered} queries, ACC=${(sumACC / answered).toFixed(4)}, EM=${(sumEM / answered).toFixed(4)}, F1=${(sumF1 / answered).toFixed(4)}`)
+        metrics['ACC'] = sumACC / answered
         metrics['EM'] = sumEM / answered
         metrics['F1'] = sumF1 / answered
       } catch (err) {
@@ -229,7 +258,11 @@ async function main() {
         avgQueryMs: Number(avgQueryMs.toFixed(1)),
         totalSeconds: Number(((performance.now() - totalStart) / 1000).toFixed(1)),
       },
-      config: { embedding: EMBEDDING_MODEL, embeddingDims: EMBEDDING_DIMS, chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP, queryFetch: QUERY_FETCH },
+      config: {
+        embedding: EMBEDDING_MODEL, embeddingDims: EMBEDDING_DIMS,
+        chunkSize: CHUNK_SIZE, chunkOverlap: CHUNK_OVERLAP, queryFetch: QUERY_FETCH,
+        ...(evalAnswers ? { evalModel: EVAL_LLM_MODEL } : {}),
+      },
     })
 
     printResults(benchResults[benchResults.length - 1]!)

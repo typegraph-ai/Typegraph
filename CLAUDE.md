@@ -28,11 +28,13 @@ Benchmarks are triggered via GitHub Actions using commit message tags. Results a
 
 ### Commit Message Tags
 
-Format: `[bench:DATASET/VARIANT]` or `[bench:DATASET/VARIANT:seed]`
+Format: `[bench:DATASET/VARIANT]`, `[bench:DATASET/VARIANT:seed]`, or `[bench:DATASET/VARIANT:answers[:MODEL]]`
 
-- **DATASET**: `nfcorpus`, `australian-tax-guidance-retrieval`, `contractual-clause-retrieval`, `license-tldr-retrieval`, `mleb-scalr`, `legal-rag-bench`, or `all`
+- **DATASET**: `nfcorpus`, `australian-tax-guidance-retrieval`, `contractual-clause-retrieval`, `license-tldr-retrieval`, `mleb-scalr`, `legal-rag-bench`, `multihop-rag`, or `all`
 - **VARIANT**: `core` (hybrid search), `neural` (hybrid + memory + PPR graph), or `all`
 - **:seed** (optional): Seeds the database with benchmark corpus first. Required on first run or when testing ingestion changes.
+- **:answers** (optional, multihop-rag only): Runs answer-generation eval only — queries just the gold-answer subset, skips full IR metrics, reports ACC/EM/F1. Much faster (~30min timeout vs 90-180min).
+- **:answers:MODEL** (optional): Same as `:answers` but overrides the LLM used for answer generation (e.g., `:answers:openai/gpt-5.4`).
 
 ### Examples
 
@@ -48,6 +50,10 @@ refactor: update embedding pipeline [bench:nfcorpus/core:seed] [bench:nfcorpus/n
 test: run all benchmarks [bench:all/all:seed]
 ```
 
+```
+eval: test answer gen with gpt-5.4 [bench:multihop-rag/neural:answers:openai/gpt-5.4]
+```
+
 ### Reading Results
 
 After pushing, the workflow runs and posts results as PR comments. Use the GitHub MCP tools to read them:
@@ -59,10 +65,12 @@ After pushing, the workflow runs and posts results as PR comments. Use the GitHu
 
 ### Timeouts
 
-| Variant | Without seed | With seed |
-|---------|-------------|-----------|
-| core    | 15 min      | 60 min    |
-| neural  | 30 min      | 360 min   |
+| Variant | Without seed | With seed | Answers only |
+|---------|-------------|-----------|-------------|
+| core    | 15 min      | 60 min    | 30 min      |
+| neural  | 30 min      | 360 min   | 30 min      |
+| core (multihop-rag) | 90 min | 120 min | 30 min |
+| neural (multihop-rag) | 180 min | 360 min | 30 min |
 
 ### Workflow File
 
@@ -110,11 +118,31 @@ After pushing, pull the branch to get the result file, or use GitHub MCP tools t
 
 ## Metrics
 
+### Retrieval Metrics (all benchmarks)
+
 All benchmarks report BEIR-standard metrics at cutoff 10:
 - **nDCG@10**: Normalized Discounted Cumulative Gain
 - **MAP@10**: Mean Average Precision
 - **Recall@10**: Recall
 - **Precision@10**: Precision
+- **MRR@10**: Mean Reciprocal Rank (multihop-rag only)
+- **Hit@10**: Hit rate at 10 (multihop-rag only)
+
+### Answer-Generation Metrics (multihop-rag only)
+
+When `--eval-answers` or `--eval-answers-only` is passed, multihop-rag runners also report:
+- **ACC**: Substring accuracy — `normalize(gold) in normalize(predicted)`. This is the paper-comparable metric (MultiHop-RAG paper uses substring match, not exact match).
+- **EM**: Exact match — `normalize(predicted) === normalize(gold)`. Stricter than ACC.
+- **F1**: Token-level F1 — precision/recall over whitespace-tokenized normalized text.
+
+**Critical methodology note:** The MultiHop-RAG paper (Tang & Yang, COLM 2024) uses substring match (ACC), NOT exact match. They pass top-6 retrieved chunks (max ~2048 tokens) as context to GPT-4. Our runners now match this methodology: top-6 chunks from `response.results[].content`, not full articles.
+
+### Runner Flags (multihop-rag)
+
+- `--eval-answers`: Run answer eval after full retrieval benchmark (all 2255 queries + answer gen)
+- `--eval-answers-only`: Run ONLY the answer eval subset — queries just the gold-answer subset, skips IR metrics. Much faster.
+- `--eval-answers-limit=N`: Limit answer evaluation to N queries
+- `--eval-model=MODEL`: Override the LLM for answer generation (default: `google/gemini-3.1-flash-lite-preview`)
 
 ## Development
 
@@ -473,3 +501,65 @@ Neural matches core quality (delta <0.001) but queries are 6x slower due to PPR 
 - **Concurrent processing needs error safety.** `Promise.race` in a semaphore loop leaves orphaned promises on failure. Those must be wrapped with `.catch()` or Node.js crashes on `unhandledRejection`.
 - **pgvector similarity scores eliminate re-embedding.** `searchEntities` already computes cosine similarity — stash it on the entity properties instead of re-embedding each candidate name.
 - **Neural ≈ core on multihop-rag.** The PPR graph traversal adds latency without improving ranking. This dataset may not benefit from entity-level graph traversal because the queries are answerable from keyword/vector similarity alone. Datasets requiring cross-document entity reasoning (e.g., "which companies were involved in both X and Y?") are more likely to show neural > core.
+
+### 2026-03-30 — Predicate synonym merging + answer-gen evaluation (PR #12)
+
+**Goals:**
+1. Reduce graph noise by merging synonym predicates (WORKS_FOR/EMPLOYED_BY) while preserving tense distinctions (PLAYS_FOR vs PLAYED_FOR)
+2. Add competitive answer-generation evaluation for MultiHop-RAG to compare against the paper's GPT-4 results
+3. Add `--eval-answers-only` mode for fast answer-gen iteration without re-running all 2255 retrieval queries
+
+#### Changes made
+
+1. **Predicate synonym merging** (`packages/graph/src/extraction/predicate-normalizer.ts`)
+   - Static synonym groups (O(1) lookup): WORKS_FOR/EMPLOYED_BY/WORKS_AT, LOCATED_IN/BASED_IN/HEADQUARTERED_IN, etc.
+   - Tense guard: prevents cross-tense merging (PLAYS_FOR stays separate from PLAYED_FOR)
+   - Flow: exact match → static synonym → resolved cache → embedding fallback with tense guard → new canonical
+   - Supports custom `extraSynonyms` for domain-specific overrides
+   - Tests: `packages/graph/src/__tests__/predicate-normalizer.test.ts` (15 tests)
+
+2. **Answer-generation evaluation** (`benchmarks/lib/metrics.ts`, both multihop-rag runners)
+   - `substringAccuracy(predicted, gold)`: paper-comparable metric (gold substring in predicted)
+   - `exactMatch(predicted, gold)`: strict equality after normalization
+   - `tokenF1(predicted, gold)`: token-level F1 score
+   - Context: top-6 chunks from `response.results[].content` (matches paper's methodology)
+   - Non-fatal: wrapped in try/catch, benchmark continues if answers.json missing
+
+3. **Answer-only benchmark mode** (both runners + workflow)
+   - `--eval-answers-only`: queries only the gold-answer subset, skips full IR metrics
+   - `--eval-model=MODEL`: override LLM for answer generation
+   - Workflow tag: `[bench:dataset/variant:answers]` or `[bench:dataset/variant:answers:model/name]`
+   - 30-minute timeout (vs 90-180min for full benchmarks)
+
+4. **Gold answers pipeline**
+   - `benchmarks/scripts/seed-multihop-answers.ts`: extracts answers from HuggingFace MultiHopRAG parquet
+   - `.github/workflows/seed-answers.yml`: workflow_dispatch to upload answers.json to Vercel Blob
+   - `benchmarks/lib/datasets.ts`: `loadAnswers()` function for loading gold answers
+
+#### Results — multihop-rag (latest runs)
+
+| Mode | nDCG@10 | MAP@10 | Recall@10 | MRR@10 | Hit@10 | EM | F1 | Avg Query |
+|------|---------|--------|-----------|--------|--------|------|------|-----------|
+| neural (256ca83) | 0.6431 | 0.5148 | 0.7884 | 0.7034 | 0.9805 | 0.19 | 0.27 | 2148ms |
+| hybrid (9da3bca) | 0.6429 | 0.5146 | 0.7884 | 0.7030 | 0.9805 | 0.18 | 0.26 | 306ms |
+| fast (9da3bca) | **0.6459** | **0.5180** | **0.7914** | **0.7055** | **0.9814** | 0.17 | 0.25 | 375ms |
+
+**Note:** EM/F1 above used old methodology (10 full articles as context, exact match only, Gemini Flash Lite). The `--eval-answers-only` mode with `substringAccuracy` (ACC) and top-6 chunks context is now available but hasn't been run yet with the corrected methodology.
+
+#### Predicate synonym impact on neural
+
+| Metric | Before (01d8689) | After (256ca83) | Delta |
+|--------|-------------------|------------------|-------|
+| nDCG@10 | 0.6427 | 0.6431 | +0.0004 |
+| Ingest time | 1989s | 1636s | **-18%** |
+| Avg query | 3984ms | 2148ms | **-46%** |
+
+Predicate merging reduced graph noise (fewer redundant edge types), which improved both ingestion speed and query performance without sacrificing retrieval quality.
+
+#### Key learnings
+
+- **Retrieval metrics alone are insufficient for multi-hop RAG.** The MultiHop-RAG paper (COLM 2024) and HippoRAG (NeurIPS 2024) both evaluate with answer-generation metrics (EM, F1, ACC). High Hit@10 (0.98) doesn't mean the system can answer multi-hop questions.
+- **Methodology matters enormously for answer-gen comparison.** The paper uses substring match (ACC), not exact match (EM). It passes top-6 chunks (~2048 tokens), not full articles. Using the wrong metric or context size makes results incomparable. Our EM=0.19 vs paper's GPT-4 ACC=0.56 is apples-to-oranges.
+- **Predicate synonym merging is a cheap win.** Static synonym groups + tense guard gave -18% ingest time, -46% query latency, and +0.0004 nDCG with zero risk. The tense guard is important for temporal reasoning datasets.
+- **Answer-only mode is essential for iteration.** Running all 2255 retrieval queries (90-180min) just to test a different answer-gen model is wasteful. `--eval-answers-only` queries just the answer subset in ~30min.
+- **Gold answers require a separate seeding pipeline.** MultiHopRAG HuggingFace data has answers in the queries parquet, but they need separate extraction and upload to Vercel Blob as `answers.json`.

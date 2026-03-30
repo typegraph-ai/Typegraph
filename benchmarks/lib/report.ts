@@ -9,6 +9,7 @@ export interface BenchmarkMetrics {
   'Precision@10': number
   'MRR@10'?: number
   'Hit@10'?: number
+  'ACC'?: number     // Substring Accuracy (paper-comparable)
   'EM'?: number      // Exact Match (answer generation)
   'F1'?: number      // Token F1 (answer generation)
   [key: string]: number | undefined

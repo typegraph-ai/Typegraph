@@ -574,3 +574,28 @@ Predicate merging reduced graph noise (fewer redundant edge types), which improv
 - **Predicate synonym merging is a cheap win.** Static synonym groups + tense guard gave -18% ingest time, -46% query latency, and +0.0004 nDCG with zero risk. The tense guard is important for temporal reasoning datasets.
 - **Answer-only mode is essential for iteration.** Running all 2255 retrieval queries (90-180min) just to test a different answer-gen model is wasteful. `--eval-answers-only` uses a single-loop architecture (retrieve → generate → score per query) with a default limit of 100 queries, completing in ~5-15 min.
 - **Gold answers require a separate seeding pipeline.** MultiHopRAG HuggingFace data has answers in the queries parquet, but they need separate extraction and upload to Vercel Blob as `answers.json`.
+
+### 2026-03-30 — Neural graph PPR signal is actively harmful (PR #14)
+
+**Finding:** On the MultiHop-RAG answer-generation eval (100 queries, ACC metric), neural mode scores identically to core mode (ACC=0.72). Boosting the graph RRF weight from 0.3 to 0.7 **destroyed** performance: ACC dropped from 0.72 to 0.45, EM from 0.12 to 0.03.
+
+**Root cause:** PPR ranks chunks by entity centrality (hub bias), not query relevance. High-degree hub entities (OpenAI=125 edges, Manchester United=120, Google=111) always get high PPR scores, pulling in popular-but-irrelevant context. The graph stores only 1,050 unique chunks — the same pool indexed search draws from. It cannot surface new content, only re-rank existing chunks, and its ranking signal is worse than vector similarity.
+
+**Graph health is fine** (confirmed via DB diagnostic):
+- Entity types: diverse (person=50.6%, org=22.5%, product=17.1%)
+- 37% of entities have aliases, HNSW index present, 100% embedding coverage
+- 1,589 predicates (normalized), 0 CO_OCCURS, no isolated nodes
+- PPR 2-hop reachability: 4.1% of graph from 10 seeds
+
+**The issue is architectural, not data quality:**
+
+| Experiment | ACC | EM | F1 |
+|-----------|-----|----|----|
+| Core (hybrid, graph=0) | 0.72 | 0.12 | 0.23 |
+| Neural (graph=0.3 default) | 0.72 | 0.12 | 0.23 |
+| Neural (graph=0.7 boosted) | **0.45** | **0.03** | **0.11** |
+
+**What needs to change for neural to beat core:**
+1. **Query-aware chunk re-ranking** — re-score graph chunks by embedding similarity to query, not entity centrality (`graph-bridge.ts:getChunksForEntities`)
+2. **Increase graph connectivity** — 1.64 edges/entity is too sparse for meaningful multi-hop traversal; need stronger extraction LLM or more triples per chunk
+3. **Keyword-based entity seeding** — seed PPR from entities mentioned by name in the query, not just embedding similarity (which is redundant with indexed search)

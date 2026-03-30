@@ -264,7 +264,6 @@ async function main() {
         mode: 'neural',
         count: QUERY_FETCH,
         buckets: [bucket!.id],
-        mergeWeights: { graph: 0.7 },
       })
 
       try {
@@ -351,7 +350,6 @@ async function main() {
       mode: 'neural',
       count: QUERY_FETCH,
       buckets: [bucket!.id],
-      mergeWeights: { graph: 0.7 },
     })
 
     allResults.set(queryId, deduplicateToDocuments(response.results, K))

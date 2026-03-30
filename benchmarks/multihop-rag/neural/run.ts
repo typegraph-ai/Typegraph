@@ -261,26 +261,30 @@ async function main() {
       if (!gold) continue
 
       try {
-        // 60s timeout per query to prevent hung DB/API connections from stalling the run
-        const response = await Promise.race([
-          d.query(queryText, {
-            mode: 'neural',
-            count: QUERY_FETCH,
-            buckets: [bucket!.id],
-          }),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('query timeout (60s)')), 60_000)),
-        ])
+        // 90s timeout covers the entire retrieve+generate cycle.
+        // Previous 60s timeout only wrapped d.query(), leaving generateText unprotected.
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const result = await Promise.race([
+          (async () => {
+            const response = await d.query(queryText, {
+              mode: 'neural',
+              count: QUERY_FETCH,
+              buckets: [bucket!.id],
+            })
+            const chunks = response.results.slice(0, 6).map(r => r.content)
+            const context = chunks.join('\n\n---\n\n')
+            const { text: predicted } = await generateText({
+              model: gateway(EVAL_LLM_MODEL),
+              prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
+            })
+            return predicted
+          })(),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('query+answer timeout (90s)')), 90_000) }),
+        ]).finally(() => clearTimeout(timer))
 
-        const chunks = response.results.slice(0, 6).map(r => r.content)
-        const context = chunks.join('\n\n---\n\n')
-        const { text: predicted } = await generateText({
-          model: gateway(EVAL_LLM_MODEL),
-          prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
-        })
-
-        sumACC += substringAccuracy(predicted, gold)
-        sumEM += exactMatch(predicted, gold)
-        sumF1 += tokenF1(predicted, gold)
+        sumACC += substringAccuracy(result, gold)
+        sumEM += exactMatch(result, gold)
+        sumF1 += tokenF1(result, gold)
         answered++
       } catch (err) {
         errors++
@@ -333,7 +337,8 @@ async function main() {
     console.log(JSON.stringify(result, null, 2))
     console.log('---END_BENCH_RESULT_JSON---')
     console.log('══════════════════════════════════════════════════════')
-    return
+    // Force exit: Neon WebSocket connections and orphaned timers can keep the event loop alive
+    process.exit(0)
   }
 
   // ── Phase 4: Run Queries (Neural Mode) — full retrieval ──

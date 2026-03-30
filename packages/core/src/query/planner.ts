@@ -120,10 +120,12 @@ export class QueryPlanner {
 
       // 30s timeout on graph runner: if a DB call hangs (e.g., Neon connection stall),
       // fall back to empty results so the query proceeds with indexed results only.
+      let graphTimer: ReturnType<typeof setTimeout> | undefined
       const graphPromise = Promise.race([
         new GraphRunner(this.graph).run(text, identity, count),
-        new Promise<NormalizedResult[]>(resolve => setTimeout(() => resolve([]), 30_000)),
-      ]).catch(() => [] as NormalizedResult[])
+        new Promise<NormalizedResult[]>(resolve => { graphTimer = setTimeout(() => resolve([]), 30_000) }),
+      ]).then(r => { clearTimeout(graphTimer); return r })
+        .catch(() => { clearTimeout(graphTimer); return [] as NormalizedResult[] })
 
       const [memResults, graphResults] = await Promise.all([
         memoryPromise,

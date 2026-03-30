@@ -23,7 +23,7 @@ import { generateText } from 'ai'
 import { neon } from '@neondatabase/serverless'
 import { createBenchmarkAdapter } from '../../lib/adapter.js'
 import { loadCorpus, loadQueries, loadQrels, buildQrelsMap, loadAnswers } from '../../lib/datasets.js'
-import { scoreAllQueriesExtended, deduplicateToDocuments, exactMatch, tokenF1 } from '../../lib/metrics.js'
+import { scoreAllQueriesExtended, deduplicateToDocuments, substringAccuracy, exactMatch, tokenF1 } from '../../lib/metrics.js'
 import { printResults, type BenchmarkResult } from '../../lib/report.js'
 
 // ── Configuration ──
@@ -237,6 +237,7 @@ async function main() {
   const queryStart = performance.now()
 
   const allResults = new Map<string, string[]>()
+  const allChunkResults = new Map<string, string[]>()
   let queriesDone = 0
 
   for (const query of testQueries) {
@@ -250,6 +251,9 @@ async function main() {
     })
 
     allResults.set(queryId, deduplicateToDocuments(response.results, K))
+    if (evalAnswers) {
+      allChunkResults.set(queryId, response.results.slice(0, 6).map(r => r.content))
+    }
 
     queriesDone++
     if (queriesDone % 50 === 0 || queriesDone === testQueries.length) {
@@ -273,25 +277,23 @@ async function main() {
     console.log(`Phase 5b: Evaluating answer generation (neural)${limitLabel}...`)
     try {
       const goldAnswers = await loadAnswers(DATASET, BLOB_PREFIX)
-      const corpusMap = new Map(corpus.map(d => [d._id, d]))
 
-      let sumEM = 0, sumF1 = 0, answered = 0
-      for (const [queryId, docIds] of allResults) {
+      let sumACC = 0, sumEM = 0, sumF1 = 0, answered = 0
+      for (const [queryId] of allResults) {
         if (answered >= evalAnswersLimit) break
         const gold = goldAnswers.get(queryId)
         if (!gold) continue
 
         const queryText = testQueries.find(q => String(q['_id']) === queryId)?.text ?? ''
-        const context = docIds.slice(0, K)
-          .map(id => corpusMap.get(id)?.text ?? '')
-          .filter(Boolean)
-          .join('\n\n---\n\n')
+        const chunks = allChunkResults.get(queryId) ?? []
+        const context = chunks.join('\n\n---\n\n')
 
         const { text: predicted } = await generateText({
           model: gateway(LLM_MODEL),
           prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
         })
 
+        sumACC += substringAccuracy(predicted, gold)
         sumEM += exactMatch(predicted, gold)
         sumF1 += tokenF1(predicted, gold)
         answered++
@@ -299,7 +301,8 @@ async function main() {
           process.stdout.write(`\r  Answers: ${answered}/${Math.min(goldAnswers.size, evalAnswersLimit)}`)
         }
       }
-      console.log(`\n  Answer eval complete: ${answered} queries, EM=${(sumEM / answered).toFixed(4)}, F1=${(sumF1 / answered).toFixed(4)}`)
+      console.log(`\n  Answer eval complete: ${answered} queries, ACC=${(sumACC / answered).toFixed(4)}, EM=${(sumEM / answered).toFixed(4)}, F1=${(sumF1 / answered).toFixed(4)}`)
+      metrics['ACC'] = sumACC / answered
       metrics['EM'] = sumEM / answered
       metrics['F1'] = sumF1 / answered
     } catch (err) {

@@ -68,6 +68,10 @@ function normalizeAnswer(s: string): string {
   return s.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim()
 }
 
+export function substringAccuracy(predicted: string, gold: string): number {
+  return normalizeAnswer(predicted).includes(normalizeAnswer(gold)) ? 1 : 0
+}
+
 export function exactMatch(predicted: string, gold: string): number {
   return normalizeAnswer(predicted) === normalizeAnswer(gold) ? 1 : 0
 }

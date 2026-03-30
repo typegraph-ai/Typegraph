@@ -44,7 +44,7 @@ export interface GraphBridge {
   }): Promise<void>
 
   /** Search entities by embedding similarity. Used during graph-augmented retrieval. */
-  searchEntities?(query: string, identity: d8umIdentity, limit?: number): Promise<Array<{ id: string; name: string; entityType: string }>>
+  searchEntities?(query: string, identity: d8umIdentity, limit?: number): Promise<Array<{ id: string; name: string; entityType: string; similarity?: number }>>
 
   /** Get adjacency list for PPR. */
   getAdjacencyList?(entityIds: string[]): Promise<Map<string, Array<{ target: string; weight: number }>>>

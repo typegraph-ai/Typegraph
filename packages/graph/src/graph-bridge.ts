@@ -230,7 +230,7 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     query: string,
     identity: d8umIdentity,
     limit: number = 10,
-  ): Promise<Array<{ id: string; name: string; entityType: string }>> {
+  ): Promise<Array<{ id: string; name: string; entityType: string; similarity?: number }>> {
     if (!memoryStore.searchEntities) return []
 
     const queryEmbedding = await embedding.embed(query)
@@ -240,6 +240,7 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
       id: e.id,
       name: e.name,
       entityType: e.entityType,
+      similarity: (e.properties._similarity as number) ?? undefined,
     }))
   }
 
@@ -325,6 +326,15 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     // Batch-load all edges for the entity list
     const allEdges = await graph.getEdgesBatch(entityIds, 'both')
 
+    // Compute entity degree from loaded edges to penalize hub entities.
+    // Hub entities (high degree) get high PPR scores from graph structure alone,
+    // pulling in irrelevant chunks. Dividing by sqrt(degree) dampens their influence.
+    const entityDegree = new Map<string, number>()
+    for (const edge of allEdges) {
+      entityDegree.set(edge.sourceEntityId, (entityDegree.get(edge.sourceEntityId) ?? 0) + 1)
+      entityDegree.set(edge.targetEntityId, (entityDegree.get(edge.targetEntityId) ?? 0) + 1)
+    }
+
     // Build entity→edge mapping for PPR score lookup
     const entityIdSet = new Set(entityIds)
     for (const edge of allEdges) {
@@ -336,9 +346,11 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
         const key = `${bucketId}:${content.slice(0, 100)}`
         if (!seen.has(key)) {
           seen.add(key)
-          // Use PPR score of the entity that led us to this chunk, fall back to edge weight
+          // Degree-penalized PPR score: hub (degree 100) → score/10, specific entity (degree 4) → score/2
           const linkedEntityId = entityIdSet.has(edge.sourceEntityId) ? edge.sourceEntityId : edge.targetEntityId
-          const score = pprScores?.get(linkedEntityId) ?? edge.weight
+          const rawPPR = pprScores?.get(linkedEntityId) ?? edge.weight
+          const degree = entityDegree.get(linkedEntityId) ?? 1
+          const score = rawPPR / Math.sqrt(degree)
           chunks.push({ content, bucketId, score })
         }
       }

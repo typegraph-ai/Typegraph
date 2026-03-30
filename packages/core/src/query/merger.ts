@@ -24,7 +24,10 @@ export interface NormalizedResult {
 
 export function dedupKey(r: NormalizedResult): string {
   if (r.url) return r.url
-  if (r.chunk) return `${r.documentId}::${r.chunk.index}`
+  // Content hash enables cross-runner score aggregation: when graph and indexed
+  // find the same chunk, their RRF scores ADD (0.5 indexed + 0.3 graph = 0.8).
+  // The old documentId::chunkIndex key prevented this because graph results use
+  // fake documentIds (graph-0, graph-1, ...) that never match indexed results.
   return createHash('sha256').update(r.content).digest('hex')
 }
 

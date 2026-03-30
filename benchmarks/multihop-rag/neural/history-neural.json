@@ -98,5 +98,29 @@
       "chunkOverlap": 256,
       "tripleExtractionErrors": 0
     }
+  },
+  {
+    "commit": "fba1870",
+    "date": "2026-03-30",
+    "metrics": {
+      "ACC": 0.72,
+      "EM": 0.12,
+      "F1": 0.23165437369561453
+    },
+    "avgQueryMs": 7578.1,
+    "timing": {
+      "ingestionSeconds": null,
+      "avgQueryMs": 7578.1,
+      "totalSeconds": 762.5
+    },
+    "mode": "neural",
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "llm": "google/gemini-3.1-flash-lite-preview",
+      "chunkSize": 2048,
+      "chunkOverlap": 256,
+      "evalModel": "google/gemini-3.1-flash-lite-preview"
+    }
   }
 ]

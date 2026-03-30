@@ -293,7 +293,8 @@ async function main() {
 
       if ((answered + errors) % 10 === 0 || (answered + errors) === querySet.length) {
         const elapsed = ((performance.now() - queryStart) / 1000).toFixed(0)
-        process.stdout.write(`\r  Progress: ${answered + errors}/${querySet.length} (${elapsed}s)`)
+        const mem = process.memoryUsage()
+        console.log(`\n  Progress: ${answered + errors}/${querySet.length} (${elapsed}s) heap=${(mem.heapUsed / 1024 / 1024).toFixed(0)}MB/${(mem.heapTotal / 1024 / 1024).toFixed(0)}MB rss=${(mem.rss / 1024 / 1024).toFixed(0)}MB`)
       }
     }
 

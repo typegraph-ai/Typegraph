@@ -282,7 +282,9 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     }
 
     // Second pass: batch-load edges for 1-hop neighbors (2-hop expansion)
-    const newNeighborIds = [...allEntityIds].filter(id => !entityIds.includes(id))
+    // Cap at 30 neighbors to bound memory: hub entities can discover 100+ neighbors,
+    // leading to unbounded edge loading that causes OOM on repeated queries.
+    const newNeighborIds = [...allEntityIds].filter(id => !entityIds.includes(id)).slice(0, 30)
     if (newNeighborIds.length > 0) {
       const hopEdges = await graph.getEdgesBatch(newNeighborIds, 'both')
       neighborEdges.push(...hopEdges)

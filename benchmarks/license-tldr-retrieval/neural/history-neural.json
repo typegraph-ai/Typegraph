@@ -16,6 +16,11 @@
       "chunkSize": 512,
       "chunkOverlap": 64,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 633.8,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -35,6 +40,11 @@
       "chunkSize": 512,
       "chunkOverlap": 64,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 1340.4,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -54,6 +64,11 @@
       "chunkSize": 512,
       "chunkOverlap": 64,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 1035.4,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -73,6 +88,11 @@
       "chunkSize": 512,
       "chunkOverlap": 64,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 1912.3,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -93,6 +113,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 9178.6,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -113,6 +138,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 9178.6,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -133,6 +163,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 1085.3,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -153,6 +188,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 1126.4,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -173,6 +213,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 1422,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {

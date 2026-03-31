@@ -16,6 +16,11 @@
       "chunkSize": 512,
       "chunkOverlap": 64,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 4115.7,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -36,6 +41,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 1347.8,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -56,6 +66,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 1347.8,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -76,6 +91,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 996.4,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -96,6 +116,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "tripleExtractionErrors": 0
+    },
+    "timing": {
+      "avgQueryMs": 799.8,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   }
 ]

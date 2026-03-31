@@ -5,17 +5,23 @@
     {
       "system": "Kanon 2 Embedder",
       "metrics": { "nDCG@10": 0.6795 },
-      "source": "MLEB Leaderboard (isaacus)"
+      "source": "MLEB Leaderboard (isaacus)",
+      "year": 2025,
+      "metric_note": "nDCG@10, full document embedding"
     },
     {
       "system": "Voyage 4 Large",
       "metrics": { "nDCG@10": 0.6480 },
-      "source": "MLEB Leaderboard (isaacus)"
+      "source": "MLEB Leaderboard (isaacus)",
+      "year": 2025,
+      "metric_note": "nDCG@10, full document embedding"
     },
     {
       "system": "text-embedding-3-small",
       "metrics": { "nDCG@10": 0.3704 },
-      "source": "MLEB Leaderboard (isaacus)"
+      "source": "MLEB Leaderboard (isaacus)",
+      "year": 2025,
+      "metric_note": "nDCG@10, full document embedding"
     }
   ]
 }

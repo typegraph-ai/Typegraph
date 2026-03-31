@@ -5,17 +5,23 @@
     {
       "system": "Voyage 4 Large",
       "metrics": { "nDCG@10": 0.8142 },
-      "source": "MLEB Leaderboard (isaacus)"
+      "source": "MLEB Leaderboard (isaacus)",
+      "year": 2025,
+      "metric_note": "nDCG@10, full document embedding"
     },
     {
       "system": "text-embedding-3-large",
       "metrics": { "nDCG@10": 0.6668 },
-      "source": "MLEB Leaderboard (isaacus)"
+      "source": "MLEB Leaderboard (isaacus)",
+      "year": 2025,
+      "metric_note": "nDCG@10, full document embedding"
     },
     {
       "system": "text-embedding-3-small",
       "metrics": { "nDCG@10": 0.5985 },
-      "source": "MLEB Leaderboard (isaacus)"
+      "source": "MLEB Leaderboard (isaacus)",
+      "year": 2025,
+      "metric_note": "nDCG@10, full document embedding"
     }
   ]
 }

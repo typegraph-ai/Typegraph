@@ -12,6 +12,11 @@
     "config": {
       "embedding": "openai/text-embedding-3-small",
       "chunkSize": 512
+    },
+    "timing": {
+      "avgQueryMs": 629.6,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -29,6 +34,11 @@
       "embeddingDims": 1536,
       "chunkSize": 512,
       "chunkOverlap": 64
+    },
+    "timing": {
+      "avgQueryMs": 673.4,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -46,6 +56,11 @@
       "embeddingDims": 1536,
       "chunkSize": 512,
       "chunkOverlap": 64
+    },
+    "timing": {
+      "avgQueryMs": 351.8,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -65,6 +80,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "queryFetch": 50
+    },
+    "timing": {
+      "avgQueryMs": 424.8,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -84,6 +104,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "queryFetch": 50
+    },
+    "timing": {
+      "avgQueryMs": 424.8,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   }
 ]

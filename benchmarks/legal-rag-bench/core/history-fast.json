@@ -15,6 +15,11 @@
       "chunkSize": 512,
       "chunkOverlap": 64,
       "includesFootnotes": true
+    },
+    "timing": {
+      "avgQueryMs": 658.5,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -33,6 +38,11 @@
       "chunkSize": 512,
       "chunkOverlap": 64,
       "includesFootnotes": true
+    },
+    "timing": {
+      "avgQueryMs": 670.2,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -51,6 +61,11 @@
       "chunkSize": 512,
       "chunkOverlap": 64,
       "includesFootnotes": true
+    },
+    "timing": {
+      "avgQueryMs": 808.3,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -69,6 +84,11 @@
       "chunkSize": 512,
       "chunkOverlap": 64,
       "includesFootnotes": false
+    },
+    "timing": {
+      "avgQueryMs": 381.7,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -89,6 +109,11 @@
       "chunkOverlap": 64,
       "includesFootnotes": true,
       "queryFetch": 50
+    },
+    "timing": {
+      "avgQueryMs": 391.7,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -109,6 +134,11 @@
       "chunkOverlap": 256,
       "includesFootnotes": true,
       "queryFetch": 50
+    },
+    "timing": {
+      "avgQueryMs": 748.4,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   }
 ]

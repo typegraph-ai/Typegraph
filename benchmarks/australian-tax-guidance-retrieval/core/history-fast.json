@@ -14,6 +14,11 @@
       "embeddingDims": 1536,
       "chunkSize": 512,
       "chunkOverlap": 64
+    },
+    "timing": {
+      "avgQueryMs": 632.2,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -33,6 +38,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "queryFetch": 50
+    },
+    "timing": {
+      "avgQueryMs": 331.1,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -52,6 +62,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "queryFetch": 50
+    },
+    "timing": {
+      "avgQueryMs": 331.1,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -71,6 +86,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "queryFetch": 50
+    },
+    "timing": {
+      "avgQueryMs": 674.5,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   }
 ]

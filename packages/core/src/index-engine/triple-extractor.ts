@@ -50,13 +50,25 @@ Entities found in this text:
 
 For each relationship, provide:
 - "subject": Must be one of the entity names listed above
-- "predicate": A specific relationship verb/phrase (e.g., "founded", "acquired", "located_in", "announced")
+- "predicate": A canonical relationship verb from the list below
 - "object": Must be one of the entity names listed above
 - "confidence": How confident you are this relationship is explicitly stated (0.0 to 1.0)
 
+Predicate MUST be chosen from this controlled vocabulary when applicable:
+WROTE, VISITED, LOCATED_IN, MEMBER_OF, FOUNDED, ACQUIRED, PUBLISHED, WORKS_FOR,
+MARRIED, BORN_IN, DIED_IN, CREATED, MENTIONED, DESCRIBED, COMPARED_WITH,
+INFLUENCED, TRANSLATED, EDITED, REVIEWED, STUDIED, TRAVELED_TO, LIVED_IN,
+RULED, FOUGHT_IN, PARTICIPATED_IN, OWNS, PRODUCED, PERFORMED_IN,
+COLLABORATED_WITH, CORRESPONDS_WITH, ASSOCIATED_WITH, PART_OF, CONTAINS,
+CAUSED, LED_TO, PRECEDED, FOLLOWED, OPPOSED, SUPPORTED, EMPLOYED,
+INVESTED_IN, PARTNERED_WITH, DEVELOPED, DISCOVERED, TAUGHT, ATTENDED,
+SPOKE_AT, REPORTED, ANNOUNCED, AWARDED, NOMINATED, TREATED, DIAGNOSED
+
 Rules:
 - Subject and object MUST be from the entity list above — do not introduce new entities
-- Predicate should be a specific verb, not generic (avoid "is", "has", "related_to")
+- ALWAYS prefer a predicate from the list above. Only invent a new predicate if NONE of the above fit.
+- Never create compound predicates (e.g., "MENTIONED_COOKING_IN" — use MENTIONED instead)
+- Use the simplest, most general predicate that accurately captures the relationship
 - Only extract relationships explicitly stated or strongly implied in the text
 - Return an empty array if no clear relationships exist between the listed entities
 

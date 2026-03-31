@@ -24,20 +24,20 @@ export class GraphRunner {
       return []
     }
 
-    // Step 1: Find seed entities matching the query
+    // Step 1: Find seed entities matching the query (with similarity scores)
     const entities = await this.graph.searchEntities(text, identity, 10)
     if (entities.length === 0) return []
 
     const seedIds = entities.map(e => e.id)
+    // Build seed weights from entity-query similarity for weighted PPR initialization
+    const seedWeights = new Map(entities.map(e => [e.id, e.similarity ?? (1 / entities.length)]))
 
     // Step 2: Get adjacency list for PPR
     const adjacency = await this.graph.getAdjacencyList(seedIds)
     if (adjacency.size === 0) return []
 
-    // Step 3: Run PPR (dynamically import from graph package to avoid hard dependency)
-    // PPR is a pure function — we inline a lightweight version here to avoid
-    // core depending on @d8um/graph. The graph package has the full implementation.
-    const pprScores = runLightweightPPR(adjacency, seedIds)
+    // Step 3: Run PPR with similarity-weighted seeds and higher damping
+    const pprScores = runLightweightPPR(adjacency, seedIds, seedWeights)
 
     // Step 4: Get top entities by PPR score
     const rankedEntities = [...pprScores.entries()]
@@ -51,11 +51,12 @@ export class GraphRunner {
     return chunks.map((chunk, i) => ({
       content: chunk.content,
       bucketId: chunk.bucketId,
-      documentId: `graph-${i}`,
+      documentId: chunk.documentId ?? `graph-${i}`,
       rawScores: { graph: chunk.score },
       normalizedScore: chunk.score,
       mode: 'graph' as const,
-      metadata: {},
+      metadata: chunk.metadata ?? {},
+      chunk: chunk.chunkIndex !== undefined ? { index: chunk.chunkIndex, total: 1, isNeighbor: false } : undefined,
       tenantId: identity.tenantId,
     }))
   }
@@ -68,7 +69,8 @@ export class GraphRunner {
 function runLightweightPPR(
   adjacency: Map<string, Array<{ target: string; weight: number }>>,
   seedNodes: string[],
-  dampingFactor = 0.15,
+  seedWeights?: Map<string, number>,
+  dampingFactor = 0.35,
   maxIterations = 50
 ): Map<string, number> {
   const allNodes = new Set<string>()
@@ -85,7 +87,11 @@ function runLightweightPPR(
   const p = new Float64Array(n)
   const validSeeds = seedNodes.filter(s => idx.has(s))
   if (validSeeds.length === 0) return new Map()
-  for (const s of validSeeds) p[idx.get(s)!] = 1 / validSeeds.length
+  // Weight seeds by entity-query similarity so more relevant entities
+  // receive more initial PPR probability. Reduces hub drift.
+  let totalWeight = 0
+  for (const s of validSeeds) totalWeight += (seedWeights?.get(s) ?? 1)
+  for (const s of validSeeds) p[idx.get(s)!] = (seedWeights?.get(s) ?? 1) / totalWeight
 
   let scores = Float64Array.from(p)
 

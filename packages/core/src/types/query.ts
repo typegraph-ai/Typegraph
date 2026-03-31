@@ -62,6 +62,8 @@ export interface QueryOpts {
     indexed?: number | undefined
     live?: number | undefined
     cached?: number | undefined
+    memory?: number | undefined
+    graph?: number | undefined
   } | undefined
 
   timeouts?: {

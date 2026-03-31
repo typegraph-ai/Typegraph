@@ -118,9 +118,18 @@ export class QueryPlanner {
         ? Promise.resolve([] as NormalizedResult[])
         : new MemoryRunner(this.graph).run(text, identity, count).catch(() => [] as NormalizedResult[])
 
+      // 30s timeout on graph runner: if a DB call hangs (e.g., Neon connection stall),
+      // fall back to empty results so the query proceeds with indexed results only.
+      let graphTimer: ReturnType<typeof setTimeout> | undefined
+      const graphPromise = Promise.race([
+        new GraphRunner(this.graph).run(text, identity, count),
+        new Promise<NormalizedResult[]>(resolve => { graphTimer = setTimeout(() => resolve([]), 30_000) }),
+      ]).then(r => { clearTimeout(graphTimer); return r })
+        .catch(() => { clearTimeout(graphTimer); return [] as NormalizedResult[] })
+
       const [memResults, graphResults] = await Promise.all([
         memoryPromise,
-        new GraphRunner(this.graph).run(text, identity, count).catch(() => [] as NormalizedResult[]),
+        graphPromise,
       ])
 
       if (memResults.length > 0) {
@@ -128,7 +137,18 @@ export class QueryPlanner {
         bucketTimings['__memory__'] = { mode: 'cached', resultCount: memResults.length, durationMs: Date.now() - startMs, status: 'ok' }
       }
       if (graphResults.length > 0) {
-        runnerArrays.push(graphResults)
+        // Reinforcement-only: keep graph results whose content matches an indexed result.
+        // Graph retrieves from the same chunk pool as indexed search — novel graph results
+        // are noise that displaces better-ranked indexed chunks from top-K.
+        if (allResults.length > 0) {
+          const indexedContent = new Set(allResults.map(r => r.content))
+          const reinforcing = graphResults.filter(r => indexedContent.has(r.content))
+          if (reinforcing.length > 0) {
+            runnerArrays.push(reinforcing)
+          }
+        } else {
+          runnerArrays.push(graphResults)
+        }
         bucketTimings['__graph__'] = { mode: 'cached', resultCount: graphResults.length, durationMs: Date.now() - startMs, status: 'ok' }
       }
     }

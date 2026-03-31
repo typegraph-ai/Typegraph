@@ -45,7 +45,7 @@ const DEFAULT_WEIGHTS: Record<string, number> = {
   live: 0.1,
   cached: 0.1,
   memory: 0.2,
-  graph: 0.3,
+  graph: 0.15,
 }
 
 export function mergeAndRank(

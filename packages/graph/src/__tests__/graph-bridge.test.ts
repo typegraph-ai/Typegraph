@@ -327,8 +327,11 @@ describe('createGraphBridge', () => {
       expect(chunks[0]).toEqual(expect.objectContaining({
         content: expect.any(String),
         bucketId: expect.any(String),
-        score: 1.0,
+        score: expect.any(Number),
       }))
+      // Score is degree-penalized: edge weight / sqrt(entity degree)
+      expect(chunks[0]!.score).toBeGreaterThan(0)
+      expect(chunks[0]!.score).toBeLessThanOrEqual(1.0)
     })
 
     it('deduplicates chunks by content', async () => {

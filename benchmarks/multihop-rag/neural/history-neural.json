@@ -98,5 +98,129 @@
       "chunkOverlap": 256,
       "tripleExtractionErrors": 0
     }
+  },
+  {
+    "commit": "fba1870",
+    "date": "2026-03-30",
+    "metrics": {
+      "ACC": 0.72,
+      "EM": 0.12,
+      "F1": 0.23165437369561453
+    },
+    "avgQueryMs": 7578.1,
+    "timing": {
+      "ingestionSeconds": null,
+      "avgQueryMs": 7578.1,
+      "totalSeconds": 762.5
+    },
+    "mode": "neural",
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "llm": "google/gemini-3.1-flash-lite-preview",
+      "chunkSize": 2048,
+      "chunkOverlap": 256,
+      "evalModel": "google/gemini-3.1-flash-lite-preview"
+    }
+  },
+  {
+    "commit": "348c7fe",
+    "date": "2026-03-30",
+    "metrics": {
+      "ACC": 0.67,
+      "EM": 0.1,
+      "F1": 0.21328203953905334
+    },
+    "avgQueryMs": 3026.9,
+    "timing": {
+      "ingestionSeconds": null,
+      "avgQueryMs": 3026.9,
+      "totalSeconds": 303.8
+    },
+    "mode": "neural",
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "llm": "google/gemini-3.1-flash-lite-preview",
+      "chunkSize": 2048,
+      "chunkOverlap": 256,
+      "evalModel": "google/gemini-3.1-flash-lite-preview"
+    }
+  },
+  {
+    "commit": "7013d42",
+    "date": "2026-03-30",
+    "metrics": {
+      "ACC": 0.71,
+      "EM": 0.11,
+      "F1": 0.23815158719982032
+    },
+    "avgQueryMs": 3565.5,
+    "timing": {
+      "ingestionSeconds": null,
+      "avgQueryMs": 3565.5,
+      "totalSeconds": 358.8
+    },
+    "mode": "neural",
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "llm": "google/gemini-3.1-flash-lite-preview",
+      "chunkSize": 2048,
+      "chunkOverlap": 256,
+      "evalModel": "google/gemini-3.1-flash-lite-preview"
+    }
+  },
+  {
+    "commit": "5dd3cd4",
+    "date": "2026-03-30",
+    "metrics": {
+      "ACC": null,
+      "EM": null,
+      "F1": null
+    },
+    "avgQueryMs": 0,
+    "timing": {
+      "ingestionSeconds": null,
+      "avgQueryMs": 0,
+      "totalSeconds": 312.3
+    },
+    "mode": "neural",
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "llm": "google/gemini-3.1-flash-lite-preview",
+      "chunkSize": 2048,
+      "chunkOverlap": 256,
+      "evalModel": "seed"
+    }
+  },
+  {
+    "commit": "d251f11",
+    "date": "2026-03-30",
+    "metrics": {
+      "nDCG@10": 0.5449185623563872,
+      "MAP@10": 0.4059165698799848,
+      "Recall@10": 0.7283813747228396,
+      "Precision@10": 0.18682926829268204,
+      "MRR@10": 0.5892841305036428,
+      "Hit@10": 0.9631929046563192
+    },
+    "avgQueryMs": 2021.2,
+    "timing": {
+      "ingestionSeconds": 2031.1,
+      "avgQueryMs": 2021.2,
+      "totalSeconds": 9233.5
+    },
+    "mode": "neural",
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "llm": "google/gemini-3.1-flash-lite-preview",
+      "chunkSize": 2048,
+      "chunkOverlap": 256,
+      "tripleExtractionErrors": 0,
+      "evalModel": "google/gemini-3.1-flash-lite-preview"
+    }
   }
 ]

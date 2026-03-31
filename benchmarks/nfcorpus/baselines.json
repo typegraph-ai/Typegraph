@@ -3,19 +3,39 @@
   "description": "Biomedical information retrieval (BEIR suite)",
   "baselines": [
     {
-      "system": "SPLADE++ ED",
-      "metrics": { "nDCG@10": 0.3473 },
-      "source": "Formal et al., 2022 / Pyserini"
+      "system": "text-embedding-3-large",
+      "metrics": { "nDCG@10": 0.3648 },
+      "source": "MTEB/BEIR Leaderboard",
+      "year": 2024,
+      "metric_note": "nDCG@10, full document embedding"
     },
     {
-      "system": "BM25",
-      "metrics": { "nDCG@10": 0.3218 },
-      "source": "BEIR (Thakur et al., 2021) / Pyserini"
+      "system": "SPLADE++ ED",
+      "metrics": { "nDCG@10": 0.3473 },
+      "source": "Formal et al., 2022 / Pyserini",
+      "year": 2022,
+      "metric_note": "nDCG@10, sparse/dense retrieval"
     },
     {
       "system": "ColBERT v2",
       "metrics": { "nDCG@10": 0.3380 },
-      "source": "Santhanam et al., 2022"
+      "source": "Santhanam et al., 2022",
+      "year": 2022,
+      "metric_note": "nDCG@10, sparse/dense retrieval"
+    },
+    {
+      "system": "text-embedding-3-small",
+      "metrics": { "nDCG@10": 0.3355 },
+      "source": "MTEB/BEIR Leaderboard",
+      "year": 2024,
+      "metric_note": "nDCG@10, full document embedding"
+    },
+    {
+      "system": "BM25",
+      "metrics": { "nDCG@10": 0.3218 },
+      "source": "BEIR (Thakur et al., 2021) / Pyserini",
+      "year": 2022,
+      "metric_note": "nDCG@10, sparse/dense retrieval"
     }
   ]
 }

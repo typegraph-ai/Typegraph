@@ -18,6 +18,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "queryFetch": 50
+    },
+    "timing": {
+      "avgQueryMs": 633.9,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {
@@ -39,6 +44,11 @@
       "chunkSize": 2048,
       "chunkOverlap": 256,
       "queryFetch": 50
+    },
+    "timing": {
+      "avgQueryMs": 633.9,
+      "ingestionSeconds": null,
+      "totalSeconds": null
     }
   },
   {

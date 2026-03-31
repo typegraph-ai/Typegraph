@@ -13,9 +13,9 @@ d8um is a TypeScript SDK for retrieval + memory for AI agents, built on Postgres
 
 ## Sandbox Limitations
 
-Claude Code runs in a sandboxed environment with **no outbound network access** except to GitHub (github.com, api.github.com). All external services (Neon DB, AI Gateway, Vercel Blob, npm registry for installs) are unreachable from the sandbox.
+Claude Code's sandbox has outbound access to GitHub (github.com, api.github.com) and **Neon DB** (neon.tech domains allowlisted). Other external services (AI Gateway, Vercel Blob, npm registry for installs) are still unreachable.
 
-**You cannot run benchmarks or database queries directly.** Use the CI workflows described below.
+**You can query the database directly** using `@neondatabase/serverless` from the `benchmarks/` directory (which has the package installed). The connection string is in `benchmarks/.env`. **You cannot run benchmarks directly** — those still require CI (they need AI Gateway for embeddings/LLM).
 
 ## Running Benchmarks
 
@@ -90,31 +90,26 @@ After pushing, the workflow runs and posts results as PR comments. Use the GitHu
 
 ## Database Queries
 
-Database queries are executed via a GitHub Actions proxy workflow. You push a SQL file, the workflow runs it against Neon, and commits the result back.
+Query Neon directly from the sandbox using `@neondatabase/serverless`. Run queries from the `benchmarks/` directory (where the package is installed and `.env` has the connection string).
 
 ### How to Query
 
-1. Create a folder under `db-queries/` with a descriptive name (e.g., `db-queries/check-tables/`)
-2. Write a `query.sql` file in that folder
-3. Commit and push — the `db-inspect` workflow triggers automatically
-4. Wait for the workflow to complete, then pull or read `db-queries/<folder>/result.json` from the repo
-
-### Example
-
-```sql
--- db-queries/list-tables/query.sql
-SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;
+```bash
+cd /path/to/d8um/benchmarks
+node -e "
+const { neon } = require('@neondatabase/serverless');
+const sql = neon(process.env.NEON_DATABASE_URL || 'postgresql://neondb_owner:REDACTED@ep-young-lake-an4yj1r0-pooler.c-6.us-east-1.aws.neon.tech/neondb?sslmode=require');
+sql\`SELECT ...\`.then(r => console.log(JSON.stringify(r, null, 2))).catch(e => console.error(e.message));
+"
 ```
 
-The workflow will commit `db-queries/list-tables/result.json` with the query output in CSV format.
+Or for longer queries, write a `.js` script that `require`s `@neondatabase/serverless` and run it with `node`.
 
-### Reading Results
+### Notes
 
-After pushing, pull the branch to get the result file, or use GitHub MCP tools to read the file contents directly from the repo.
-
-### Workflow File
-
-`.github/workflows/db-inspect.yml` — Locked to actors `fIa5h` and `claude` only. Has `contents: write` permission to push results back.
+- The CI-based `db-inspect` workflow (`db-queries/` commit pattern) is no longer needed for ad-hoc queries — use direct access instead.
+- The `db-inspect` workflow still exists but is only needed if you want query results stored in the repo for historical reference.
+- Tagged template literals in `@neondatabase/serverless` parameterize automatically — avoid string concatenation for values.
 
 ## Benchmark Datasets (7 datasets × 2 variants = 14 benchmarks)
 
@@ -214,12 +209,11 @@ Core and neural variants are fully isolated — no DB cleanup needed between the
 
 **Metadata propagation caveat:** If data was seeded WITHOUT `propagateMetadata: ['metadata.corpusId']`, re-seeding won't fix it — the hash store matches on content+model (unchanged) and skips the doc before the upsert fires. To fix: clear hash entries for that bucket, or force re-ingestion.
 
-### DB Query Workflow Gotchas
+### DB Query Notes
 
-- **`[skip ci]` prevents ALL workflows** including db-inspect — never use it on query pushes
-- **Empty commits won't trigger** — the `query.sql` file must appear in the commit diff (HEAD~1 vs HEAD)
-- Results are committed back as `db-queries/{name}/result.json`
-- The workflow may push results while you're working — pull before pushing to avoid rejected pushes
+- Use direct Neon access (see "Database Queries" section) for all ad-hoc inspection.
+- The `db-inspect` CI workflow is obsolete for ad-hoc queries. The `db-queries/` folder may have historical results — ignore them.
+- **`[skip ci]`** is still relevant for benchmark commits but no longer affects DB query access.
 
 ### Benchmark CI Notes
 
@@ -298,19 +292,35 @@ Note: neural graph tables use `{prefix}memories` (no extra underscore), e.g. `be
 | multihop-rag | core | `bench_multihop_core_` | `multihop-rag` |
 | multihop-rag | neural | `bench_multihop_neural_` | `multihop-rag-neural` |
 
+#### Current DB State (as of 2026-03-31)
+
+| Dataset | Variant | Chunks | Docs | Hashes | Graph (entities/edges) | Status |
+|---------|---------|--------|------|--------|------------------------|--------|
+| au-tax | core | 0 | 0 | 0 | — | Cleared — needs reseed |
+| au-tax | neural | 0 | 0 | 0 | 0 / 0 | Cleared — needs reseed |
+| license-tldr | core | 0 | 0 | 0 | — | Cleared — needs reseed |
+| license-tldr | neural | 124 | 65 | 65 | 233 / 391 | Seeded ✓ |
+| mleb-scalr | core | 523 | 523 | 523 | — | Seeded ✓ |
+| mleb-scalr | neural | 523 | 523 | 523 | 1963 / 1492 | Seeded ✓ |
+| multihop-rag | core | 1054 | 609 | 609 | — | Seeded ✓ |
+| multihop-rag | neural | 0 | 0 | 0 | 0 / 0 | Cleared (bad reseed d251f11) — needs reseed |
+| legal-rag-bench | core | 0 | 4859 | 4859 | — | **Docs/hashes present but chunks missing** — chunk table was truncated without clearing hashes; reseed will skip all docs |
+| nfcorpus | core | 947 | 823 | 822 | — | Seeded but never benchmarked |
+
+**legal-rag-bench anomaly:** `d8um_documents` and `d8um_hashes` have 4859 entries, but `bench_legalrag_core__gateway_openai_text_embedding_3_small` is empty. The chunk table was truncated without clearing hashes/documents. Before reseeding: clear hashes and documents for `legal-rag-bench` bucket, then the seed will re-ingest.
+
 #### Procedure
 
 **CRITICAL: Follow these steps IN ORDER. Do NOT skip steps. Do NOT push a seed benchmark until you have VERIFIED the DB is clear. Skipping verification wastes hours of LLM/DB compute.**
 
-1. Write SQL to `db-queries/clear-{name}/query.sql` using the templates above
+1. Run the clear SQL directly against Neon (see "Database Queries" section) — no need to commit a query file
 2. Use `SELECT id FROM d8um_buckets WHERE name = '{bucket_name}'` in the WHERE clause (avoids hardcoding UUIDs)
-3. Commit and push (do NOT use `[skip ci]`) — wait for `result.json`
-4. **VERIFY the result.json** — read it via GitHub MCP or git pull. Check:
-   - All `TRUNCATE TABLE` statements succeeded
-   - `DELETE` statements show `DELETE N` where N > 0 for hashes/documents. **If N = 0, the hash store was NOT cleared** — investigate why (wrong bucket name? bucket doesn't exist? hashes use different key?)
-   - If DELETE shows 0 rows, **DO NOT proceed to seeding.** The seed will skip all docs because hash entries still exist. Push a diagnostic query to check the hash store schema first.
-5. **Only after verification passes**, push a commit with `[bench:{dataset}/{variant}:seed]` to reseed
-6. **Do NOT push any other commits while the seed is running.** The `concurrency: cancel-in-progress: true` setting means any push that triggers a benchmark workflow run will cancel the in-progress seed job.
+3. **VERIFY the result immediately.** Check:
+   - All `TRUNCATE TABLE` statements succeeded (no errors)
+   - `DELETE` row counts > 0 for hashes/documents. **If 0, the hash store was NOT cleared** — investigate (wrong bucket name? bucket doesn't exist?)
+   - If DELETE shows 0 rows, **DO NOT proceed to seeding.** The seed will skip all docs because hash entries still exist. Run a diagnostic query against `d8um_hashes` to check.
+4. **Only after verification passes**, push a commit with `[bench:{dataset}/{variant}:seed]` to reseed
+5. **Do NOT push any other commits while the seed is running.** The `concurrency: cancel-in-progress: true` setting means any push that triggers a benchmark workflow run will cancel the in-progress seed job.
 
 **Common mistakes that waste compute:**
 - Pushing `[bench:dataset/variant:answers:seed]` — this does NOT seed. It runs answer-only with `eval_model="seed"` (invalid).

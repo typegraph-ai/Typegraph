@@ -41,14 +41,16 @@ export interface GraphBridge {
     content: string
     bucketId: string
     chunkIndex?: number
+    documentId?: string
+    metadata?: Record<string, unknown>
   }): Promise<void>
 
   /** Search entities by embedding similarity. Used during graph-augmented retrieval. */
-  searchEntities?(query: string, identity: d8umIdentity, limit?: number): Promise<Array<{ id: string; name: string; entityType: string }>>
+  searchEntities?(query: string, identity: d8umIdentity, limit?: number): Promise<Array<{ id: string; name: string; entityType: string; similarity?: number }>>
 
   /** Get adjacency list for PPR. */
   getAdjacencyList?(entityIds: string[]): Promise<Map<string, Array<{ target: string; weight: number }>>>
 
   /** Get chunk content associated with entities. */
-  getChunksForEntities?(entityIds: string[], limit?: number, pprScores?: Map<string, number>): Promise<Array<{ content: string; bucketId: string; score: number }>>
+  getChunksForEntities?(entityIds: string[], limit?: number, pprScores?: Map<string, number>): Promise<Array<{ content: string; bucketId: string; score: number; documentId?: string; chunkIndex?: number; metadata?: Record<string, unknown> }>>
 }

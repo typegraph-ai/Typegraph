@@ -130,6 +130,8 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     content: string
     bucketId: string
     chunkIndex?: number
+    documentId?: string
+    metadata?: Record<string, unknown>
   }): Promise<void> {
     const scope = defaultScope
 
@@ -172,6 +174,8 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
         content: triple.content,
         bucketId: triple.bucketId,
         ...(triple.chunkIndex !== undefined ? { chunkIndex: triple.chunkIndex } : {}),
+        ...(triple.documentId ? { documentId: triple.documentId } : {}),
+        ...(triple.metadata ? { metadata: triple.metadata } : {}),
       },
       scope,
       temporal: createTemporal(),
@@ -230,7 +234,7 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     query: string,
     identity: d8umIdentity,
     limit: number = 10,
-  ): Promise<Array<{ id: string; name: string; entityType: string }>> {
+  ): Promise<Array<{ id: string; name: string; entityType: string; similarity?: number }>> {
     if (!memoryStore.searchEntities) return []
 
     const queryEmbedding = await embedding.embed(query)
@@ -240,6 +244,7 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
       id: e.id,
       name: e.name,
       entityType: e.entityType,
+      similarity: (e.properties._similarity as number) ?? undefined,
     }))
   }
 
@@ -281,7 +286,9 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     }
 
     // Second pass: batch-load edges for 1-hop neighbors (2-hop expansion)
-    const newNeighborIds = [...allEntityIds].filter(id => !entityIds.includes(id))
+    // Cap at 30 neighbors to bound memory: hub entities can discover 100+ neighbors,
+    // leading to unbounded edge loading that causes OOM on repeated queries.
+    const newNeighborIds = [...allEntityIds].filter(id => !entityIds.includes(id)).slice(0, 30)
     if (newNeighborIds.length > 0) {
       const hopEdges = await graph.getEdgesBatch(newNeighborIds, 'both')
       neighborEdges.push(...hopEdges)
@@ -318,12 +325,21 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     entityIds: string[],
     limit: number = 20,
     pprScores?: Map<string, number>,
-  ): Promise<Array<{ content: string; bucketId: string; score: number }>> {
+  ): Promise<Array<{ content: string; bucketId: string; score: number; documentId?: string; chunkIndex?: number; metadata?: Record<string, unknown> }>> {
     const seen = new Set<string>()
-    const chunks: Array<{ content: string; bucketId: string; score: number }> = []
+    const chunks: Array<{ content: string; bucketId: string; score: number; documentId?: string; chunkIndex?: number; metadata?: Record<string, unknown> }> = []
 
     // Batch-load all edges for the entity list
     const allEdges = await graph.getEdgesBatch(entityIds, 'both')
+
+    // Compute entity degree from loaded edges to penalize hub entities.
+    // Hub entities (high degree) get high PPR scores from graph structure alone,
+    // pulling in irrelevant chunks. Dividing by sqrt(degree) dampens their influence.
+    const entityDegree = new Map<string, number>()
+    for (const edge of allEdges) {
+      entityDegree.set(edge.sourceEntityId, (entityDegree.get(edge.sourceEntityId) ?? 0) + 1)
+      entityDegree.set(edge.targetEntityId, (entityDegree.get(edge.targetEntityId) ?? 0) + 1)
+    }
 
     // Build entity→edge mapping for PPR score lookup
     const entityIdSet = new Set(entityIds)
@@ -336,10 +352,19 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
         const key = `${bucketId}:${content.slice(0, 100)}`
         if (!seen.has(key)) {
           seen.add(key)
-          // Use PPR score of the entity that led us to this chunk, fall back to edge weight
+          // Degree-penalized PPR score: hub (degree 100) → score/10, specific entity (degree 4) → score/2
           const linkedEntityId = entityIdSet.has(edge.sourceEntityId) ? edge.sourceEntityId : edge.targetEntityId
-          const score = pprScores?.get(linkedEntityId) ?? edge.weight
-          chunks.push({ content, bucketId, score })
+          const rawPPR = pprScores?.get(linkedEntityId) ?? edge.weight
+          const degree = entityDegree.get(linkedEntityId) ?? 1
+          const score = rawPPR / Math.sqrt(degree)
+          const edgeDocId = edge.properties.documentId as string | undefined
+          const chunkIdx = edge.properties.chunkIndex as number | undefined
+          const edgeMeta = edge.properties.metadata as Record<string, unknown> | undefined
+          const chunk: { content: string; bucketId: string; score: number; documentId?: string; chunkIndex?: number; metadata?: Record<string, unknown> } = { content, bucketId, score }
+          if (edgeDocId) chunk.documentId = edgeDocId
+          if (chunkIdx !== undefined) chunk.chunkIndex = chunkIdx
+          if (edgeMeta) chunk.metadata = edgeMeta
+          chunks.push(chunk)
         }
       }
     }

@@ -175,7 +175,7 @@ export class IndexEngine {
         await Promise.allSettled(
           chunks.map(chunk =>
             withTimeout(
-              this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex),
+              this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex, documentId, { ...propagated, ...chunk.metadata }),
               TRIPLE_EXTRACTION_TIMEOUT_MS,
             )
           )
@@ -341,7 +341,7 @@ export class IndexEngine {
         await Promise.allSettled(
           chunks.map(chunk =>
             withTimeout(
-              this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex),
+              this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex, documentId, { ...propagated, ...chunk.metadata }),
               TRIPLE_EXTRACTION_TIMEOUT_MS,
             )
           )
@@ -510,7 +510,7 @@ export class IndexEngine {
         await Promise.allSettled(
           chunks.map(chunk =>
             withTimeout(
-              this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex),
+              this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex, documentId, { ...propagated, ...chunk.metadata }),
               TRIPLE_EXTRACTION_TIMEOUT_MS,
             )
           )

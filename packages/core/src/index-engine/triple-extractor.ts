@@ -76,7 +76,7 @@ export class TripleExtractor {
     this.graph = config.graph
   }
 
-  async extractFromChunk(content: string, bucketId: string, chunkIndex?: number): Promise<void> {
+  async extractFromChunk(content: string, bucketId: string, chunkIndex?: number, documentId?: string, metadata?: Record<string, unknown>): Promise<void> {
     if (!this.graph.addTriple) return
 
     try {
@@ -135,6 +135,8 @@ export class TripleExtractor {
           content: string
           bucketId: string
           chunkIndex?: number
+          documentId?: string
+          metadata?: Record<string, unknown>
         } = {
           subject: subjectEntity.name,
           subjectType: subjectEntity.type,
@@ -146,6 +148,8 @@ export class TripleExtractor {
           confidence: typeof rel.confidence === 'number' ? Math.max(0, Math.min(1, rel.confidence)) : 1.0,
           content,
           bucketId,
+          ...(documentId ? { documentId } : {}),
+          ...(metadata ? { metadata } : {}),
         }
         if (chunkIndex !== undefined) tripleData.chunkIndex = chunkIndex
         await this.graph.addTriple(tripleData)

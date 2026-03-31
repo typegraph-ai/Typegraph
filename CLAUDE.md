@@ -36,6 +36,18 @@ Format: `[bench:DATASET/VARIANT]`, `[bench:DATASET/VARIANT:seed]`, or `[bench:DA
 - **:answers** (optional, multihop-rag only): Runs answer-generation eval only — queries just the gold-answer subset, skips full IR metrics, reports ACC/EM/F1. Much faster (~30min timeout vs 90-180min).
 - **:answers:MODEL** (optional): Same as `:answers` but overrides the LLM used for answer generation (e.g., `:answers:openai/gpt-5.4`).
 
+**IMPORTANT: Tag parsing gotchas:**
+- `:seed` and `:answers` are **mutually exclusive** in the tag syntax. The regex is `(:seed|:answers[:MODEL])?` — you cannot combine them.
+- `[bench:dataset/variant:answers:seed]` does NOT mean "seed + answers". It parses as answers-only with `eval_model="seed"` (invalid model). This produces 0 queries answered.
+- To seed AND get answer metrics, use `[bench:dataset/variant:seed]` which runs `--seed --eval-answers` (full benchmark with seeding + answer gen on all queries). This takes much longer (~3-4 hours for neural multihop-rag) but is the only way.
+- To run a quick answer-only eval (no seed), use `[bench:dataset/variant:answers]`.
+
+**IMPORTANT: Reseed requires DB clearing first:**
+- `--seed` does NOT drop tables — it re-ingests via upsert with hash store deduplication.
+- If you change the **triple extraction pipeline** (e.g., adding new fields to edge properties), re-seeding alone won't help — the hash store matches on content+embedding model (unchanged) and skips the doc before `extractFromChunk` fires.
+- You MUST clear the hash store entries AND the graph tables first (see "Clearing Benchmark Data for Reseed" section), then reseed.
+- The `concurrency: cancel-in-progress: true` setting means pushing a new commit with the same dataset/variant tag will **cancel the in-progress benchmark job**. Never push while a benchmark is running unless you intend to cancel it.
+
 ### Examples
 
 ```
@@ -67,10 +79,10 @@ After pushing, the workflow runs and posts results as PR comments. Use the GitHu
 
 | Variant | Without seed | With seed | Answers only |
 |---------|-------------|-----------|-------------|
-| core    | 15 min      | 60 min    | 30 min      |
-| neural  | 30 min      | 360 min   | 30 min      |
-| core (multihop-rag) | 90 min | 120 min | 30 min |
-| neural (multihop-rag) | 180 min | 360 min | 30 min |
+| core    | 15 min      | 60 min    | 15 min      |
+| neural  | 30 min      | 360 min   | 15 min      |
+| core (multihop-rag) | 90 min | 120 min | 15 min |
+| neural (multihop-rag) | 180 min | 360 min | 15 min |
 
 ### Workflow File
 
@@ -140,8 +152,8 @@ When `--eval-answers` or `--eval-answers-only` is passed, multihop-rag runners a
 ### Runner Flags (multihop-rag)
 
 - `--eval-answers`: Run answer eval after full retrieval benchmark (all 2255 queries + answer gen)
-- `--eval-answers-only`: Run ONLY the answer eval subset — queries just the gold-answer subset, skips IR metrics. Much faster.
-- `--eval-answers-limit=N`: Limit answer evaluation to N queries
+- `--eval-answers-only`: Single-loop answer eval — for each query: retrieve → generate → score. Default limit: 100 queries. Skips IR metrics. Finishes in ~5-15 min.
+- `--eval-answers-limit=N`: Override the default limit of 100 queries (e.g., `--eval-answers-limit=2255` for full eval, `--eval-answers-limit=20` for quick smoke test)
 - `--eval-model=MODEL`: Override the LLM for answer generation (default: `google/gemini-3.1-flash-lite-preview`)
 
 ## Development
@@ -161,6 +173,17 @@ cd benchmarks && npm install  # Install benchmark deps (separate npm)
 ## Operational Knowledge
 
 Hard-won learnings from debugging the benchmark pipeline. Read this before running benchmarks or DB queries.
+
+### Answer-Only Mode Architecture
+
+`--eval-answers-only` uses a **single-loop** architecture: for each query up to the limit (default 100), it retrieves chunks, generates an answer via LLM, and scores it (ACC/EM/F1) immediately — all in one pass. This replaces the old two-phase approach (retrieve all queries first, then generate answers in a separate loop).
+
+**Key design decisions:**
+- **Default limit = 100**: Not `Infinity`. All 2255 multihop-rag queries have gold answers, so filtering by "has gold answer" is a no-op. The limit is what makes this fast.
+- **Single loop with early return**: The `evalAnswersOnly` code path returns before the normal retrieval/scoring phases. No intermediate `allResults`/`allChunkResults` maps.
+- **Per-query error handling**: `generateText` failures are caught per-query and logged, not fatal. The loop continues.
+- **15-minute timeout**: With 100 queries at ~3s each (retrieval + LLM), completes in ~5 min. Override with `--eval-answers-limit=N` for larger runs (increase workflow timeout manually if N >> 100).
+- **Core runner runs hybrid only** in answer-only mode (no fast mode), since the goal is answer quality iteration, not retrieval comparison.
 
 ### Database Table Naming
 
@@ -229,7 +252,7 @@ For estimating seed times (~3 docs/s embedding throughput):
 
 ### Clearing Benchmark Data for Reseed
 
-**When to clear:** Before reseeding a benchmark with changed chunk size, embedding model, or ingestion config. The hash store will skip unchanged content, so just running `--seed` again won't re-chunk with new settings.
+**When to clear:** Before reseeding a benchmark with changed chunk size, embedding model, ingestion config, **or triple extraction pipeline changes** (e.g., adding new fields to edge properties). The hash store matches on content+embedding model — if those haven't changed, the doc is skipped before `extractFromChunk` fires, so new edge property fields won't be populated.
 
 **Important:** `--seed` does NOT drop tables. You must manually clear data via a db-query, then reseed.
 
@@ -277,11 +300,23 @@ Note: neural graph tables use `{prefix}memories` (no extra underscore), e.g. `be
 
 #### Procedure
 
+**CRITICAL: Follow these steps IN ORDER. Do NOT skip steps. Do NOT push a seed benchmark until you have VERIFIED the DB is clear. Skipping verification wastes hours of LLM/DB compute.**
+
 1. Write SQL to `db-queries/clear-{name}/query.sql` using the templates above
 2. Use `SELECT id FROM d8um_buckets WHERE name = '{bucket_name}'` in the WHERE clause (avoids hardcoding UUIDs)
 3. Commit and push (do NOT use `[skip ci]`) — wait for `result.json`
-4. Verify all statements show `TRUNCATE TABLE` or `DELETE N`
-5. Then push a commit with `[bench:{dataset}/{variant}:seed]` to reseed
+4. **VERIFY the result.json** — read it via GitHub MCP or git pull. Check:
+   - All `TRUNCATE TABLE` statements succeeded
+   - `DELETE` statements show `DELETE N` where N > 0 for hashes/documents. **If N = 0, the hash store was NOT cleared** — investigate why (wrong bucket name? bucket doesn't exist? hashes use different key?)
+   - If DELETE shows 0 rows, **DO NOT proceed to seeding.** The seed will skip all docs because hash entries still exist. Push a diagnostic query to check the hash store schema first.
+5. **Only after verification passes**, push a commit with `[bench:{dataset}/{variant}:seed]` to reseed
+6. **Do NOT push any other commits while the seed is running.** The `concurrency: cancel-in-progress: true` setting means any push that triggers a benchmark workflow run will cancel the in-progress seed job.
+
+**Common mistakes that waste compute:**
+- Pushing `[bench:dataset/variant:answers:seed]` — this does NOT seed. It runs answer-only with `eval_model="seed"` (invalid).
+- Pushing `[bench:dataset/variant:seed]` without clearing the DB first — hash store skips all docs, triple extraction never runs, edge properties unchanged.
+- Pushing a new commit while a seed is running — cancels the seed job.
+- Not verifying `DELETE N > 0` in the clear result — hash entries remain, seed skips everything.
 
 ### Benchmark Results Readout
 
@@ -561,5 +596,30 @@ Predicate merging reduced graph noise (fewer redundant edge types), which improv
 - **Retrieval metrics alone are insufficient for multi-hop RAG.** The MultiHop-RAG paper (COLM 2024) and HippoRAG (NeurIPS 2024) both evaluate with answer-generation metrics (EM, F1, ACC). High Hit@10 (0.98) doesn't mean the system can answer multi-hop questions.
 - **Methodology matters enormously for answer-gen comparison.** The paper uses substring match (ACC), not exact match (EM). It passes top-6 chunks (~2048 tokens), not full articles. Using the wrong metric or context size makes results incomparable. Our EM=0.19 vs paper's GPT-4 ACC=0.56 is apples-to-oranges.
 - **Predicate synonym merging is a cheap win.** Static synonym groups + tense guard gave -18% ingest time, -46% query latency, and +0.0004 nDCG with zero risk. The tense guard is important for temporal reasoning datasets.
-- **Answer-only mode is essential for iteration.** Running all 2255 retrieval queries (90-180min) just to test a different answer-gen model is wasteful. `--eval-answers-only` queries just the answer subset in ~30min.
+- **Answer-only mode is essential for iteration.** Running all 2255 retrieval queries (90-180min) just to test a different answer-gen model is wasteful. `--eval-answers-only` uses a single-loop architecture (retrieve → generate → score per query) with a default limit of 100 queries, completing in ~5-15 min.
 - **Gold answers require a separate seeding pipeline.** MultiHopRAG HuggingFace data has answers in the queries parquet, but they need separate extraction and upload to Vercel Blob as `answers.json`.
+
+### 2026-03-30 — Neural graph PPR signal is actively harmful (PR #14)
+
+**Finding:** On the MultiHop-RAG answer-generation eval (100 queries, ACC metric), neural mode scores identically to core mode (ACC=0.72). Boosting the graph RRF weight from 0.3 to 0.7 **destroyed** performance: ACC dropped from 0.72 to 0.45, EM from 0.12 to 0.03.
+
+**Root cause:** PPR ranks chunks by entity centrality (hub bias), not query relevance. High-degree hub entities (OpenAI=125 edges, Manchester United=120, Google=111) always get high PPR scores, pulling in popular-but-irrelevant context. The graph stores only 1,050 unique chunks — the same pool indexed search draws from. It cannot surface new content, only re-rank existing chunks, and its ranking signal is worse than vector similarity.
+
+**Graph health is fine** (confirmed via DB diagnostic):
+- Entity types: diverse (person=50.6%, org=22.5%, product=17.1%)
+- 37% of entities have aliases, HNSW index present, 100% embedding coverage
+- 1,589 predicates (normalized), 0 CO_OCCURS, no isolated nodes
+- PPR 2-hop reachability: 4.1% of graph from 10 seeds
+
+**The issue is architectural, not data quality:**
+
+| Experiment | ACC | EM | F1 |
+|-----------|-----|----|----|
+| Core (hybrid, graph=0) | 0.72 | 0.12 | 0.23 |
+| Neural (graph=0.3 default) | 0.72 | 0.12 | 0.23 |
+| Neural (graph=0.7 boosted) | **0.45** | **0.03** | **0.11** |
+
+**What needs to change for neural to beat core:**
+1. **Query-aware chunk re-ranking** — re-score graph chunks by embedding similarity to query, not entity centrality (`graph-bridge.ts:getChunksForEntities`)
+2. **Increase graph connectivity** — 1.64 edges/entity is too sparse for meaningful multi-hop traversal; need stronger extraction LLM or more triples per chunk
+3. **Keyword-based entity seeding** — seed PPR from entities mentioned by name in the query, not just embedding similarity (which is redundant with indexed search)

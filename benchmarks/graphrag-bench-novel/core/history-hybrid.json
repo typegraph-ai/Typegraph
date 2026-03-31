@@ -1,0 +1,26 @@
+[
+  {
+    "commit": "0f0fa6e",
+    "date": "2026-03-31",
+    "metrics": {
+      "nDCG@10": null,
+      "MAP@10": null,
+      "Recall@10": null,
+      "Precision@10": null
+    },
+    "avgQueryMs": 555.9,
+    "timing": {
+      "ingestionSeconds": 529.9,
+      "avgQueryMs": 555.9,
+      "totalSeconds": 1652.4
+    },
+    "mode": "hybrid",
+    "config": {
+      "embedding": "openai/text-embedding-3-small",
+      "embeddingDims": 1536,
+      "chunkSize": 1200,
+      "chunkOverlap": 128,
+      "queryFetch": 50
+    }
+  }
+]

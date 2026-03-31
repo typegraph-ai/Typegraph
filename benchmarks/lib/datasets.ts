@@ -117,6 +117,25 @@ export function buildQrelsMap(qrels: BeirQrelRow[]): Map<string, Map<string, num
   return map
 }
 
+// ── Direct Blob Loaders (for datasets with full blob path in config) ──
+
+export async function loadBlobDirect<T>(blobPath: string, label: string): Promise<T> {
+  console.log(`  Loading ${label} from ${blobPath}...`)
+  const data = await fetchBlobJson<T>(blobPath)
+  const count = Array.isArray(data) ? data.length : 0
+  console.log(`  ✓ ${count.toLocaleString()} ${label}`)
+  return data
+}
+
+export async function loadBlobAnswers(blobPath: string): Promise<Map<string, string>> {
+  console.log(`  Loading answers from ${blobPath}...`)
+  const rows = await fetchBlobJson<AnswerRow[]>(blobPath)
+  const map = new Map<string, string>()
+  for (const row of rows) map.set(row._id, row.answer)
+  console.log(`  ✓ ${map.size.toLocaleString()} gold answers`)
+  return map
+}
+
 // ── Legal RAG Bench Loaders ──
 
 export async function loadLegalRagCorpus(): Promise<LegalRagCorpusRow[]> {

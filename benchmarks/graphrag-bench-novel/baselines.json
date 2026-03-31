@@ -1,0 +1,41 @@
+{
+  "dataset": "graphrag-bench-novel",
+  "description": "GraphRAG-Bench novel domain — 20 Project Gutenberg novels, 2,010 questions (arXiv:2506.05690)",
+  "baselines": [
+    {
+      "system": "HippoRAG2",
+      "metrics": { "Fact Retrieval ACC": 60.14, "Complex Reasoning ACC": 53.38, "Contextual Summarize ACC": 64.10, "Creative Generation ACC": 48.28 },
+      "source": "GraphRAG-Bench paper Table 3",
+      "year": 2026,
+      "metric_note": "Generation Accuracy (%) per question type, GPT-4.1 extraction + GPT-4o-mini generation"
+    },
+    {
+      "system": "RAG (w/ rerank)",
+      "metrics": { "Fact Retrieval ACC": 60.92, "Complex Reasoning ACC": 42.93, "Contextual Summarize ACC": 51.30, "Creative Generation ACC": 38.26 },
+      "source": "GraphRAG-Bench paper Table 3",
+      "year": 2026,
+      "metric_note": "Vanilla RAG baseline with reranker, 1200 token chunks"
+    },
+    {
+      "system": "LightRAG",
+      "metrics": { "Fact Retrieval ACC": 58.62, "Complex Reasoning ACC": 49.07, "Contextual Summarize ACC": 48.85, "Creative Generation ACC": 23.80 },
+      "source": "GraphRAG-Bench paper Table 3",
+      "year": 2026,
+      "metric_note": "GPT-4o-mini extraction, 1200 token chunks"
+    },
+    {
+      "system": "Fast-GraphRAG",
+      "metrics": { "Fact Retrieval ACC": 56.95, "Complex Reasoning ACC": 48.55, "Contextual Summarize ACC": 56.41, "Creative Generation ACC": 46.18 },
+      "source": "GraphRAG-Bench paper Table 3",
+      "year": 2026,
+      "metric_note": "NLP-based extraction, 50-100 token chunks"
+    },
+    {
+      "system": "GraphRAG (local)",
+      "metrics": { "Fact Retrieval ACC": 49.29, "Complex Reasoning ACC": 50.93, "Contextual Summarize ACC": 64.40, "Creative Generation ACC": 39.10 },
+      "source": "GraphRAG-Bench paper Table 3",
+      "year": 2026,
+      "metric_note": "Microsoft GraphRAG local search, 1200 token chunks"
+    }
+  ]
+}

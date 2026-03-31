@@ -13,7 +13,7 @@ import { createBenchmarkAdapter } from './adapter.js'
 import {
   loadCorpus, loadQueries, loadQrels, buildQrelsMap,
   loadLegalRagCorpus, loadLegalRagQa, buildLegalRagQrelsMap,
-  loadAnswers,
+  loadAnswers, loadBlobDirect, loadBlobAnswers,
 } from './datasets.js'
 import { scoreAllQueries, scoreAllQueriesExtended, deduplicateToDocuments } from './metrics.js'
 import { printResults, type BenchmarkResult, type BenchmarkMetrics } from './report.js'
@@ -171,6 +171,42 @@ export async function loadDataset(
   config: BenchmarkConfig,
   loadGoldAnswers = false,
 ): Promise<DatasetBundle> {
+  if (config.loader === 'graphrag-bench') {
+    // GraphRAG-Bench: answer-generation benchmark. Corpus is pre-chunked in blob.
+    // Evidence snippets are abstractive facts, not verbatim passages, so qrels are sparse/empty.
+    // Primary evaluation is via answer-gen metrics (ACC/EM/F1), not retrieval metrics.
+    // Blob paths: datasets/graphrag-bench/{domain}/corpus.json (blobPrefix IS the full prefix)
+    const blobBase = config.blobPrefix
+    const [corpus, queries] = await Promise.all([
+      loadBlobDirect<any[]>(`${blobBase}/corpus.json`, 'corpus'),
+      loadBlobDirect<any[]>(`${blobBase}/queries.json`, 'queries'),
+    ])
+
+    // All queries are test queries (no qrels filtering — answer-gen eval uses gold answers)
+    const testQueries = queries
+
+    let goldAnswers: Map<string, string> | undefined
+    if (loadGoldAnswers) {
+      try {
+        goldAnswers = await loadBlobAnswers(`${blobBase}/answers.json`)
+      } catch {
+        console.log('  Warning: Could not load gold answers')
+      }
+    }
+
+    // Empty qrelsMap — retrieval metrics will be 0, answer-gen metrics are primary
+    const qrelsMap = new Map<string, Map<string, number>>()
+
+    return {
+      corpus,
+      testQueries,
+      qrelsMap,
+      goldAnswers,
+      totalCorpus: corpus.length,
+      totalQueries: testQueries.length,
+    }
+  }
+
   if (config.loader === 'legal-rag') {
     const [corpus, qa] = await Promise.all([
       loadLegalRagCorpus(),

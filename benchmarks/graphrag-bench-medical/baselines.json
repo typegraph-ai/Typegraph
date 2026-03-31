@@ -1,0 +1,34 @@
+{
+  "dataset": "graphrag-bench-medical",
+  "description": "GraphRAG-Bench medical domain — NCCN medical guidelines, 2,062 questions (arXiv:2506.05690)",
+  "baselines": [
+    {
+      "system": "HippoRAG2",
+      "metrics": { "Fact Retrieval ACC": 66.28, "Complex Reasoning ACC": 61.98, "Contextual Summarize ACC": 63.08, "Creative Generation ACC": 68.05 },
+      "source": "GraphRAG-Bench paper Table 3",
+      "year": 2026,
+      "metric_note": "Generation Accuracy (%) per question type, GPT-4.1 extraction + GPT-4o-mini generation"
+    },
+    {
+      "system": "RAG (w/ rerank)",
+      "metrics": { "Fact Retrieval ACC": 64.73, "Complex Reasoning ACC": 58.64, "Contextual Summarize ACC": 65.75, "Creative Generation ACC": 60.61 },
+      "source": "GraphRAG-Bench paper Table 3",
+      "year": 2026,
+      "metric_note": "Vanilla RAG baseline with reranker, 1200 token chunks"
+    },
+    {
+      "system": "Fast-GraphRAG",
+      "metrics": { "Fact Retrieval ACC": 60.93, "Complex Reasoning ACC": 61.73, "Contextual Summarize ACC": 67.88, "Creative Generation ACC": 65.93 },
+      "source": "GraphRAG-Bench paper Table 3",
+      "year": 2026,
+      "metric_note": "NLP-based extraction, 50-100 token chunks"
+    },
+    {
+      "system": "LightRAG",
+      "metrics": { "Fact Retrieval ACC": 63.32, "Complex Reasoning ACC": 61.32, "Contextual Summarize ACC": 63.14 },
+      "source": "GraphRAG-Bench paper Table 3",
+      "year": 2026,
+      "metric_note": "GPT-4o-mini extraction, 1200 token chunks. Creative Generation not reported."
+    }
+  ]
+}

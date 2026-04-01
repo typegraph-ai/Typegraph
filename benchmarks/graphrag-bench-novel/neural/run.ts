@@ -20,7 +20,7 @@ import {
   parseCliArgs, initNeural, resolveBucket, loadDataset,
   runIngestion, buildResult, emitResults, printBanner, measureLatencyProfile,
 } from '../../lib/runner.js'
-import { substringAccuracy, exactMatch, tokenF1 } from '../../lib/metrics.js'
+import { answerCorrectness } from '../../lib/metrics.js'
 import { runValidation } from '../../lib/validate.js'
 import { recordResults } from '../../lib/history.js'
 import type { BenchmarkMetrics } from '../../lib/report.js'
@@ -65,17 +65,29 @@ async function main() {
   console.log()
 
   // Phase 4: Single-loop answer-generation evaluation
-  // For each query: retrieve chunks → generate answer → score vs gold
+  // Uses GraphRAG-Bench scoring: 0.75 * factuality_fbeta + 0.25 * semantic_similarity
   const answers = goldAnswers ?? new Map<string, string>()
   const limit = cli.evalAnswersLimit
   const evalQueries = testQueries.filter(q => answers.has(String(q['_id']))).slice(0, limit)
   const evalModel = cli.evalLlmModel
 
+  // LLM + embedding for answer correctness scoring (judge model)
+  const judgeModel = gateway(evalModel)
+  const embModel = gateway.embeddingModel('openai/text-embedding-3-small')
+  const judgeLlm = async (prompt: string) => {
+    const { text } = await generateText({ model: judgeModel, prompt })
+    return text
+  }
+  const judgeEmbed = async (text: string) => {
+    const result = await embModel.doEmbed({ values: [text] })
+    return result.embeddings[0]! as number[]
+  }
+
   console.log(`Phase 4: Answer-generation eval (${evalQueries.length} queries, model: ${evalModel})...`)
-  console.log('  Single loop: retrieve → generate → score per query')
+  console.log('  Single loop: retrieve → generate → score (GraphRAG-Bench LLM-as-judge)')
   const queryStart = performance.now()
 
-  let sumACC = 0, sumEM = 0, sumF1 = 0, answered = 0, errors = 0
+  let sumACC = 0, answered = 0, errors = 0
 
   for (const query of evalQueries) {
     const queryId = String(query['_id'])
@@ -84,26 +96,25 @@ async function main() {
     if (!gold) continue
 
     try {
-      let timer: ReturnType<typeof setTimeout> | undefined
-      const predicted = await Promise.race([
-        (async () => {
-          const response = await d.query(queryText, {
-            mode: 'neural', count: 50, buckets: [bucket.id],
-          })
-          const chunks = response.results.slice(0, 6).map(r => r.content)
-          const context = chunks.join('\n\n---\n\n')
-          const { text } = await generateText({
-            model: gateway(evalModel),
-            prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
-          })
-          return text
-        })(),
-        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timeout (90s)')), 90_000) }),
-      ]).finally(() => clearTimeout(timer))
+      // Retrieve
+      const response = await d.query(queryText, {
+        mode: 'neural', count: 50, buckets: [bucket.id],
+      })
+      const chunks = response.results.slice(0, 6).map(r => r.content)
+      const context = chunks.join('\n\n---\n\n')
 
-      sumACC += substringAccuracy(predicted, gold)
-      sumEM += exactMatch(predicted, gold)
-      sumF1 += tokenF1(predicted, gold)
+      // Generate answer
+      const { text: predicted } = await generateText({
+        model: judgeModel,
+        prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
+      })
+
+      // Score with GraphRAG-Bench methodology (LLM-as-judge)
+      const score = await answerCorrectness(queryText, predicted, gold, {
+        generateText: judgeLlm,
+        embed: judgeEmbed,
+      })
+      sumACC += score
       answered++
     } catch (err) {
       errors++
@@ -126,8 +137,6 @@ async function main() {
     'Recall@10': undefined as unknown as number,
     'Precision@10': undefined as unknown as number,
     ACC: answered > 0 ? sumACC / answered : 0,
-    EM: answered > 0 ? sumEM / answered : 0,
-    F1: answered > 0 ? sumF1 / answered : 0,
   }
 
   const result = buildResult(config, 'neural', corpus.length, answered, metrics, {

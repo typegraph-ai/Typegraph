@@ -19,7 +19,7 @@ import { scoreAllQueries, scoreAllQueriesExtended, deduplicateToDocuments } from
 import { printResults, type BenchmarkResult, type BenchmarkMetrics } from './report.js'
 import type { BenchmarkConfig } from './config.js'
 import {
-  EMBEDDING_MODEL, EMBEDDING_DIMS, LLM_MODEL,
+  EMBEDDING_MODEL, EMBEDDING_DIMS, LLM_MODEL, EXTRACTION_MODEL,
   CHUNK_SIZE, CHUNK_OVERLAP, K, QUERY_FETCH, BATCH_SIZE,
   resolveChunkSize, resolveChunkOverlap, resolveEmbeddingModel, resolveEmbeddingDims,
 } from './config.js'
@@ -94,6 +94,11 @@ export async function initNeural(config: BenchmarkConfig): Promise<NeuralInit> {
   const llmModel = gateway(LLM_MODEL)
   const llm = aiSdkLlmProvider({ model: llmModel })
 
+  // Extraction LLM: separate from main LLM to allow reasoning model overrides
+  const extractionLlm = EXTRACTION_MODEL !== LLM_MODEL
+    ? aiSdkLlmProvider({ model: gateway(EXTRACTION_MODEL) })
+    : undefined
+
   const memoryStore = new PgMemoryStoreAdapter({
     sql: (q: string, p?: unknown[]) => sql(q, p as any) as any,
     memoriesTable: `${config.tablePrefix}memories`,
@@ -127,6 +132,7 @@ export async function initNeural(config: BenchmarkConfig): Promise<NeuralInit> {
     embedding: { model: embeddingModel, dimensions: embDims },
     llm,
     graph,
+    ...(extractionLlm ? { extraction: { entityLlm: extractionLlm } } : {}),
   })
 
   return { d, adapter, sql }
@@ -280,7 +286,7 @@ export async function runIngestion(
 
   console.log(`  Config: chunk_size=${chunkSize}, chunk_overlap=${chunkOverlap}, embedding=${embModel}`)
   if (config.variant === 'neural') {
-    console.log('  Note: Neural mode — LLM triple extraction per chunk (slower)')
+    console.log(`  Note: Neural mode — LLM triple extraction per chunk (extraction=${EXTRACTION_MODEL})`)
   }
 
   const ingestStart = performance.now()
@@ -504,6 +510,7 @@ export function buildResult(
 
   if (config.variant === 'neural') {
     baseConfig.llm = LLM_MODEL
+    baseConfig.extractionLlm = EXTRACTION_MODEL
   }
 
   return {

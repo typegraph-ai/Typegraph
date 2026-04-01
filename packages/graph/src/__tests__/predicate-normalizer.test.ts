@@ -49,14 +49,14 @@ describe('PredicateNormalizer', () => {
       expect(await normalizer.normalize('BELONGS_TO')).toBe('MEMBER_OF')
     })
 
-    it('merges SIGNED_BY → SIGNED_WITH', async () => {
+    it('merges SIGNED_BY → SIGNED', async () => {
       const normalizer = new PredicateNormalizer(mockEmbedding())
-      expect(await normalizer.normalize('SIGNED_BY')).toBe('SIGNED_WITH')
+      expect(await normalizer.normalize('SIGNED_BY')).toBe('SIGNED')
     })
 
-    it('merges BASED_IN → LOCATED_IN', async () => {
+    it('merges BASED_IN → HEADQUARTERED_IN', async () => {
       const normalizer = new PredicateNormalizer(mockEmbedding())
-      expect(await normalizer.normalize('BASED_IN')).toBe('LOCATED_IN')
+      expect(await normalizer.normalize('BASED_IN')).toBe('HEADQUARTERED_IN')
     })
 
     it('merges ACQUIRED_BY → OWNED_BY', async () => {

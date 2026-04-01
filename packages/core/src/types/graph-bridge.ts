@@ -33,10 +33,12 @@ export interface GraphBridge {
     subject: string
     subjectType?: string
     subjectAliases?: string[]
+    subjectDescription?: string
     predicate: string
     object: string
     objectType?: string
     objectAliases?: string[]
+    objectDescription?: string
     confidence?: number
     content: string
     bucketId: string

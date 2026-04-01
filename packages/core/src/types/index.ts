@@ -80,3 +80,5 @@ export type { LLMProvider, LLMGenerateOptions } from './llm-provider.js'
 export type { d8umIdentity } from './identity.js'
 
 export type { GraphBridge } from './graph-bridge.js'
+
+export type { ExtractionConfig } from './extraction-config.js'

@@ -54,6 +54,7 @@ export type {
   LLMProvider,
   d8umIdentity,
   GraphBridge,
+  ExtractionConfig,
 } from './types/index.js'
 export { IndexError } from './types/index.js'
 

@@ -2,26 +2,30 @@
 /**
  * MultiHop-RAG Benchmark — d8um Core (Hybrid + Fast)
  *
- * Runs the yixuantt/MultiHopRAG benchmark (609 docs, ~2556 queries)
- * using d8um core with both hybrid search and fast (pure vector) search.
- * Multi-hop question answering over news articles.
+ * Multi-hop QA over 609 news articles, ~2556 queries.
+ * Single unified eval loop: retrieve → compute IR metrics → generate answer → score.
  *
  * Usage:
- *   npx tsx --env-file=.env multihop-rag/core/run.ts                      # query-only
- *   npx tsx --env-file=.env multihop-rag/core/run.ts --seed               # re-index
- *   npx tsx --env-file=.env multihop-rag/core/run.ts --eval-answers-only  # answer eval
- *   npx tsx --env-file=.env multihop-rag/core/run.ts --record             # save to history
+ *   npx tsx --env-file=.env multihop-rag/core/run.ts                            # retrieval only
+ *   npx tsx --env-file=.env multihop-rag/core/run.ts --eval-answers             # retrieval + answers
+ *   npx tsx --env-file=.env multihop-rag/core/run.ts --eval-answers-limit=100   # limit answer eval queries
+ *   npx tsx --env-file=.env multihop-rag/core/run.ts --seed                     # re-index
+ *   npx tsx --env-file=.env multihop-rag/core/run.ts --validate                 # smoke test
+ *   npx tsx --env-file=.env multihop-rag/core/run.ts --record                   # save to history
  */
 
 import { gateway } from '@ai-sdk/gateway'
 import { generateText } from 'ai'
-import { getConfig } from '../../lib/config.js'
+import { getConfig, K } from '../../lib/config.js'
 import {
   parseCliArgs, initCore, resolveBucket, loadDataset,
-  runIngestion, runQueries, computeMetrics, buildResult,
-  emitResults, printBanner, measureLatencyProfile,
+  runIngestion, buildResult, emitResults, printBanner, measureLatencyProfile,
 } from '../../lib/runner.js'
-import { substringAccuracy, exactMatch, tokenF1 } from '../../lib/metrics.js'
+import {
+  substringAccuracy, exactMatch, tokenF1,
+  deduplicateToDocuments, scoreAllQueriesExtended,
+} from '../../lib/metrics.js'
+import { runValidation } from '../../lib/validate.js'
 import { recordResults } from '../../lib/history.js'
 import type { BenchmarkResult, BenchmarkMetrics } from '../../lib/report.js'
 
@@ -39,22 +43,21 @@ async function main() {
   const latency = await measureLatencyProfile(adapter)
   console.log()
 
-  // Phase 2: Load dataset (with gold answers if answer eval requested)
-  const needAnswers = cli.evalAnswers || cli.evalAnswersOnly
+  // Phase 2: Load dataset
+  const doAnswerEval = cli.evalAnswers || cli.evalAnswersOnly
   console.log('Phase 2: Loading MultiHop-RAG from Vercel Blob...')
-  const { corpus, testQueries, qrelsMap, goldAnswers } = await loadDataset(config, needAnswers)
+  const { corpus, testQueries, qrelsMap, goldAnswers } = await loadDataset(config, doAnswerEval)
   console.log(`  Test queries with relevance judgments: ${testQueries.length}`)
-
-  // Compute answer-only query subset
-  let answerQuerySet = testQueries
-  if (cli.evalAnswersOnly && goldAnswers) {
-    const limit = cli.evalAnswersLimit
-    answerQuerySet = testQueries.filter(q => goldAnswers.has(String(q['_id']))).slice(0, limit)
-    console.log(`  Answer-only mode: ${answerQuerySet.length} queries (of ${goldAnswers.size} with gold answers)`)
-  }
+  if (goldAnswers) console.log(`  Gold answers: ${goldAnswers.size}`)
   console.log()
 
-  // Phase 3: Ingest (if needed)
+  // Validate mode
+  if (cli.validate) {
+    const ok = await runValidation(d, config.bucketName, corpus, testQueries, config)
+    process.exit(ok ? 0 : 1)
+  }
+
+  // Phase 3: Ingest
   let ingestDuration: number | undefined
   if (cli.shouldSeed) {
     console.log(`Phase 3: Ingesting ${corpus.length} documents...`)
@@ -65,123 +68,98 @@ async function main() {
   }
   console.log()
 
-  // ── Answer-only mode: single loop (retrieve -> generate -> score) ──
-  if (cli.evalAnswersOnly) {
-    const answers = goldAnswers ?? new Map<string, string>()
-    console.log(`Phase 4: Answer-only evaluation (${answerQuerySet.length} queries, mode: hybrid, model: ${cli.evalLlmModel})...`)
-    console.log('  Single loop: retrieve -> generate -> score per query')
+  // Phase 4: Single unified eval loop per mode
+  const benchResults: BenchmarkResult[] = []
+  const doIR = !cli.evalAnswersOnly  // skip IR metrics in answer-only mode
+  const answers = goldAnswers ?? new Map<string, string>()
+  const answerLimit = cli.evalAnswersLimit
+  const evalModel = cli.evalLlmModel
+
+  for (const mode of config.modes) {
+    // Determine which queries to run
+    let queries = testQueries
+    if (cli.evalAnswersOnly) {
+      queries = testQueries.filter(q => answers.has(String(q['_id']))).slice(0, answerLimit)
+    }
+
+    const flags = [
+      doIR ? 'IR metrics' : null,
+      doAnswerEval ? `answers (limit ${Math.min(answerLimit, queries.length)}, model: ${evalModel})` : null,
+    ].filter(Boolean).join(' + ')
+    console.log(`Phase 4: Eval — ${mode} (${queries.length} queries, ${flags})...`)
+
     const queryStart = performance.now()
+    const allResults = new Map<string, string[]>()
+    let sumACC = 0, sumEM = 0, sumF1 = 0, answered = 0, answerErrors = 0
 
-    let sumACC = 0, sumEM = 0, sumF1 = 0, answered = 0, errors = 0
-
-    for (const query of answerQuerySet) {
+    for (const query of queries) {
       const queryId = String(query['_id'])
       const queryText = String(query['text'])
-      const gold = answers.get(queryId)
-      if (!gold) continue
 
+      // Retrieve
       const response = await d.query(queryText, {
-        mode: 'hybrid', count: 50,
-        buckets: [bucket.id],
+        mode: mode as any, count: 50, buckets: [bucket.id],
       })
 
-      try {
-        const chunks = response.results.slice(0, 6).map(r => r.content)
-        const context = chunks.join('\n\n---\n\n')
-        const { text: predicted } = await generateText({
-          model: gateway(cli.evalLlmModel),
-          prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
-        })
-
-        sumACC += substringAccuracy(predicted, gold)
-        sumEM += exactMatch(predicted, gold)
-        sumF1 += tokenF1(predicted, gold)
-        answered++
-      } catch (err) {
-        errors++
-        console.error(`\n  Answer gen error (query ${queryId}): ${err instanceof Error ? err.message : err}`)
+      // IR: accumulate document-level results for scoring
+      if (doIR) {
+        allResults.set(queryId, deduplicateToDocuments(response.results, K))
       }
 
-      if ((answered + errors) % 10 === 0 || (answered + errors) === answerQuerySet.length) {
-        const elapsed = ((performance.now() - queryStart) / 1000).toFixed(0)
-        process.stdout.write(`\r  Progress: ${answered + errors}/${answerQuerySet.length} (${elapsed}s)`)
+      // Answer eval: generate + score (if this query has a gold answer and we're under the limit)
+      if (doAnswerEval && answered < answerLimit) {
+        const gold = answers.get(queryId)
+        if (gold) {
+          try {
+            const chunks = response.results.slice(0, 6).map(r => r.content)
+            const context = chunks.join('\n\n---\n\n')
+            const { text: predicted } = await generateText({
+              model: gateway(evalModel),
+              prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
+            })
+            sumACC += substringAccuracy(predicted, gold)
+            sumEM += exactMatch(predicted, gold)
+            sumF1 += tokenF1(predicted, gold)
+            answered++
+          } catch {
+            answerErrors++
+          }
+        }
+      }
+
+      const done = allResults.size || (answered + answerErrors)
+      if (done % 20 === 0 || done === queries.length) {
+        process.stdout.write(`\r  Progress: ${done}/${queries.length}`)
       }
     }
 
     const queryDuration = (performance.now() - queryStart) / 1000
-    const avgQueryMs = answered > 0 ? (queryDuration * 1000) / (answered + errors) : 0
-    console.log(`\n  Complete: ${answered} answered${errors > 0 ? `, ${errors} errors` : ''} in ${queryDuration.toFixed(1)}s (avg ${avgQueryMs.toFixed(0)}ms/query)`)
-    console.log(`  ACC=${(sumACC / answered).toFixed(4)}, EM=${(sumEM / answered).toFixed(4)}, F1=${(sumF1 / answered).toFixed(4)}`)
+    const avgQueryMs = queries.length > 0 ? (queryDuration * 1000) / queries.length : 0
+    console.log(`\n  Complete: ${queryDuration.toFixed(1)}s (avg ${avgQueryMs.toFixed(0)}ms/query)`)
 
-    const benchResult = buildResult(config, 'hybrid', corpus.length, answered, {
-      ACC: sumACC / answered, EM: sumEM / answered, F1: sumF1 / answered,
-    } as BenchmarkMetrics, { avgQueryMs, totalStart, latency }, { evalModel: cli.evalLlmModel })
-
-    emitResults(benchResult)
-    if (cli.record) recordResults([benchResult])
-    return
-  }
-
-  // ── Full retrieval: query in both modes ──
-  const benchResults: BenchmarkResult[] = []
-
-  for (const mode of config.modes) {
-    console.log(`Running ${testQueries.length} queries (mode: ${mode})...`)
-    const { allResults, allChunkResults, avgQueryMs } = await runQueries(d, bucket.id, testQueries, mode, {
-      returnChunks: cli.evalAnswers,
-    })
-    console.log()
-
-    console.log(`Computing IR metrics (${mode})...`)
-    const { metrics, scored } = computeMetrics(config, allResults, qrelsMap)
-    const mutableMetrics = { ...metrics } as Record<string, number | undefined>
-
-    // ── Answer-generation evaluation (optional, non-fatal) ──
-    if (cli.evalAnswers && goldAnswers && allChunkResults) {
-      console.log(`Evaluating answer generation (${mode}, model: ${cli.evalLlmModel})...`)
-      try {
-        let sumACC = 0, sumEM = 0, sumF1 = 0, answered = 0
-        const limit = cli.evalAnswersLimit
-        const targetCount = Math.min(goldAnswers.size, limit)
-
-        for (const [queryId] of allResults) {
-          if (answered >= limit) break
-          const gold = goldAnswers.get(queryId)
-          if (!gold) continue
-
-          const queryText = testQueries.find(q => String(q['_id']) === queryId)?.text ?? ''
-          const storedChunks = allChunkResults.get(queryId) ?? []
-          const chunks = storedChunks.slice(0, 6).map(c => c.content)
-          const context = chunks.join('\n\n---\n\n')
-
-          const { text: predicted } = await generateText({
-            model: gateway(cli.evalLlmModel),
-            prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
-          })
-
-          sumACC += substringAccuracy(predicted, gold)
-          sumEM += exactMatch(predicted, gold)
-          sumF1 += tokenF1(predicted, gold)
-          answered++
-          if (answered % 50 === 0 || answered === targetCount) {
-            process.stdout.write(`\r  Answers: ${answered}/${targetCount}`)
-          }
-        }
-        console.log(`\n  Answer eval complete: ${answered} queries, ACC=${(sumACC / answered).toFixed(4)}, EM=${(sumEM / answered).toFixed(4)}, F1=${(sumF1 / answered).toFixed(4)}`)
-        mutableMetrics['ACC'] = sumACC / answered
-        mutableMetrics['EM'] = sumEM / answered
-        mutableMetrics['F1'] = sumF1 / answered
-      } catch (err) {
-        console.log(`  Answer eval skipped: ${err instanceof Error ? err.message : err}`)
-      }
+    // Compute IR metrics
+    const metrics: Record<string, number | undefined> = {}
+    let scored = queries.length
+    if (doIR) {
+      const ir = scoreAllQueriesExtended(allResults, qrelsMap, K)
+      Object.assign(metrics, ir.metrics)
+      scored = ir.scored
     }
 
-    benchResults.push(buildResult(config, mode, corpus.length, scored, mutableMetrics as BenchmarkMetrics, {
+    // Add answer metrics
+    if (doAnswerEval && answered > 0) {
+      metrics['ACC'] = sumACC / answered
+      metrics['EM'] = sumEM / answered
+      metrics['F1'] = sumF1 / answered
+      console.log(`  Answers: ${answered}${answerErrors > 0 ? ` (${answerErrors} errors)` : ''} — ACC=${metrics['ACC']!.toFixed(4)}, EM=${metrics['EM']!.toFixed(4)}, F1=${metrics['F1']!.toFixed(4)}`)
+    }
+
+    benchResults.push(buildResult(config, mode, corpus.length, scored, metrics as BenchmarkMetrics, {
       ingestDuration: mode === config.modes[0] ? ingestDuration : undefined,
       avgQueryMs,
       totalStart,
       latency,
-    }, cli.evalAnswers ? { evalModel: cli.evalLlmModel } : undefined))
+    }, doAnswerEval ? { evalModel } : undefined))
     console.log()
   }
 

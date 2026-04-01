@@ -2,26 +2,28 @@
 /**
  * GraphRAG-Bench Medical — d8um Neural (Hybrid + Graph PPR)
  *
- * Answer-generation benchmark: NCCN medical guidelines (~249 chunks at 1200 tokens),
- * 2,062 questions. Neural mode adds LLM triple extraction during ingest and PPR graph
- * traversal during query.
+ * Answer-generation benchmark: 20 Project Gutenberg novels (~1,147 chunks at 1200 tokens),
+ * 2,010 questions. Single-loop eval: retrieve → generate answer → score vs gold.
  *
  * Usage:
- *   npx tsx --env-file=.env graphrag-bench-medical/neural/run.ts                         # answer eval
- *   npx tsx --env-file=.env graphrag-bench-medical/neural/run.ts --seed                  # ingest + graph build
- *   npx tsx --env-file=.env graphrag-bench-medical/neural/run.ts --validate              # smoke test
- *   npx tsx --env-file=.env graphrag-bench-medical/neural/run.ts --record                # save results
+ *   npx tsx --env-file=.env graphrag-bench-medical/neural/run.ts                            # answer eval (100q default)
+ *   npx tsx --env-file=.env graphrag-bench-medical/neural/run.ts --eval-answers-limit=500   # larger eval
+ *   npx tsx --env-file=.env graphrag-bench-medical/neural/run.ts --seed                     # ingest + graph build
+ *   npx tsx --env-file=.env graphrag-bench-medical/neural/run.ts --validate                 # smoke test
+ *   npx tsx --env-file=.env graphrag-bench-medical/neural/run.ts --record                   # save results
  */
 
-import { getConfig } from '../../lib/config.js'
+import { gateway } from '@ai-sdk/gateway'
+import { generateText } from 'ai'
+import { getConfig, LLM_MODEL } from '../../lib/config.js'
 import {
   parseCliArgs, initNeural, resolveBucket, loadDataset,
-  runIngestion, runQueries, computeMetrics, buildResult,
-  emitResults, printBanner, measureLatencyProfile,
+  runIngestion, buildResult, emitResults, printBanner, measureLatencyProfile,
 } from '../../lib/runner.js'
+import { substringAccuracy, exactMatch, tokenF1 } from '../../lib/metrics.js'
 import { runValidation } from '../../lib/validate.js'
 import { recordResults } from '../../lib/history.js'
-import type { BenchmarkResult } from '../../lib/report.js'
+import type { BenchmarkMetrics } from '../../lib/report.js'
 
 const config = getConfig('graphrag-bench-medical/neural')
 const cli = parseCliArgs()
@@ -32,7 +34,7 @@ async function main() {
 
   // Phase 1: Initialize
   console.log('Phase 1: Initializing d8um with graph bridge...')
-  console.log(`  LLM: google/gemini-3.1-flash-lite-preview (triple extraction during ingest)`)
+  console.log(`  LLM: ${LLM_MODEL} (triple extraction during ingest)`)
   const { d, adapter } = await initNeural(config)
   const { bucket } = await resolveBucket(d, config.bucketName, cli.shouldSeed)
   const latency = await measureLatencyProfile(adapter)
@@ -40,8 +42,9 @@ async function main() {
 
   // Phase 2: Load dataset
   console.log('Phase 2: Loading GraphRAG-Bench Medical from Vercel Blob...')
-  const { corpus, testQueries, qrelsMap, goldAnswers } = await loadDataset(config, true)
+  const { corpus, testQueries, goldAnswers } = await loadDataset(config, true)
   console.log(`  Test queries: ${testQueries.length}`)
+  console.log(`  Gold answers: ${goldAnswers?.size ?? 0}`)
   console.log()
 
   // Validate mode
@@ -61,27 +64,82 @@ async function main() {
   }
   console.log()
 
-  // Phase 4: Query + metrics
-  console.log(`Phase 4: Running ${testQueries.length} queries (mode: neural)...`)
-  console.log('  Neural = hybrid + memory recall + PPR graph traversal, merged via RRF')
-  const { allResults, avgQueryMs } = await runQueries(d, bucket.id, testQueries, 'neural')
-  console.log()
+  // Phase 4: Single-loop answer-generation evaluation
+  // For each query: retrieve chunks → generate answer → score vs gold
+  const answers = goldAnswers ?? new Map<string, string>()
+  const limit = cli.evalAnswersLimit
+  const evalQueries = testQueries.filter(q => answers.has(String(q['_id']))).slice(0, limit)
+  const evalModel = cli.evalLlmModel
 
-  console.log('Phase 5: Computing IR metrics...')
-  const { metrics, scored } = computeMetrics(config, allResults, qrelsMap)
+  console.log(`Phase 4: Answer-generation eval (${evalQueries.length} queries, model: ${evalModel})...`)
+  console.log('  Single loop: retrieve → generate → score per query')
+  const queryStart = performance.now()
 
-  const result = buildResult(config, 'neural', corpus.length, scored, metrics, {
+  let sumACC = 0, sumEM = 0, sumF1 = 0, answered = 0, errors = 0
+
+  for (const query of evalQueries) {
+    const queryId = String(query['_id'])
+    const queryText = String(query['text'])
+    const gold = answers.get(queryId)
+    if (!gold) continue
+
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const predicted = await Promise.race([
+        (async () => {
+          const response = await d.query(queryText, {
+            mode: 'neural', count: 50, buckets: [bucket.id],
+          })
+          const chunks = response.results.slice(0, 6).map(r => r.content)
+          const context = chunks.join('\n\n---\n\n')
+          const { text } = await generateText({
+            model: gateway(evalModel),
+            prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
+          })
+          return text
+        })(),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timeout (90s)')), 90_000) }),
+      ]).finally(() => clearTimeout(timer))
+
+      sumACC += substringAccuracy(predicted, gold)
+      sumEM += exactMatch(predicted, gold)
+      sumF1 += tokenF1(predicted, gold)
+      answered++
+    } catch (err) {
+      errors++
+      if (errors <= 3) console.error(`\n  Error (query ${queryId}): ${err instanceof Error ? err.message : err}`)
+    }
+
+    if ((answered + errors) % 10 === 0 || (answered + errors) === evalQueries.length) {
+      const elapsed = ((performance.now() - queryStart) / 1000).toFixed(0)
+      process.stdout.write(`\r  Progress: ${answered + errors}/${evalQueries.length} (${elapsed}s) ACC=${answered > 0 ? (sumACC / answered).toFixed(3) : '—'}`)
+    }
+  }
+
+  const queryDuration = (performance.now() - queryStart) / 1000
+  const avgQueryMs = (answered + errors) > 0 ? (queryDuration * 1000) / (answered + errors) : 0
+  console.log(`\n  Complete: ${answered} answered${errors > 0 ? `, ${errors} errors` : ''} in ${queryDuration.toFixed(1)}s (avg ${avgQueryMs.toFixed(0)}ms/query)`)
+
+  const metrics: BenchmarkMetrics = {
+    'nDCG@10': undefined as unknown as number,
+    'MAP@10': undefined as unknown as number,
+    'Recall@10': undefined as unknown as number,
+    'Precision@10': undefined as unknown as number,
+    ACC: answered > 0 ? sumACC / answered : 0,
+    EM: answered > 0 ? sumEM / answered : 0,
+    F1: answered > 0 ? sumF1 / answered : 0,
+  }
+
+  const result = buildResult(config, 'neural', corpus.length, answered, metrics, {
     ingestDuration,
     avgQueryMs,
     totalStart,
     latency,
-  }, { tripleExtractionErrors: 0 })
+  }, { evalModel, evalQueries: evalQueries.length, errors })
 
   emitResults(result)
-
-  if (cli.record) {
-    recordResults([result])
-  }
+  if (cli.record) recordResults([result])
+  process.exit(0)
 }
 
 main().catch(err => { console.error('Benchmark failed:', err); process.exit(1) })

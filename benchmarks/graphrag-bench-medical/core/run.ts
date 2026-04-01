@@ -2,29 +2,29 @@
 /**
  * GraphRAG-Bench Medical — d8um Core (Hybrid + Fast)
  *
- * Answer-generation benchmark: NCCN medical guidelines (~249 chunks at 1200 tokens),
- * 2,062 questions across 4 types (Fact Retrieval, Complex Reasoning, Contextual Summarize,
- * Creative Generation).
- *
- * Primary evaluation: ACC/EM/F1 via answer generation (no meaningful qrels).
+ * Answer-generation benchmark: 20 Project Gutenberg novels (~1,147 chunks at 1200 tokens),
+ * 2,010 questions. Single-loop eval: retrieve → generate answer → score vs gold.
+ * Runs both hybrid and fast modes for comparison.
  *
  * Usage:
- *   npx tsx --env-file=.env graphrag-bench-medical/core/run.ts                         # answer eval (100q default)
- *   npx tsx --env-file=.env graphrag-bench-medical/core/run.ts --seed                  # ingest corpus
- *   npx tsx --env-file=.env graphrag-bench-medical/core/run.ts --validate              # smoke test
- *   npx tsx --env-file=.env graphrag-bench-medical/core/run.ts --eval-answers-limit=500 # larger eval
- *   npx tsx --env-file=.env graphrag-bench-medical/core/run.ts --record                # save results
+ *   npx tsx --env-file=.env graphrag-bench-medical/core/run.ts                            # answer eval (100q default)
+ *   npx tsx --env-file=.env graphrag-bench-medical/core/run.ts --eval-answers-limit=500   # larger eval
+ *   npx tsx --env-file=.env graphrag-bench-medical/core/run.ts --seed                     # ingest corpus
+ *   npx tsx --env-file=.env graphrag-bench-medical/core/run.ts --validate                 # smoke test
+ *   npx tsx --env-file=.env graphrag-bench-medical/core/run.ts --record                   # save results
  */
 
+import { gateway } from '@ai-sdk/gateway'
+import { generateText } from 'ai'
 import { getConfig } from '../../lib/config.js'
 import {
   parseCliArgs, initCore, resolveBucket, loadDataset,
-  runIngestion, runQueries, computeMetrics, buildResult,
-  emitResults, printBanner, measureLatencyProfile,
+  runIngestion, buildResult, emitResults, printBanner, measureLatencyProfile,
 } from '../../lib/runner.js'
+import { substringAccuracy, exactMatch, tokenF1 } from '../../lib/metrics.js'
 import { runValidation } from '../../lib/validate.js'
 import { recordResults } from '../../lib/history.js'
-import type { BenchmarkResult } from '../../lib/report.js'
+import type { BenchmarkResult, BenchmarkMetrics } from '../../lib/report.js'
 
 const config = getConfig('graphrag-bench-medical/core')
 const cli = parseCliArgs()
@@ -42,8 +42,9 @@ async function main() {
 
   // Phase 2: Load dataset
   console.log('Phase 2: Loading GraphRAG-Bench Medical from Vercel Blob...')
-  const { corpus, testQueries, qrelsMap, goldAnswers } = await loadDataset(config, true)
+  const { corpus, testQueries, goldAnswers } = await loadDataset(config, true)
   console.log(`  Test queries: ${testQueries.length}`)
+  console.log(`  Gold answers: ${goldAnswers?.size ?? 0}`)
   console.log()
 
   // Validate mode
@@ -63,32 +64,85 @@ async function main() {
   }
   console.log()
 
-  // Phase 4: Answer-generation evaluation (primary metric for GraphRAG-Bench)
-  // This benchmark has no meaningful qrels — evaluation is ACC/EM/F1 on generated answers
+  // Phase 4: Single-loop answer-generation evaluation for each mode
+  const answers = goldAnswers ?? new Map<string, string>()
+  const limit = cli.evalAnswersLimit
+  const evalQueries = testQueries.filter(q => answers.has(String(q['_id']))).slice(0, limit)
+  const evalModel = cli.evalLlmModel
   const benchResults: BenchmarkResult[] = []
 
   for (const mode of config.modes) {
-    console.log(`Running ${testQueries.length} queries (mode: ${mode})...`)
-    const { allResults, avgQueryMs } = await runQueries(d, bucket.id, testQueries, mode)
-    console.log()
+    console.log(`Phase 4: Answer-generation eval — ${mode} (${evalQueries.length} queries, model: ${evalModel})...`)
+    console.log('  Single loop: retrieve → generate → score per query')
+    const queryStart = performance.now()
 
-    // Retrieval metrics will be near-zero (no qrels) — that's expected
-    const { metrics, scored } = computeMetrics(config, allResults, qrelsMap)
+    let sumACC = 0, sumEM = 0, sumF1 = 0, answered = 0, errors = 0
 
-    benchResults.push(buildResult(config, mode, corpus.length, scored, metrics, {
+    for (const query of evalQueries) {
+      const queryId = String(query['_id'])
+      const queryText = String(query['text'])
+      const gold = answers.get(queryId)
+      if (!gold) continue
+
+      try {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const predicted = await Promise.race([
+          (async () => {
+            const response = await d.query(queryText, {
+              mode: mode as any, count: 50, buckets: [bucket.id],
+            })
+            const chunks = response.results.slice(0, 6).map(r => r.content)
+            const context = chunks.join('\n\n---\n\n')
+            const { text } = await generateText({
+              model: gateway(evalModel),
+              prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
+            })
+            return text
+          })(),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timeout (90s)')), 90_000) }),
+        ]).finally(() => clearTimeout(timer))
+
+        sumACC += substringAccuracy(predicted, gold)
+        sumEM += exactMatch(predicted, gold)
+        sumF1 += tokenF1(predicted, gold)
+        answered++
+      } catch (err) {
+        errors++
+        if (errors <= 3) console.error(`\n  Error (query ${queryId}): ${err instanceof Error ? err.message : err}`)
+      }
+
+      if ((answered + errors) % 10 === 0 || (answered + errors) === evalQueries.length) {
+        const elapsed = ((performance.now() - queryStart) / 1000).toFixed(0)
+        process.stdout.write(`\r  Progress: ${answered + errors}/${evalQueries.length} (${elapsed}s) ACC=${answered > 0 ? (sumACC / answered).toFixed(3) : '—'}`)
+      }
+    }
+
+    const queryDuration = (performance.now() - queryStart) / 1000
+    const avgQueryMs = (answered + errors) > 0 ? (queryDuration * 1000) / (answered + errors) : 0
+    console.log(`\n  Complete: ${answered} answered${errors > 0 ? `, ${errors} errors` : ''} in ${queryDuration.toFixed(1)}s (avg ${avgQueryMs.toFixed(0)}ms/query)`)
+
+    const metrics: BenchmarkMetrics = {
+      'nDCG@10': undefined as unknown as number,
+      'MAP@10': undefined as unknown as number,
+      'Recall@10': undefined as unknown as number,
+      'Precision@10': undefined as unknown as number,
+      ACC: answered > 0 ? sumACC / answered : 0,
+      EM: answered > 0 ? sumEM / answered : 0,
+      F1: answered > 0 ? sumF1 / answered : 0,
+    }
+
+    benchResults.push(buildResult(config, mode, corpus.length, answered, metrics, {
       ingestDuration: mode === config.modes[0] ? ingestDuration : undefined,
       avgQueryMs,
       totalStart,
       latency,
-    }))
+    }, { evalModel, evalQueries: evalQueries.length, errors }))
     console.log()
   }
 
   emitResults(benchResults)
-
-  if (cli.record) {
-    recordResults(benchResults)
-  }
+  if (cli.record) recordResults(benchResults)
+  process.exit(0)
 }
 
 main().catch(err => { console.error('Benchmark failed:', err); process.exit(1) })

@@ -14,7 +14,7 @@ import { randomUUID } from 'crypto'
 export interface EntityResolverConfig {
   store: MemoryStoreAdapter
   embedding: EmbeddingProvider
-  /** Cosine similarity threshold for considering entities as duplicates. Default: 0.78 */
+  /** Cosine similarity threshold for considering entities as duplicates. Default: 0.68 */
   similarityThreshold?: number | undefined
 }
 
@@ -29,7 +29,7 @@ export class EntityResolver {
   constructor(config: EntityResolverConfig) {
     this.store = config.store
     this.embedding = config.embedding
-    this.threshold = config.similarityThreshold ?? 0.78
+    this.threshold = config.similarityThreshold ?? 0.68
   }
 
   private cacheEntity(entity: SemanticEntity): void {

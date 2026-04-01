@@ -777,6 +777,59 @@ Predicate merging reduced graph noise (fewer redundant edge types), which improv
 | Embedding coverage | 100% | 100% |
 | CO_OCCURS | 0 | 0 |
 
+### 2026-03-31 — Graph density experiments: more edges ≠ better signal (graphrag-bench-novel)
+
+**Problem:** Graph had 1.77 edges/entity (5,680 entities, 10,042 edges across 1,147 chunks). Published graph-RAG systems report 5+. Sparse graph limits PPR traversal — most entities appear in 1-2 chunks with 1-2 relationships.
+
+**Experiment 1: Increase extraction yield + lower entity threshold + unblock predicates**
+
+Changes applied:
+1. **Few-shot example** in relationship extraction prompt (11 relationships from 7 entities in a literary passage) — calibrates LLM to extract more relationships per chunk
+2. **Softened extraction threshold** — "explicitly stated or strongly implied" → "stated, implied, or reasonably inferable"
+3. **Lowered entity similarity threshold** (0.78 → 0.72) — more aggressive entity merging to reduce entity count
+4. **Unblocked ASSOCIATED_WITH, CONTAINS, INCLUDES** from GENERIC_PREDICATES filter
+
+Results after full reseed (1,147 docs, 3,516s):
+
+| Metric | Before | After | Delta |
+|--------|--------|-------|-------|
+| Entities | 5,680 | 6,264 | +10% (worse — more entities) |
+| Edges | 10,042 | 15,117 | +51% |
+| Edges/entity | 1.77 | 2.41 | +36% |
+| Distinct predicates | 112 | 125 | +12% |
+| MENTIONED edges | — | 4,497 (30%) | dominant noisy predicate |
+| ASSOCIATED_WITH edges | 0 (filtered) | 2,496 (16%) | second-noisiest |
+| ACC (100 queries) | 0.570 | 0.575 | +0.005 (marginal) |
+
+**Key finding: More edges without better signal quality produces marginal gains.** MENTIONED (30%) and ASSOCIATED_WITH (16%) together accounted for 46% of all edges — these are low-information predicates that dilute the graph's ranking signal. The few-shot example successfully increased extraction yield (~6.7 → ~10+ rels/chunk) but the softened threshold caused the LLM to fall back on vague predicates for uncertain relationships.
+
+Entity count *increased* despite lowering the similarity threshold (0.78 → 0.72). The few-shot example extracts more entities per chunk, which outweighs more aggressive merging.
+
+**Experiment 2: Filter noise + tighten extraction + lower threshold further (pending reseed)**
+
+Changes applied on top of Experiment 1:
+1. **Added MENTIONED and ASSOCIATED_WITH to GENERIC_PREDICATES filter** — these are high-volume but low-signal
+2. **Removed MENTIONED and ASSOCIATED_WITH from controlled vocabulary** — prevents LLM from extracting predicates that will be filtered
+3. **Tightened extraction language back** — "stated, implied, or reasonably inferable" → "explicitly stated or strongly implied" (restoring original strictness)
+4. **Lowered entity threshold further** (0.72 → 0.68)
+5. **Kept few-shot example** — still useful for calibrating extraction count, just with tighter quality bar
+
+Rationale: The few-shot example sets the *quantity* anchor (10+ rels/chunk) while the tightened rules and filtered predicates control *quality*. This should produce a similar edge count but with higher-signal predicates.
+
+**Status:** Code changes applied and built. Requires DB clear + reseed to measure impact.
+
+#### Key learnings
+
+- **Graph density (edges/entity) is necessary but not sufficient.** Going from 1.77 → 2.41 edges/entity produced only +0.005 ACC because the new edges were dominated by MENTIONED (30%) and ASSOCIATED_WITH (16%) — vague predicates that don't carry relationship semantics.
+- **Few-shot examples are powerful but need guardrails.** The example successfully increased extraction yield ~50%, but with a softened extraction threshold, the LLM used vague predicates as a "catch-all" for uncertain relationships. Keep the few-shot for quantity calibration, but pair it with strict rules.
+- **Entity similarity threshold direction:** Lower threshold = more merging (easier to match). The code does `if (similarity >= threshold)`, so lowering from 0.78 → 0.72 means entities with lower cosine similarity get merged. However, if extraction simultaneously produces more entities per chunk, the net entity count can still increase.
+- **Predicate vocabulary must match the filter.** Having MENTIONED/ASSOCIATED_WITH in the extraction vocabulary but filtered in graph-bridge.ts wastes LLM extraction effort and creates a confusing inconsistency. Keep vocabulary and filter aligned.
+- **GENERIC_PREDICATES filter is critical for graph signal quality.** The original filter (IS, IS_A, HAS, RELATED_TO) was too permissive — MENTIONED and ASSOCIATED_WITH should have been included from the start. These predicates tell you entities co-occur in text but not *how* they relate, which is exactly what CO_OCCURS edges already capture.
+
+#### Current entity resolver threshold
+
+Default similarity threshold is **0.68** (lowered from original 0.78). This affects all consumers of EntityResolver unless overridden via `similarityThreshold` config. Monitor for over-merging on datasets with ambiguous entity names (e.g., "Paris" city vs "Paris" person).
+
 ### Benchmark Methodology Alignment (CRITICAL)
 
 **Each benchmark MUST use the exact scientific methodology from its source paper.** This includes:

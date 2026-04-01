@@ -108,8 +108,8 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
    */
   // Generic predicates that add noise without information — filter these out
   const GENERIC_PREDICATES = new Set([
-    'IS', 'IS_A', 'IS_AN', 'HAS', 'HAS_A', 'RELATED_TO',
-    'ASSOCIATED_WITH', 'INVOLVES', 'INCLUDES', 'CONTAINS',
+    'IS', 'IS_A', 'IS_AN', 'HAS', 'HAS_A', 'RELATED_TO', 'INVOLVES',
+    'MENTIONED', 'ASSOCIATED_WITH',
   ])
 
   // Track entities per chunk for co-occurrence edge creation (Improvement 8)

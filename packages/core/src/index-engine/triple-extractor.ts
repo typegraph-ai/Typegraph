@@ -52,14 +52,14 @@ For each relationship, provide:
 - "subject": Must be one of the entity names listed above
 - "predicate": A canonical relationship verb from the list below
 - "object": Must be one of the entity names listed above
-- "confidence": How confident you are this relationship is explicitly stated (0.0 to 1.0)
+- "confidence": How confident you are this relationship is stated or strongly implied (0.0 to 1.0)
 
 Predicate MUST be chosen from this controlled vocabulary when applicable:
 WROTE, VISITED, LOCATED_IN, MEMBER_OF, FOUNDED, ACQUIRED, PUBLISHED, WORKS_FOR,
-MARRIED, BORN_IN, DIED_IN, CREATED, MENTIONED, DESCRIBED, COMPARED_WITH,
+MARRIED, BORN_IN, DIED_IN, CREATED, DESCRIBED, COMPARED_WITH,
 INFLUENCED, TRANSLATED, EDITED, REVIEWED, STUDIED, TRAVELED_TO, LIVED_IN,
 RULED, FOUGHT_IN, PARTICIPATED_IN, OWNS, PRODUCED, PERFORMED_IN,
-COLLABORATED_WITH, CORRESPONDS_WITH, ASSOCIATED_WITH, PART_OF, CONTAINS,
+COLLABORATED_WITH, CORRESPONDS_WITH, PART_OF, CONTAINS,
 CAUSED, LED_TO, PRECEDED, FOLLOWED, OPPOSED, SUPPORTED, EMPLOYED,
 INVESTED_IN, PARTNERED_WITH, DEVELOPED, DISCOVERED, TAUGHT, ATTENDED,
 SPOKE_AT, REPORTED, ANNOUNCED, AWARDED, NOMINATED, TREATED, DIAGNOSED
@@ -67,14 +67,33 @@ SPOKE_AT, REPORTED, ANNOUNCED, AWARDED, NOMINATED, TREATED, DIAGNOSED
 Rules:
 - Subject and object MUST be from the entity list above — do not introduce new entities
 - ALWAYS prefer a predicate from the list above. Only invent a new predicate if NONE of the above fit.
-- Never create compound predicates (e.g., "MENTIONED_COOKING_IN" — use MENTIONED instead)
-- Use the simplest, most general predicate that accurately captures the relationship
-- Only extract relationships explicitly stated or strongly implied in the text
+- Never create compound predicates (e.g., "MENTIONED_COOKING_IN" — use DESCRIBED instead)
+- Use the most specific predicate that accurately captures the relationship — avoid vague predicates
+- Extract relationships that are explicitly stated or strongly implied in the text. Include implied relationships only when the inference is clear from context.
 - Return an empty array if no clear relationships exist between the listed entities
+
+Example:
+
+Entities: [{"name": "Margaret Ashworth", "type": "person"}, {"name": "Edmund Ashworth", "type": "person"}, {"name": "The Geographical Society", "type": "organization"}, {"name": "Cairo", "type": "location"}, {"name": "Oxford", "type": "location"}, {"name": "Helena Voss", "type": "person"}, {"name": "Principles of Navigation", "type": "product"}]
+
+Text: "Margaret Ashworth had lived in Oxford since her marriage to Edmund, who served as president of The Geographical Society. It was through Edmund's influence that she first traveled to Cairo, where she met the renowned cartographer Helena Voss. The two women corresponded for years, and Helena's bold methods deeply influenced Margaret's own work. Margaret eventually wrote Principles of Navigation, which many regarded as a challenge to Edmund's more traditional views on the subject. Helena, who had once taught at Oxford before the Society forced her departure, remained Margaret's closest intellectual ally."
+
+Relationships:
+[{"subject": "Margaret Ashworth", "predicate": "LIVED_IN", "object": "Oxford", "confidence": 0.95},
+{"subject": "Margaret Ashworth", "predicate": "MARRIED", "object": "Edmund Ashworth", "confidence": 0.95},
+{"subject": "Edmund Ashworth", "predicate": "MEMBER_OF", "object": "The Geographical Society", "confidence": 0.9},
+{"subject": "Margaret Ashworth", "predicate": "TRAVELED_TO", "object": "Cairo", "confidence": 0.9},
+{"subject": "Edmund Ashworth", "predicate": "INFLUENCED", "object": "Margaret Ashworth", "confidence": 0.85},
+{"subject": "Helena Voss", "predicate": "CORRESPONDS_WITH", "object": "Margaret Ashworth", "confidence": 0.9},
+{"subject": "Helena Voss", "predicate": "INFLUENCED", "object": "Margaret Ashworth", "confidence": 0.9},
+{"subject": "Margaret Ashworth", "predicate": "WROTE", "object": "Principles of Navigation", "confidence": 0.95},
+{"subject": "Margaret Ashworth", "predicate": "OPPOSED", "object": "Edmund Ashworth", "confidence": 0.75},
+{"subject": "Helena Voss", "predicate": "TAUGHT", "object": "Oxford", "confidence": 0.85},
+{"subject": "Helena Voss", "predicate": "COLLABORATED_WITH", "object": "Margaret Ashworth", "confidence": 0.9}]
 
 Return a JSON array: [{"subject": "...", "predicate": "...", "object": "...", "confidence": 0.9}, ...]
 
-Text:
+Now extract relationships from the following text:
 `
 
 const VALID_ENTITY_TYPES = new Set(['person', 'organization', 'location', 'product', 'concept', 'event'])

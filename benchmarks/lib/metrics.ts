@@ -72,6 +72,87 @@ export function substringAccuracy(predicted: string, gold: string): number {
   return normalizeAnswer(predicted).includes(normalizeAnswer(gold)) ? 1 : 0
 }
 
+/**
+ * MultiHop-RAG word-intersection accuracy.
+ * Exact replication of MultiHop-RAG/qa_evaluate.py `has_intersection()`:
+ *   True if ANY word in predicted overlaps with ANY word in gold (case-insensitive).
+ * This is the paper's reported "accuracy" metric in Table 4.
+ */
+export function wordIntersectionAccuracy(predicted: string, gold: string): number {
+  const predWords = new Set(predicted.toLowerCase().split(/\s+/).filter(Boolean))
+  const goldWords = new Set(gold.toLowerCase().split(/\s+/).filter(Boolean))
+  for (const word of predWords) {
+    if (goldWords.has(word)) return 1
+  }
+  return 0
+}
+
+/**
+ * MultiHop-RAG evidence-in-chunk retrieval metrics.
+ * Exact replication of MultiHop-RAG/retrieval_evaluate.py `calculate_metrics()`:
+ *   For each query, checks if gold evidence facts appear as substrings in retrieved chunks.
+ *   Reports Hit@10, Hit@4, MAP@10, MRR@10.
+ *
+ * @param retrievedChunks - Array of retrieved chunk texts per query
+ * @param goldEvidences - Array of gold evidence fact strings per query
+ */
+export function multiHopRetrievalMetrics(
+  retrievedChunks: string[][],
+  goldEvidences: string[][],
+): { 'Hit@10': number; 'Hit@4': number; 'MAP@10': number; 'MRR@10': number } {
+  let hitsAt10 = 0, hitsAt4 = 0
+  const mapList: number[] = []
+  const mrrList: number[] = []
+
+  for (let qi = 0; qi < retrievedChunks.length; qi++) {
+    const retrieved = retrievedChunks[qi]!
+    const gold = goldEvidences[qi]!
+
+    // Normalize: strip whitespace (matches paper's replace(" ","").replace("\n",""))
+    const normGold = gold.map(g => g.replace(/\s+/g, ''))
+    const normRetrieved = retrieved.map(r => r.replace(/\s+/g, ''))
+
+    let hitAt10 = false, hitAt4 = false
+    let firstRelevantRank: number | null = null
+    let avgPrecisionSum = 0
+    const foundGold: string[] = []
+
+    for (let rank = 0; rank < Math.min(normRetrieved.length, 10); rank++) {
+      const chunk = normRetrieved[rank]!
+      const isRelevant = normGold.some(g => chunk.includes(g))
+
+      if (isRelevant) {
+        hitAt10 = true
+        if (firstRelevantRank === null) firstRelevantRank = rank + 1
+        if (rank < 4) hitAt4 = true
+
+        // Count newly matched gold items at this rank
+        let newMatches = 0
+        for (const g of normGold) {
+          if (chunk.includes(g) && !foundGold.includes(g)) {
+            newMatches++
+            foundGold.push(g)
+          }
+        }
+        avgPrecisionSum += newMatches / (rank + 1)
+      }
+    }
+
+    hitsAt10 += hitAt10 ? 1 : 0
+    hitsAt4 += hitAt4 ? 1 : 0
+    mapList.push(avgPrecisionSum / Math.min(gold.length, 10))
+    mrrList.push(firstRelevantRank ? 1 / firstRelevantRank : 0)
+  }
+
+  const n = retrievedChunks.length
+  return {
+    'Hit@10': n > 0 ? hitsAt10 / n : 0,
+    'Hit@4': n > 0 ? hitsAt4 / n : 0,
+    'MAP@10': n > 0 ? mapList.reduce((a, b) => a + b, 0) / n : 0,
+    'MRR@10': n > 0 ? mrrList.reduce((a, b) => a + b, 0) / n : 0,
+  }
+}
+
 export function exactMatch(predicted: string, gold: string): number {
   return normalizeAnswer(predicted) === normalizeAnswer(gold) ? 1 : 0
 }

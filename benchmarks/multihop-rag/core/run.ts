@@ -22,7 +22,7 @@ import {
   runIngestion, buildResult, emitResults, printBanner, measureLatencyProfile,
 } from '../../lib/runner.js'
 import {
-  substringAccuracy, exactMatch, tokenF1,
+  wordIntersectionAccuracy,
   deduplicateToDocuments, scoreAllQueriesExtended,
 } from '../../lib/metrics.js'
 import { runValidation } from '../../lib/validate.js'
@@ -90,7 +90,7 @@ async function main() {
 
     const queryStart = performance.now()
     const allResults = new Map<string, string[]>()
-    let sumACC = 0, sumEM = 0, sumF1 = 0, answered = 0, answerErrors = 0
+    let sumACC = 0, answered = 0, answerErrors = 0
 
     for (const query of queries) {
       const queryId = String(query['_id'])
@@ -117,9 +117,8 @@ async function main() {
               model: gateway(evalModel),
               prompt: `Answer the question based only on the provided context. Be concise.\n\nContext:\n${context}\n\nQuestion: ${queryText}\n\nAnswer:`,
             })
-            sumACC += substringAccuracy(predicted, gold)
-            sumEM += exactMatch(predicted, gold)
-            sumF1 += tokenF1(predicted, gold)
+            // Paper uses word-intersection accuracy (has_intersection in qa_evaluate.py)
+            sumACC += wordIntersectionAccuracy(predicted, gold)
             answered++
           } catch {
             answerErrors++
@@ -146,12 +145,10 @@ async function main() {
       scored = ir.scored
     }
 
-    // Add answer metrics
+    // Add answer metrics (word-intersection ACC, matching paper's qa_evaluate.py)
     if (doAnswerEval && answered > 0) {
       metrics['ACC'] = sumACC / answered
-      metrics['EM'] = sumEM / answered
-      metrics['F1'] = sumF1 / answered
-      console.log(`  Answers: ${answered}${answerErrors > 0 ? ` (${answerErrors} errors)` : ''} — ACC=${metrics['ACC']!.toFixed(4)}, EM=${metrics['EM']!.toFixed(4)}, F1=${metrics['F1']!.toFixed(4)}`)
+      console.log(`  Answers: ${answered}${answerErrors > 0 ? ` (${answerErrors} errors)` : ''} — ACC=${metrics['ACC']!.toFixed(4)} (word-intersection)`)
     }
 
     benchResults.push(buildResult(config, mode, corpus.length, scored, metrics as BenchmarkMetrics, {

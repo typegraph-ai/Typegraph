@@ -208,6 +208,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
   },
 
   // ── MultiHop-RAG (COLM 2024) ──
+  // Paper uses 256-token chunks (Table 5 setup) — NOT the shared 2048 default
   'multihop-rag/core': {
     dataset: 'multihop-rag',
     displayName: 'MultiHop-RAG (COLM 2024)',
@@ -219,6 +220,8 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     modes: ['hybrid', 'fast'],
     variant: 'core',
     supportsAnswerEval: true,
+    chunkSize: 256,
+    chunkOverlap: 32,
   },
   'multihop-rag/neural': {
     dataset: 'multihop-rag',
@@ -231,6 +234,8 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     modes: ['neural'],
     variant: 'neural',
     supportsAnswerEval: true,
+    chunkSize: 256,
+    chunkOverlap: 32,
   },
   // ── GraphRAG-Bench Novel (arXiv:2506.05690) ──
   'graphrag-bench-novel/core': {

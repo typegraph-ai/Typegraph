@@ -8,7 +8,7 @@ d8um is a TypeScript SDK for retrieval + memory for AI agents, built on Postgres
 - **Benchmarks dir**: Uses npm (not pnpm) with `file:` protocol deps pointing to the SDK
 - **Database**: Neon serverless Postgres with pgvector
 - **Embeddings**: AI Gateway (Vercel) → openai/text-embedding-3-small
-- **LLM**: AI Gateway → google/gemini-3.1-flash-lite-preview
+- **LLM**: AI Gateway → openai/gpt-5.4-mini (triple extraction + answer gen)
 - **Blob storage**: Vercel Blob (for benchmark datasets)
 
 ## Sandbox Access
@@ -175,17 +175,21 @@ For longer queries, write a `.js` file in `benchmarks/` and run with `node`.
 - The `db-inspect` workflow still exists but is only needed if you want query results stored in the repo for historical reference.
 - Tagged template literals in `@neondatabase/serverless` parameterize automatically — avoid string concatenation for values.
 
-## Benchmark Datasets (7 datasets × 2 variants = 14 benchmarks)
+## Benchmark Datasets (9 datasets × 2 variants = 18 benchmarks)
 
-| Dataset | Description |
-|---------|-------------|
-| nfcorpus | Biomedical information retrieval (BEIR) |
-| australian-tax-guidance-retrieval | Australian tax law documents |
-| contractual-clause-retrieval | Legal contract clauses |
-| license-tldr-retrieval | Software license summaries |
-| mleb-scalr | Multi-language evaluation benchmark |
-| legal-rag-bench | Legal RAG evaluation |
-| multihop-rag | Multi-hop QA over news articles (COLM 2024) |
+| Dataset | Description | Chunk Size | Scoring |
+|---------|-------------|------------|---------|
+| nfcorpus | Biomedical information retrieval (BEIR) | 2048 | BEIR IR metrics |
+| australian-tax-guidance-retrieval | Australian tax law documents | 2048 | BEIR IR metrics |
+| contractual-clause-retrieval | Legal contract clauses | 2048 | BEIR IR metrics |
+| license-tldr-retrieval | Software license summaries | 2048 | BEIR IR metrics |
+| mleb-scalr | Multi-language evaluation benchmark | 2048 | BEIR IR metrics |
+| legal-rag-bench | Legal RAG evaluation | 2048 | BEIR IR metrics |
+| multihop-rag | Multi-hop QA over news articles (COLM 2024) | **256** | IR + word-intersection ACC |
+| graphrag-bench-novel | 20 Project Gutenberg novels (arXiv:2506.05690) | **1200** | LLM-as-judge ACC |
+| graphrag-bench-medical | NCCN medical guidelines (arXiv:2506.05690) | **1200** | LLM-as-judge ACC |
+
+**CRITICAL: Chunk sizes are per-benchmark, not global.** Each benchmark's chunk size matches the methodology used by published baselines for that benchmark. Using the wrong chunk size makes results incomparable.
 
 ## Metrics
 
@@ -199,21 +203,33 @@ All benchmarks report BEIR-standard metrics at cutoff 10:
 - **MRR@10**: Mean Reciprocal Rank (multihop-rag only)
 - **Hit@10**: Hit rate at 10 (multihop-rag only)
 
-### Answer-Generation Metrics (multihop-rag only)
+### Answer-Generation Metrics
 
-When `--eval-answers` or `--eval-answers-only` is passed, multihop-rag runners also report:
-- **ACC**: Substring accuracy — `normalize(gold) in normalize(predicted)`. This is the paper-comparable metric (MultiHop-RAG paper uses substring match, not exact match).
-- **EM**: Exact match — `normalize(predicted) === normalize(gold)`. Stricter than ACC.
-- **F1**: Token-level F1 — precision/recall over whitespace-tokenized normalized text.
+Each benchmark uses the **exact scoring methodology from its source paper**. Using the wrong scoring method makes results incomparable.
 
-**Critical methodology note:** The MultiHop-RAG paper (Tang & Yang, COLM 2024) uses substring match (ACC), NOT exact match. They pass top-6 retrieved chunks (max ~2048 tokens) as context to GPT-4. Our runners now match this methodology: top-6 chunks from `response.results[].content`, not full articles.
+**MultiHop-RAG (COLM 2024):**
+- **ACC**: Word-intersection accuracy — true if ANY word in predicted overlaps with ANY word in gold (case-insensitive). Matches `has_intersection()` in the paper's `qa_evaluate.py`.
+- Top-6 chunks as context, 256-token chunks (matching paper Table 5 setup).
+- Paper reports ACC=0.56 with GPT-4. Our runners use `wordIntersectionAccuracy()`.
 
-### Runner Flags (multihop-rag)
+**GraphRAG-Bench (arXiv:2506.05690):**
+- **ACC**: LLM-as-judge answer correctness = 0.75 × factuality_fbeta + 0.25 × semantic_similarity.
+- Factuality: LLM decomposes answer + gold into statements, classifies TP/FP/FN, computes F-beta.
+- Similarity: Embedding cosine similarity between answer and gold, scaled to [0,1].
+- Prompts and scoring logic copied verbatim from `GraphRAG-Bench/Evaluation/metrics/answer_accuracy.py`.
+- Returns continuous 0.0-1.0 score (NOT binary). Published baselines report 0.40-0.65.
 
-- `--eval-answers`: Run answer eval after full retrieval benchmark (all 2255 queries + answer gen)
-- `--eval-answers-only`: Single-loop answer eval — for each query: retrieve → generate → score. Default limit: 100 queries. Skips IR metrics. Finishes in ~5-15 min.
-- `--eval-answers-limit=N`: Override the default limit of 100 queries (e.g., `--eval-answers-limit=2255` for full eval, `--eval-answers-limit=20` for quick smoke test)
-- `--eval-model=MODEL`: Override the LLM for answer generation (default: `google/gemini-3.1-flash-lite-preview`)
+**CRITICAL: Do NOT mix scoring methods across benchmarks.** MultiHop-RAG ACC (word-intersection, binary) and GraphRAG-Bench ACC (LLM-as-judge, continuous) are completely different metrics that happen to share the name "ACC".
+
+### Runner Flags (answer-eval benchmarks)
+
+- `--eval-answers`: Run answer eval alongside retrieval metrics in the same loop
+- `--eval-answers-limit=N`: Limit answer eval to N queries (default: 100). Use `--eval-answers-limit=20` for quick smoke tests.
+- `--eval-model=MODEL`: Override the LLM for answer generation (default: `openai/gpt-5.4-mini`)
+- GraphRAG-Bench runners run answer-gen eval by default (no flag needed) — it's the primary metric
+- MultiHop-RAG runners require `--eval-answers` flag to include answer eval alongside IR metrics
+
+**Architecture:** All answer-eval runners use a single unified loop: retrieve → score IR (if applicable) → generate answer → score answer. No storing results in memory across phases. No second loop.
 
 ## Development
 
@@ -235,16 +251,23 @@ cd benchmarks && npm install  # Install benchmark deps (separate npm)
 
 Hard-won learnings from debugging the benchmark pipeline. Read this before running benchmarks or DB queries.
 
-### Answer-Only Mode Architecture
+### Unified Eval Loop Architecture
 
-`--eval-answers-only` uses a **single-loop** architecture: for each query up to the limit (default 100), it retrieves chunks, generates an answer via LLM, and scores it (ACC/EM/F1) immediately — all in one pass. This replaces the old two-phase approach (retrieve all queries first, then generate answers in a separate loop).
+All benchmark runners that support answer eval use a **single unified loop**. There is NO separate "answer-only mode" code path — just one loop with conditional behavior based on flags.
 
-**Key design decisions:**
-- **Default limit = 100**: Not `Infinity`. All 2255 multihop-rag queries have gold answers, so filtering by "has gold answer" is a no-op. The limit is what makes this fast.
-- **Single loop with early return**: The `evalAnswersOnly` code path returns before the normal retrieval/scoring phases. No intermediate `allResults`/`allChunkResults` maps.
-- **Per-query error handling**: `generateText` failures are caught per-query and logged, not fatal. The loop continues.
-- **15-minute timeout**: With 100 queries at ~3s each (retrieval + LLM), completes in ~5 min. Override with `--eval-answers-limit=N` for larger runs (increase workflow timeout manually if N >> 100).
-- **Core runner runs hybrid only** in answer-only mode (no fast mode), since the goal is answer quality iteration, not retrieval comparison.
+```
+for each query:
+  results = d.query(queryText, { mode, count: 50 })
+  if (computeIR)      → accumulate IR metrics (nDCG, MAP, etc.)
+  if (computeAnswers) → generate answer from top-6 chunks, score vs gold
+```
+
+**Key principles:**
+- **One loop, not two.** Never store thousands of query results in memory to iterate over them later.
+- **Flags control behavior, not code paths.** `--eval-answers` adds answer scoring to the existing loop. No separate `--eval-answers-only` mode needed.
+- **Default limit = 100** for answer eval queries. Override with `--eval-answers-limit=N`.
+- **Per-query error handling**: LLM failures caught per-query, loop continues.
+- **GraphRAG-Bench runs answer eval by default** (it's an answer-gen benchmark with no meaningful qrels). MultiHop-RAG requires `--eval-answers` flag.
 
 ### Database Table Naming
 
@@ -363,6 +386,10 @@ Note: neural graph tables use `{prefix}memories` (no extra underscore), e.g. `be
 | legal-rag-bench | neural | `bench_legalrag_neural_` | `legal-rag-bench-neural` |
 | multihop-rag | core | `bench_multihop_core_` | `multihop-rag` |
 | multihop-rag | neural | `bench_multihop_neural_` | `multihop-rag-neural` |
+| graphrag-bench-novel | core | `bench_grbnovel_core_` | `graphrag-bench-novel` |
+| graphrag-bench-novel | neural | `bench_grbnovel_neural_` | `graphrag-bench-novel-neural` |
+| graphrag-bench-medical | core | `bench_grbmed_core_` | `graphrag-bench-medical` |
+| graphrag-bench-medical | neural | `bench_grbmed_neural_` | `graphrag-bench-medical-neural` |
 
 #### Current DB State (as of 2026-03-31)
 
@@ -703,3 +730,66 @@ Predicate merging reduced graph noise (fewer redundant edge types), which improv
 1. **Query-aware chunk re-ranking** — re-score graph chunks by embedding similarity to query, not entity centrality (`graph-bridge.ts:getChunksForEntities`)
 2. **Increase graph connectivity** — 1.64 edges/entity is too sparse for meaningful multi-hop traversal; need stronger extraction LLM or more triples per chunk
 3. **Keyword-based entity seeding** — seed PPR from entities mentioned by name in the query, not just embedding similarity (which is redundant with indexed search)
+
+### 2026-03-31 — Methodology alignment + GraphRAG-Bench + neural showing promise
+
+**Critical finding:** Our benchmark scoring was completely wrong for both datasets:
+
+1. **GraphRAG-Bench**: We used binary substring match (ACC=0.05-0.08). Paper uses LLM-as-judge (0.75×factuality_fbeta + 0.25×semantic_similarity), producing continuous 0.0-1.0 scores. After fixing: ACC=0.55-0.57, within range of published baselines (0.40-0.65).
+
+2. **MultiHop-RAG**: We used `normalize(gold) in normalize(predicted)`. Paper uses word-intersection (`has_intersection()` in qa_evaluate.py) — true if ANY word overlaps. Our method was stricter, producing lower ACC.
+
+3. **MultiHop-RAG chunk size**: We used 2048 tokens. Paper uses 256 tokens. 53% of documents fit in a single 2048-token chunk, making the graph store 1 chunk per document.
+
+**Lesson: ALWAYS read the paper's actual evaluation code before implementing metrics. Same metric name ≠ same metric.**
+
+#### Changes made
+
+1. **GraphRAG-Bench onboarding** — seed script, 4 configs (novel/medical × core/neural), baselines from paper, 1200-token chunks (matching benchmark standard)
+2. **LLM-as-judge scoring** (`benchmarks/lib/metrics.ts`) — `answerCorrectness()` exactly replicating `GraphRAG-Bench/Evaluation/metrics/answer_accuracy.py`
+3. **Word-intersection ACC** (`benchmarks/lib/metrics.ts`) — `wordIntersectionAccuracy()` matching MultiHop-RAG `qa_evaluate.py`
+4. **Controlled predicate vocabulary** — extraction prompt constrains predicates to ~50 canonical types, eliminating compound junk (1,605 → 112 predicates, 41x denser)
+5. **Predicate normalizer expanded** — ~20 → ~120 synonym entries
+6. **LLM upgrade** — Gemini Flash Lite → openai/gpt-5.4-mini for extraction + answer gen
+7. **providerOptions support** — LLMProvider interface accepts provider-specific options (e.g., reasoningEffort)
+8. **Single-loop eval architecture** — all answer-eval runners use one loop (retrieve → IR → answer → score), no storing results in memory
+9. **SDK perf fixes** — pgvector `SELECT *` → explicit columns (-31% fast mode), skip `SET LOCAL` without transaction (-20%), latency profiling in all runners
+10. **MultiHop-RAG chunk size** — config set to 256 tokens (requires reseed to take effect)
+
+#### Results — GraphRAG-Bench Novel (100 queries, LLM-as-judge ACC)
+
+| Mode | ACC | Avg Query | Delta vs Core |
+|------|-----|-----------|---------------|
+| **neural** | **0.570** | 7,663ms | **+2.3%** |
+| hybrid | 0.557 | 5,433ms | baseline |
+| fast | 0.549 | 5,289ms | -1.4% |
+
+**First time neural outperforms core.** The graph provides a measurable quality lift with proper evaluation methodology. The reinforcement-only filter is still active (discarding novel graph results), so the true potential is higher.
+
+#### Graph health (novel corpus, post-fix)
+
+| Metric | Before fix | After fix |
+|--------|-----------|-----------|
+| Distinct predicates | 1,605 | 112 |
+| Edges/predicate | 2.2 | 89.7 |
+| Entities | 2,086 | 5,680 |
+| Edges | 3,586 | 10,042 |
+| Embedding coverage | 100% | 100% |
+| CO_OCCURS | 0 | 0 |
+
+### Benchmark Methodology Alignment (CRITICAL)
+
+**Each benchmark MUST use the exact scientific methodology from its source paper.** This includes:
+
+| Parameter | Per-benchmark, NOT global |
+|-----------|--------------------------|
+| Chunk size | 256 (MultiHop-RAG), 1200 (GraphRAG-Bench), 2048 (BEIR/MLEB) |
+| Scoring method | Word-intersection (MultiHop-RAG), LLM-as-judge (GraphRAG-Bench), BEIR IR (others) |
+| Context for answer gen | Top-6 chunks (both MultiHop-RAG and GraphRAG-Bench) |
+| Null query handling | Excluded in seed script (MultiHop-RAG) |
+
+**Mistakes that waste time and produce garbage results:**
+- Using 2048-token chunks on MultiHop-RAG (paper uses 256) — 53% of docs become single chunks
+- Using substring match for GraphRAG-Bench (paper uses LLM-as-judge) — produces ACC=0.07 vs real ACC=0.57
+- Using LLM-as-judge for MultiHop-RAG (paper uses word-intersection) — different scale entirely
+- Running 2,000 retrieval-only queries on GraphRAG-Bench (no qrels) — produces NaN metrics, wastes 45 min

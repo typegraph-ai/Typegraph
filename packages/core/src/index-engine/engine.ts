@@ -8,7 +8,7 @@ import { IndexError } from '../types/index-types.js'
 import { sha256, resolveIdempotencyKey, buildHashStoreKey } from './hash.js'
 import { defaultChunker } from './chunker.js'
 import { stripMarkdown } from './strip-markdown.js'
-import type { TripleExtractor } from './triple-extractor.js'
+import type { TripleExtractor, EntityContext } from './triple-extractor.js'
 
 /** Race a promise against a timeout. Resolves to undefined on timeout (never rejects). */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
@@ -169,17 +169,27 @@ export class IndexEngine {
         indexedAt: new Date(),
       }))
 
-      // Extract triples for entity graph — await before hash store write
-      // to ensure graph state is persisted before marking document as processed
+      // Extract triples for entity graph — sequential per chunk for cross-chunk entity context.
+      // Each chunk's extracted entities are passed to the next chunk's prompt, enabling
+      // coreference resolution ("the company" in chunk 5 = "OpenAI" from chunk 1).
+      // Documents still process concurrently via the outer concurrency semaphore.
       if (this.tripleExtractor && !dryRun) {
-        await Promise.allSettled(
-          chunks.map(chunk =>
-            withTimeout(
-              this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex, documentId, { ...propagated, ...chunk.metadata }),
-              TRIPLE_EXTRACTION_TIMEOUT_MS,
-            )
+        const entityContext: EntityContext[] = []
+        for (const chunk of chunks) {
+          const result = await withTimeout(
+            this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex, documentId, { ...propagated, ...chunk.metadata }, entityContext),
+            TRIPLE_EXTRACTION_TIMEOUT_MS,
           )
-        )
+          if (result?.entities) {
+            for (const e of result.entities) {
+              if (!entityContext.find(x => x.name.toLowerCase() === e.name.toLowerCase())) {
+                entityContext.push(e)
+              }
+            }
+            // Cap at 20 to avoid prompt bloat
+            if (entityContext.length > 20) entityContext.splice(0, entityContext.length - 20)
+          }
+        }
       }
 
       if (!dryRun) {

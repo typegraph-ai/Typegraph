@@ -10,6 +10,8 @@
 export const EMBEDDING_MODEL = 'openai/text-embedding-3-small'
 export const EMBEDDING_DIMS = 1536
 export const LLM_MODEL = 'openai/gpt-5.4-mini'
+/** LLM used for triple extraction in neural mode. Defaults to LLM_MODEL. Override to use a reasoning model. */
+export const EXTRACTION_MODEL = 'xai/grok-4.20-reasoning'
 export const CHUNK_SIZE = 2048
 export const CHUNK_OVERLAP = 256
 export const K = 10

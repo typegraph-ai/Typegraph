@@ -6,9 +6,11 @@ import { createTemporal } from '../temporal.js'
 import { randomUUID } from 'crypto'
 
 // ── Entity Resolver ──
-// Deduplicates entities using a 3-phase cascade:
-//   Phase 1: Exact alias matching (cheapest)
+// Deduplicates entities using a 5-phase cascade:
+//   Phase 0: In-memory session cache (instant)
+//   Phase 1: Exact alias matching via DB ILIKE (cheapest DB call)
 //   Phase 2: Normalized string matching (catches case/punctuation variants)
+//   Phase 2.5: Fuzzy matching via trigram Jaccard (catches abbreviations/reorderings)
 //   Phase 3: Vector similarity on name embeddings (catches semantic equivalents)
 
 export interface EntityResolverConfig {
@@ -48,12 +50,13 @@ export class EntityResolver {
     entityType: string,
     aliases: string[],
     scope: d8umIdentity,
+    description?: string,
   ): Promise<{ entity: SemanticEntity; isNew: boolean }> {
     // Phase 0: In-memory cache (instant — catches all prior entities in this session)
     const normalizedName = normalizeForComparison(name)
     const cached = this.nameCache.get(normalizedName)
     if (cached) {
-      const merged = this.merge(cached, { name, entityType, aliases })
+      const merged = this.merge(cached, { name, entityType, aliases, description })
       this.cacheEntity(merged)
       return { entity: merged, isNew: false }
     }
@@ -61,7 +64,7 @@ export class EntityResolver {
     for (const alias of aliases) {
       const cachedByAlias = this.nameCache.get(normalizeForComparison(alias))
       if (cachedByAlias) {
-        const merged = this.merge(cachedByAlias, { name, entityType, aliases })
+        const merged = this.merge(cachedByAlias, { name, entityType, aliases, description })
         this.cacheEntity(merged)
         return { entity: merged, isNew: false }
       }
@@ -72,7 +75,7 @@ export class EntityResolver {
       const candidates = await this.store.findEntities(name, scope, 10)
       const aliasMatch = this.findByAlias(name, aliases, candidates)
       if (aliasMatch) {
-        const merged = this.merge(aliasMatch, { name, entityType, aliases })
+        const merged = this.merge(aliasMatch, { name, entityType, aliases, description })
         this.cacheEntity(merged)
         return { entity: merged, isNew: false }
       }
@@ -80,17 +83,26 @@ export class EntityResolver {
       // Phase 2: Normalized string matching (catches case/punctuation variants)
       for (const candidate of candidates) {
         if (normalizeForComparison(candidate.name) === normalizedName) {
-          const merged = this.merge(candidate, { name, entityType, aliases })
+          const merged = this.merge(candidate, { name, entityType, aliases, description })
           this.cacheEntity(merged)
           return { entity: merged, isNew: false }
         }
         for (const alias of candidate.aliases) {
           if (normalizeForComparison(alias) === normalizedName) {
-            const merged = this.merge(candidate, { name, entityType, aliases })
+            const merged = this.merge(candidate, { name, entityType, aliases, description })
             this.cacheEntity(merged)
             return { entity: merged, isNew: false }
           }
         }
+      }
+
+      // Phase 2.5: Fuzzy matching via trigram Jaccard (catches abbreviations/reorderings)
+      // e.g., "NY Times" vs "New York Times", "J.K. Rowling" vs "JK Rowling"
+      const fuzzyMatch = this.findByFuzzy(name, aliases, entityType, candidates)
+      if (fuzzyMatch) {
+        const merged = this.merge(fuzzyMatch, { name, entityType, aliases, description })
+        this.cacheEntity(merged)
+        return { entity: merged, isNew: false }
       }
     }
 
@@ -101,11 +113,14 @@ export class EntityResolver {
       const similar = await this.store.searchEntities(nameEmbedding, scope, 5)
 
       for (const candidate of similar) {
+        // Type guard: don't merge entities with conflicting specific types
+        if (!typesCompatible(entityType, candidate.entityType)) continue
+
         // Use pgvector's cosine similarity score (stashed by adapter) instead of re-embedding
         const similarity = (candidate.properties._similarity as number | undefined)
           ?? this.cosineSimilarity(nameEmbedding, candidate.embedding ?? [])
         if (similarity >= this.threshold) {
-          const merged = this.merge(candidate, { name, entityType, aliases })
+          const merged = this.merge(candidate, { name, entityType, aliases, description })
           this.cacheEntity(merged)
           return { entity: merged, isNew: false }
         }
@@ -121,7 +136,7 @@ export class EntityResolver {
       name,
       entityType,
       aliases,
-      properties: {},
+      properties: description ? { description } : {},
       embedding: nameEmbedding,
       scope,
       temporal: createTemporal(),
@@ -163,7 +178,7 @@ export class EntityResolver {
    */
   merge(
     existing: SemanticEntity,
-    incoming: { name: string; entityType: string; aliases: string[] },
+    incoming: { name: string; entityType: string; aliases: string[]; description?: string | undefined },
   ): SemanticEntity {
     const existingAliases = new Set(existing.aliases.map(a => a.toLowerCase()))
     const newAliases = [...existing.aliases]
@@ -182,14 +197,57 @@ export class EntityResolver {
       }
     }
 
+    // Merge descriptions: accumulate unique descriptions from different chunks
+    const properties = { ...existing.properties }
+    if (incoming.description) {
+      const existingDesc = properties.description as string | undefined
+      if (!existingDesc) {
+        properties.description = incoming.description
+      } else if (!existingDesc.includes(incoming.description)) {
+        // Append new description if it's not already contained
+        properties.description = `${existingDesc} ${incoming.description}`
+      }
+    }
+
     return {
       ...existing,
       aliases: newAliases,
+      properties,
       // Keep existing type unless it's generic and incoming is more specific
       entityType: (existing.entityType === 'entity' || existing.entityType === 'other')
         ? incoming.entityType
         : existing.entityType,
     }
+  }
+
+  /**
+   * Find a fuzzy match using trigram Jaccard similarity.
+   * Checks incoming name + aliases against candidate name + aliases.
+   * Requires type compatibility to prevent cross-type merges.
+   */
+  private findByFuzzy(
+    name: string,
+    aliases: string[],
+    entityType: string,
+    candidates: SemanticEntity[],
+  ): SemanticEntity | undefined {
+    const FUZZY_THRESHOLD = 0.7
+    const incomingNames = [name, ...aliases]
+
+    for (const candidate of candidates) {
+      if (!typesCompatible(entityType, candidate.entityType)) continue
+      const candidateNames = [candidate.name, ...candidate.aliases]
+
+      for (const a of incomingNames) {
+        for (const b of candidateNames) {
+          if (trigramJaccard(a, b) >= FUZZY_THRESHOLD) {
+            return candidate
+          }
+        }
+      }
+    }
+
+    return undefined
   }
 
   /**
@@ -220,4 +278,39 @@ export class EntityResolver {
  */
 function normalizeForComparison(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+/**
+ * Trigram Jaccard similarity between two strings.
+ * Catches abbreviations ("NY Times" / "New York Times") and minor reorderings
+ * that normalized string matching misses but vector similarity is too coarse for.
+ */
+function trigramJaccard(a: string, b: string): number {
+  const normalized = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const trigrams = (s: string): Set<string> => {
+    const t = new Set<string>()
+    const n = normalized(s)
+    for (let i = 0; i <= n.length - 3; i++) t.add(n.slice(i, i + 3))
+    return t
+  }
+  const ta = trigrams(a)
+  const tb = trigrams(b)
+  // Need at least 1 trigram in each to compare (strings must be 3+ chars after normalization)
+  if (ta.size === 0 || tb.size === 0) return 0
+  let intersection = 0
+  for (const t of ta) {
+    if (tb.has(t)) intersection++
+  }
+  const union = ta.size + tb.size - intersection
+  return union === 0 ? 0 : intersection / union
+}
+
+/**
+ * Check if two entity types are compatible for merging.
+ * Prevents merging a person with a location, etc.
+ * Generic types ("entity", "other", "") are compatible with anything.
+ */
+function typesCompatible(a: string, b: string): boolean {
+  const GENERIC_TYPES = new Set(['entity', 'other', ''])
+  return a === b || GENERIC_TYPES.has(a) || GENERIC_TYPES.has(b)
 }

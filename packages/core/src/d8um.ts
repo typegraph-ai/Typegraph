@@ -21,6 +21,7 @@ import type { RawDocument, Chunk, Connector } from './types/connector.js'
 import type { d8umHooks } from './types/hooks.js'
 import type { LLMProvider } from './types/llm-provider.js'
 import type { GraphBridge } from './types/graph-bridge.js'
+import type { ExtractionConfig } from './types/extraction-config.js'
 import type { d8umIdentity } from './types/identity.js'
 import type { ContextSearchOpts, ContextSearchResponse } from './query/context-search.js'
 import type { AISDKLLMInput } from './llm/ai-sdk-adapter.js'
@@ -50,6 +51,8 @@ export interface d8umConfig {
   llm?: LLMInput | undefined
   /** Optional graph bridge for memory operations and neural query mode. */
   graph?: GraphBridge | undefined
+  /** Configure triple extraction behavior (single-pass vs two-pass, per-pass models). */
+  extraction?: ExtractionConfig | undefined
 }
 
 function isEmbeddingProvider(
@@ -771,8 +774,14 @@ class d8umImpl implements d8umInstance {
   private createIndexEngine(embedding: EmbeddingProvider): IndexEngine {
     const engine = new IndexEngine(this.adapter, embedding)
     if (this.config.llm && this.config.graph) {
-      const llm = resolveLLMProvider(this.config.llm)
-      engine.tripleExtractor = new TripleExtractor({ llm, graph: this.config.graph })
+      const mainLlm = resolveLLMProvider(this.config.llm)
+      const ext = this.config.extraction
+      engine.tripleExtractor = new TripleExtractor({
+        llm: ext?.entityLlm ?? mainLlm,
+        relationshipLlm: ext?.relationshipLlm,
+        graph: this.config.graph,
+        twoPass: ext?.twoPass ?? false,
+      })
     }
     return engine
   }

@@ -122,10 +122,12 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     subject: string
     subjectType?: string
     subjectAliases?: string[]
+    subjectDescription?: string
     predicate: string
     object: string
     objectType?: string
     objectAliases?: string[]
+    objectDescription?: string
     confidence?: number
     content: string
     bucketId: string
@@ -150,8 +152,8 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
 
     // Resolve subject and object entities (dedup via alias + vector similarity)
     const [subjectResult, objectResult] = await Promise.all([
-      resolver.resolve(triple.subject, triple.subjectType ?? 'entity', triple.subjectAliases ?? [], scope),
-      resolver.resolve(triple.object, triple.objectType ?? 'entity', triple.objectAliases ?? [], scope),
+      resolver.resolve(triple.subject, triple.subjectType ?? 'entity', triple.subjectAliases ?? [], scope, triple.subjectDescription),
+      resolver.resolve(triple.object, triple.objectType ?? 'entity', triple.objectAliases ?? [], scope, triple.objectDescription),
     ])
 
     // Persist entities

@@ -2,10 +2,10 @@
   <img src="logo-dark.png" alt="d8um" width="50" />
 </p>
 
-<p align="center">
+<div align="center">
   <h1>d8um</h1>
   <b>A context and memory SDK for agents.</b>
-</p>
+</div>
 
 <p align="center">
   <img src="https://img.shields.io/badge/TypeScript-first-blue?logo=typescript&logoColor=white" alt="TypeScript first" />

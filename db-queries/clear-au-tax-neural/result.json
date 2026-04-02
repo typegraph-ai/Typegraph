@@ -1,6 +1,0 @@
-{
-  "status": "ok",
-  "query": "-- Clear AU-Tax neural tables for full reseed with fixed pipeline\n-- Required because hash store will skip unchanged content, preventing re-ingestion\n\nTRUNCATE TABLE bench_au_tax_neural__gateway_openai_text_embedding_3_small;\nTRUNCATE TABLE bench_au_tax_neural__registry;\nTRUNCATE TABLE bench_au_tax_neural_memories;\nTRUNCATE TABLE bench_au_tax_neural_entities;\nTRUNCATE TABLE bench_au_tax_neural_edges;\nDELETE FROM d8um_hashes WHERE bucket_id = (SELECT id FROM d8um_buckets WHERE name = 'au-tax-guidance-neural');\nDELETE FROM d8um_documents WHERE bucket_id = (SELECT id FROM d8um_buckets WHERE name = 'au-tax-guidance-neural');",
-  "rows": 7,
-  "output": "TRUNCATE TABLE\nTRUNCATE TABLE\nTRUNCATE TABLE\nTRUNCATE TABLE\nTRUNCATE TABLE\nDELETE 0\nDELETE 0"
-}

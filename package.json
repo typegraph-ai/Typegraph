@@ -2,7 +2,7 @@
   "name": "d8um",
   "private": true,
   "packageManager": "pnpm@10.18.0",
-  "workspaces": ["packages/*", "packages/adapters/*", "packages/embeddings/*"],
+  "workspaces": ["packages/*", "packages/adapters/*"],
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
@@ -12,7 +12,7 @@
     "clean": "turbo run clean"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3", "onnxruntime-node"]
+    "onlyBuiltDependencies": ["better-sqlite3"]
   },
   "devDependencies": {
     "turbo": "^2.0.0",

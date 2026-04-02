@@ -1,6 +1,0 @@
-{
-  "status": "ok",
-  "query": "-- Check if the bucket still exists and verify hash entries\nSELECT id, name FROM d8um_buckets WHERE name = 'multihop-rag-neural';\n\n-- Count remaining hash entries that reference this bucket\nSELECT COUNT(*) AS hash_count FROM d8um_hashes WHERE bucket_id IN (SELECT id FROM d8um_buckets WHERE name = 'multihop-rag-neural');\n\n-- Check if hashes might be stored differently (check a sample)\nSELECT bucket_id, COUNT(*) FROM d8um_hashes GROUP BY bucket_id ORDER BY COUNT(*) DESC LIMIT 5;",
-  "rows": 7,
-  "output": "id,name\ndc4b61c6-44ac-4eed-9abc-a199fc4b7bbc,multihop-rag-neural\nhash_count\n609\nbucket_id,count\n1a364f1d-f612-4fc3-8da0-c379a5ffcf0f,4859\n304c888a-debd-40b1-9025-845674972b70,822\n6196bd10-de02-4e16-95d5-1984b28e4b36,609\ndc4b61c6-44ac-4eed-9abc-a199fc4b7bbc,609\n5d10c948-2fc0-4b35-a837-5dd1ec8f55e4,523"
-}

@@ -1,6 +1,0 @@
-{
-  "status": "ok",
-  "query": "-- List all benchmark tables\nSELECT table_name FROM information_schema.tables\nWHERE table_schema = 'public' AND table_name LIKE 'bench%'\nORDER BY table_name;",
-  "rows": 6,
-  "output": "table_name\nbench_legalrag_core__gateway_openai_text_embedding_3_small\nbench_legalrag_core__registry\nbench_license_core__gateway_openai_text_embedding_3_small\nbench_license_core__registry\nbench_nfcorpus_core__gateway_openai_text_embedding_3_small\nbench_nfcorpus_core__registry"
-}

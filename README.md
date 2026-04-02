@@ -35,6 +35,8 @@ d8um closes that gap:
 
 ## Quick Start
 
+**Prerequisites:** A [Neon](https://neon.tech) Postgres database. `deploy()` automatically enables the pgvector extension and creates all required tables.
+
 ```bash
 npm install @d8um/core @d8um/adapter-pgvector @ai-sdk/gateway @neondatabase/serverless
 ```
@@ -105,7 +107,7 @@ import { d8umCreate, aiSdkLlmProvider } from '@d8um/core'
 import { createGraphBridge } from '@d8um/graph'
 import { gateway } from '@ai-sdk/gateway'
 
-const llm = aiSdkLlmProvider({ model: gateway('openai/gpt-4o-mini') })
+const llm = aiSdkLlmProvider({ model: gateway('openai/gpt-5.4-mini') })
 
 const d = await d8umCreate({
   vectorStore: adapter,

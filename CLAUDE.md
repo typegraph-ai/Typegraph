@@ -19,15 +19,13 @@ Claude Code's sandbox has outbound access to **all required services**:
 - Neon DB (neon.tech domains)
 - AI Gateway / Vercel services (embeddings, LLM, Blob storage)
 
-**All credentials are in `benchmarks/.env`.** You can run benchmarks and DB queries directly from the sandbox without CI.
+**All credentials are in `benchmarks/.env`.**
 
 **Prerequisite:** Always run `pnpm run build` from the repo root before running benchmarks. The benchmark runners import from the SDK's `dist/` output (not source), so an outdated build causes silent errors or incorrect behavior.
 
 ## Running Benchmarks
 
-Benchmarks can be run **locally** (preferred) or via **GitHub Actions CI** (for PR comment history and concurrent runs).
-
-### Running Locally
+All benchmarks are run locally from the `benchmarks/` directory.
 
 ```bash
 # From repo root — always build first
@@ -50,7 +48,7 @@ npx tsx --env-file=.env multihop-rag/neural/run.ts --seed --record
 **CLI flags:**
 - `--validate` — **MANDATORY before any --seed on new/cleared data.** Runs 5 docs + 5 queries to verify pipeline works. Takes <30s.
 - `--seed` — Re-indexes the corpus. Requires DB clearing first if changing chunk size/embedding model (see Clearing section). **Requires explicit user approval.**
-- `--record` — Appends results to `history-{mode}.json` locally (same format CI uses).
+- `--record` — Appends results to `history-{mode}.json` locally.
 - `--eval-answers` / `--eval-answers-only` / `--eval-answers-limit=N` / `--eval-model=MODEL` — Answer-gen eval (multihop-rag and graphrag-bench).
 - `--run-id=UUID` — Resume a previous eval run. Loads cached per-query scores from the JSONL cache file and skips already-scored queries. If omitted, a fresh run ID is auto-generated. (GraphRAG-Bench runners only.)
 
@@ -61,7 +59,7 @@ npx tsx --env-file=.env multihop-rag/neural/run.ts --seed --record
 
 ### Benchmark Architecture
 
-All 14 runners use a shared library (`benchmarks/lib/`):
+All 18 runners use a shared library (`benchmarks/lib/`):
 - **`config.ts`** — Registry of all benchmark configs (dataset, bucket, table prefix, modes, scorer)
 - **`runner.ts`** — Composable helpers: `initCore`, `initNeural`, `loadDataset`, `runIngestion`, `runQueries`, `computeMetrics`, `buildResult`, `emitResults`
 - **`history.ts`** — Local history recording (`--record` flag)
@@ -77,78 +75,11 @@ All 14 runners use a shared library (`benchmarks/lib/`):
 4. Create runner files using shared helpers: `benchmarks/{dataset}/core/run.ts` and `/neural/run.ts`
 5. Run `--validate` to verify the pipeline end-to-end
 6. Get user approval, then run `--seed --record`
-7. Add to CI DATASETS list in `benchmarks.yml`
-
-### Running via CI
-
-CI is still useful for: recording results to history files automatically, running on PR branches, concurrent multi-benchmark runs, and the timeout handling for very large jobs.
-
-#### Prerequisites
-
-1. You must be on a **non-main branch** with an **open PR**
-2. Push a commit with a benchmark tag in the commit message
-
-### Commit Message Tags
-
-Format: `[bench:DATASET/VARIANT]`, `[bench:DATASET/VARIANT:seed]`, or `[bench:DATASET/VARIANT:answers[:MODEL]]`
-
-- **DATASET**: `nfcorpus`, `australian-tax-guidance-retrieval`, `contractual-clause-retrieval`, `license-tldr-retrieval`, `mleb-scalr`, `legal-rag-bench`, `multihop-rag`, or `all`
-- **VARIANT**: `core` (hybrid search), `neural` (hybrid + memory + PPR graph), or `all`
-- **:seed** (optional): Seeds the database with benchmark corpus first. Required on first run or when testing ingestion changes.
-- **:answers** (optional, multihop-rag only): Runs answer-generation eval only — queries just the gold-answer subset, skips full IR metrics, reports ACC/EM/F1. Much faster (~30min timeout vs 90-180min).
-- **:answers:MODEL** (optional): Same as `:answers` but overrides the LLM used for answer generation (e.g., `:answers:openai/gpt-5.4`).
-
-**IMPORTANT: Tag parsing gotchas:**
-- `:seed` and `:answers` are **mutually exclusive** in the tag syntax. The regex is `(:seed|:answers[:MODEL])?` — you cannot combine them.
-- `[bench:dataset/variant:answers:seed]` does NOT mean "seed + answers". It parses as answers-only with `eval_model="seed"` (invalid model). This produces 0 queries answered.
-- To seed AND get answer metrics, use `[bench:dataset/variant:seed]` which runs `--seed --eval-answers` (full benchmark with seeding + answer gen on all queries). This takes much longer (~3-4 hours for neural multihop-rag) but is the only way.
-- To run a quick answer-only eval (no seed), use `[bench:dataset/variant:answers]`.
 
 **IMPORTANT: Reseed requires DB clearing first:**
 - `--seed` does NOT drop tables — it re-ingests via upsert with hash store deduplication.
 - If you change the **triple extraction pipeline** (e.g., adding new fields to edge properties), re-seeding alone won't help — the hash store matches on content+embedding model (unchanged) and skips the doc before `extractFromChunk` fires.
 - You MUST clear the hash store entries AND the graph tables first (see "Clearing Benchmark Data for Reseed" section), then reseed.
-- The `concurrency: cancel-in-progress: true` setting means pushing a new commit with the same dataset/variant tag will **cancel the in-progress benchmark job**. Never push while a benchmark is running unless you intend to cancel it.
-
-### Examples
-
-```
-feat: improve hybrid search scoring [bench:nfcorpus/core]
-```
-
-```
-refactor: update embedding pipeline [bench:nfcorpus/core:seed] [bench:nfcorpus/neural:seed]
-```
-
-```
-test: run all benchmarks [bench:all/all:seed]
-```
-
-```
-eval: test answer gen with gpt-5.4 [bench:multihop-rag/neural:answers:openai/gpt-5.4]
-```
-
-### Reading Results
-
-After pushing, the workflow runs and posts results as PR comments. Use the GitHub MCP tools to read them:
-
-1. List PR comments to find benchmark results
-2. Results include: nDCG@10, MAP@10, Recall@10, Precision@10, timing data
-3. A consolidated summary table is posted when multiple benchmarks run together
-4. If a benchmark fails, a failure comment with a link to the workflow logs is posted
-
-### Timeouts
-
-| Variant | Without seed | With seed | Answers only |
-|---------|-------------|-----------|-------------|
-| core    | 15 min      | 60 min    | 15 min      |
-| neural  | 30 min      | 360 min   | 15 min      |
-| core (multihop-rag) | 90 min | 120 min | 15 min |
-| neural (multihop-rag) | 180 min | 360 min | 15 min |
-
-### Workflow File
-
-`.github/workflows/benchmarks.yml` — Locked to actors `fIa5h` and `claude` only.
 
 ## Database Queries
 
@@ -174,8 +105,6 @@ For longer queries, write a `.js` file in `benchmarks/` and run with `node`.
 
 ### Notes
 
-- The CI-based `db-inspect` workflow (`db-queries/` commit pattern) is no longer needed for ad-hoc queries — use direct access instead.
-- The `db-inspect` workflow still exists but is only needed if you want query results stored in the repo for historical reference.
 - Tagged template literals in `@neondatabase/serverless` parameterize automatically — avoid string concatenation for values.
 
 ## Benchmark Datasets (9 datasets × 2 variants = 18 benchmarks)
@@ -244,11 +173,13 @@ cd benchmarks && npm install  # Install benchmark deps (separate npm)
 
 **Always rebuild before running benchmarks locally.** The benchmark runners import SDK packages via their `dist/` output (package.json `exports` field points to `dist/`). Running against a stale build causes silent failures or wrong behavior — e.g., multi-statement DDL errors on deploy if `execStatements` split wasn't in the build.
 
-## Secrets (configured in GitHub repo settings)
+## Secrets (in `benchmarks/.env`)
 
 - `NEON_DATABASE_URL` — Neon Postgres connection string
 - `AI_GATEWAY_API_KEY` — Vercel AI Gateway key (embeddings + LLM)
 - `BLOB_READ_WRITE_TOKEN` — Vercel Blob storage token
+- `NEON_API_KEY` — Neon management API key (used by scripts, not runners)
+- `HF_TOKEN` — Hugging Face token (used by seed scripts)
 
 ## Operational Knowledge
 
@@ -301,45 +232,33 @@ Core and neural variants are fully isolated — no DB cleanup needed between the
 
 **Metadata propagation caveat:** If data was seeded WITHOUT `propagateMetadata: ['metadata.corpusId']`, re-seeding won't fix it — the hash store matches on content+model (unchanged) and skips the doc before the upsert fires. To fix: clear hash entries for that bucket, or force re-ingestion.
 
-### DB Query Notes
-
-- Use direct Neon access (see "Database Queries" section) for all ad-hoc inspection.
-- The `db-inspect` CI workflow is obsolete for ad-hoc queries. The `db-queries/` folder may have historical results — ignore them.
-- **`[skip ci]`** is still relevant for benchmark commits but no longer affects DB query access.
-
-### Benchmark CI Notes
-
-- Concurrency groups prevent the same dataset/variant from running in parallel
-- History commit step uses fetch/reset/re-apply pattern (not rebase) for concurrent push safety
-- `contents: write` permission is required for both PR comments and history commits
-- Build is scoped: `pnpm turbo run build --filter=@d8um/adapter-pgvector --filter=@d8um/graph` (includes `@d8um/core` as transitive dependency)
-
 ### Corpus Sizes
 
-For estimating seed times (~3 docs/s embedding throughput):
+For estimating seed times (~3 docs/s embedding throughput for core):
 
-| Dataset | Corpus | Queries | Est. Seed Time |
-|---------|--------|---------|----------------|
-| license-tldr-retrieval | 65 | 65 | ~30s |
-| contractual-clause-retrieval | ~90 | ~90 | ~30s |
-| australian-tax-guidance-retrieval | ~105 | ~112 | ~35s |
-| nfcorpus | ~3,633 | ~323 | ~20min |
-| legal-rag-bench | 4,876 | 100 | ~27min |
-| mleb-scalr | 523 | 120 | ~3min |
-| multihop-rag | 609 | ~2,556 | ~3min |
+| Dataset | Corpus | Queries | Chunk Size | Est. Core Seed Time |
+|---------|--------|---------|------------|---------------------|
+| license-tldr-retrieval | 65 | 65 | 2048 | ~30s |
+| contractual-clause-retrieval | ~90 | ~90 | 2048 | ~30s |
+| australian-tax-guidance-retrieval | ~105 | ~112 | 2048 | ~35s |
+| mleb-scalr | 523 | 120 | 2048 | ~3min |
+| multihop-rag | 609 | ~2,556 | 256 | ~3min |
+| graphrag-bench-novel | 1,147 | 2,010 | 1200 | ~10min |
+| graphrag-bench-medical | ~1,000 | 2,062 | 1200 | ~10min (est.) |
+| nfcorpus | ~3,633 | ~323 | 2048 | ~20min |
+| legal-rag-bench | 4,876 | 100 | 2048 | ~27min |
 
 ### Baselines & History Files
 
 **Baselines** (`benchmarks/{dataset}/baselines.json`):
 - Each entry has: `system`, `metrics`, `source`, `year`, `metric_note`
 - Sources: MLEB Leaderboard (isaacus) for legal/tax datasets, MTEB/BEIR for nfcorpus, paper tables for multihop-rag
-- Compared in PR comments; `metric_note` clarifies what's being compared (e.g., "Hit@10 not nDCG@10")
+- `metric_note` clarifies what's being compared (e.g., "Hit@10 not nDCG@10")
 
 **History files** (`benchmarks/{dataset}/{variant}/history-{mode}.json`):
 - Mode-specific: `history-hybrid.json`, `history-fast.json`, `history-neural.json`
-- Legacy `history.json` files still exist for backwards compatibility (CI fallback reads them)
 - All entries now have `timing` objects (older entries backfilled with `ingestionSeconds: null`)
-- `--record` flag appends locally; CI auto-commits on PR benchmark runs
+- `--record` flag appends locally
 - Entry format: `{ commit, date, metrics, avgQueryMs, timing, mode, config }`
 
 ### Clearing Benchmark Data for Reseed
@@ -420,18 +339,15 @@ Note: neural graph tables use `{prefix}memories` (no extra underscore), e.g. `be
 2. **Run clear SQL** directly against Neon (see "Database Queries" section)
 3. **VERIFY immediately**: `DELETE` row counts must be >0 for hashes/documents. If 0 → hash store NOT cleared → seed will skip everything → **DO NOT PROCEED**
 4. **Run `--validate` first** to confirm the pipeline works on 5 docs/queries
-5. **Only then run `--seed`** for the full dataset (or push `[bench:dataset/variant:seed]` for CI)
-6. **Do NOT push other commits while a seed is running** — cancels the job
+5. **Only then run `--seed`** for the full dataset
 
 **Common mistakes that waste compute:**
-- Pushing `[bench:dataset/variant:answers:seed]` — this does NOT seed. It runs answer-only with `eval_model="seed"` (invalid).
-- Pushing `[bench:dataset/variant:seed]` without clearing the DB first — hash store skips all docs, triple extraction never runs, edge properties unchanged.
-- Pushing a new commit while a seed is running — cancels the seed job.
+- Running `--seed` without clearing the DB first — hash store skips all docs, triple extraction never runs, edge properties unchanged.
 - Not verifying `DELETE N > 0` in the clear result — hash entries remain, seed skips everything.
 
 ### Benchmark Results Readout
 
-When asked for a readout on benchmark results, pull data from the **history files in the repo**, not from PR comments or commit messages.
+When asked for a readout on benchmark results, pull data from the **history files in the repo**.
 
 #### Where results live
 
@@ -448,7 +364,7 @@ When asked for a readout on benchmark results, pull data from the **history file
 5. Highlight the best result per dataset and whether it beats baseline
 6. Call out notable patterns (e.g., fast > hybrid, neural = core, chunk ratio issues)
 
-**Do NOT rely on PR comments** — they may be paginated, unavailable, or stale. The history JSON files are the source of truth for all benchmark results.
+The history JSON files are the source of truth for all benchmark results.
 
 ### Neural Ingestion Performance
 
@@ -458,7 +374,7 @@ Neural ingestion is much slower than core due to 2 LLM calls per chunk (entity e
 
 **Extraction timeout:** All `extractFromChunk` calls are wrapped with a 120-second timeout (`withTimeout` in engine.ts). If an LLM call hangs, the extraction is abandoned and the document continues without triples.
 
-**Memory:** Neural seed on large datasets (600+ docs) requires `NODE_OPTIONS="--max-old-space-size=4096"` — set in the workflow. Default Node.js heap (~1.7GB) causes silent OOM kills on GitHub Actions runners.
+**Memory:** Neural seed on large datasets (600+ docs) requires `NODE_OPTIONS="--max-old-space-size=4096"`. Default Node.js heap (~1.7GB) causes silent OOM kills.
 
 **Estimated neural seed times** (with concurrency=5):
 
@@ -466,6 +382,8 @@ Neural ingestion is much slower than core due to 2 LLM calls per chunk (entity e
 |---------|--------|-----------------------|
 | license-tldr-retrieval | 65 | ~96s |
 | multihop-rag | 609 | ~33min |
+| graphrag-bench-novel | 1,147 | ~139min (grok-4.20-reasoning) |
+| graphrag-bench-medical | ~1,000 | ~120min (est., grok-4.20-reasoning) |
 | nfcorpus | ~3,633 | ~3-4h (untested) |
 
 ### Inspecting Graph Health
@@ -542,7 +460,7 @@ SELECT entity_type, COUNT(*) FROM {prefix}entities GROUP BY entity_type ORDER BY
    - `deduplicateToDocuments()` picks top K=10 unique corpus IDs
    - Combined with SDK 3x: 150 chunks → 50 docs → 10 evaluated
 
-4. **Dual-mode benchmark runners** (all 6 core runners + workflow)
+4. **Dual-mode benchmark runners** (all 6 core runners)
    - Core benchmarks run both `hybrid` and `fast` (pure vector) side by side
    - Emit JSON array of results; mode-specific history files (`history-hybrid.json`, `history-fast.json`)
 
@@ -621,8 +539,8 @@ For legal-rag-bench specifically, fast (pure vector) outperforms hybrid (vector 
    - Prevents hung LLM calls from blocking entire batches
    - On timeout, extraction is abandoned; document still stored with chunks, just without triples
 
-8. **4GB heap for CI** (`.github/workflows/benchmarks.yml`)
-   - `NODE_OPTIONS="--max-old-space-size=4096"` prevents OOM kills on GitHub Actions
+8. **4GB heap for large datasets**
+   - `NODE_OPTIONS="--max-old-space-size=4096"` prevents OOM kills
    - Default ~1.7GB heap insufficient for 600+ doc neural ingestion
 
 #### Results — multihop-rag (609 docs, 2255 queries)
@@ -647,7 +565,7 @@ Neural matches core quality (delta <0.001) but queries are 6x slower due to PPR 
 #### Key learnings
 
 - **Graph inspection is essential after seeding.** The standard DB analysis query (entities + edges + HNSW + duplicates) catches quality regressions immediately. Without it, you run benchmarks on a broken graph and waste hours.
-- **OOM is silent on GitHub Actions.** Node.js default heap (~1.7GB) is insufficient for neural ingestion of 600+ docs. The process is killed with SIGKILL — no error handlers fire, no stack trace. Always set `--max-old-space-size=4096`.
+- **OOM is silent.** Node.js default heap (~1.7GB) is insufficient for neural ingestion of 600+ docs. The process is killed with SIGKILL — no error handlers fire, no stack trace. Always set `--max-old-space-size=4096`.
 - **Concurrent processing needs error safety.** `Promise.race` in a semaphore loop leaves orphaned promises on failure. Those must be wrapped with `.catch()` or Node.js crashes on `unhandledRejection`.
 - **pgvector similarity scores eliminate re-embedding.** `searchEntities` already computes cosine similarity — stash it on the entity properties instead of re-embedding each candidate name.
 - **Neural ≈ core on multihop-rag.** The PPR graph traversal adds latency without improving ranking. This dataset may not benefit from entity-level graph traversal because the queries are answerable from keyword/vector similarity alone. Datasets requiring cross-document entity reasoning (e.g., "which companies were involved in both X and Y?") are more likely to show neural > core.
@@ -675,15 +593,12 @@ Neural matches core quality (delta <0.001) but queries are 6x slower due to PPR 
    - Context: top-6 chunks from `response.results[].content` (matches paper's methodology)
    - Non-fatal: wrapped in try/catch, benchmark continues if answers.json missing
 
-3. **Answer-only benchmark mode** (both runners + workflow)
+3. **Answer-only benchmark mode** (both runners)
    - `--eval-answers-only`: queries only the gold-answer subset, skips full IR metrics
    - `--eval-model=MODEL`: override LLM for answer generation
-   - Workflow tag: `[bench:dataset/variant:answers]` or `[bench:dataset/variant:answers:model/name]`
-   - 30-minute timeout (vs 90-180min for full benchmarks)
 
 4. **Gold answers pipeline**
    - `benchmarks/scripts/seed-multihop-answers.ts`: extracts answers from HuggingFace MultiHopRAG parquet
-   - `.github/workflows/seed-answers.yml`: workflow_dispatch to upload answers.json to Vercel Blob
    - `benchmarks/lib/datasets.ts`: `loadAnswers()` function for loading gold answers
 
 #### Results — multihop-rag (latest runs)

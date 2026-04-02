@@ -188,7 +188,7 @@ d8um.initialize({
 })
 ```
 
-For fully offline development, `@d8um/embedding-local` provides a local ONNX-based model (BAAI/bge-small-en-v1.5, MIT licensed, 384 dimensions) that requires no API keys or network access.
+For full control, implement the `EmbeddingProvider` interface directly — any object with `embed()` and `embedBatch()` methods works, whether from the AI SDK, a custom model, or a test mock.
 
 ## Query Options and Configuration
 

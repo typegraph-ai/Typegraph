@@ -1,5 +1,0 @@
-{
-  "status": "error",
-  "query": "SELECT 'documents' AS label, COUNT(*) AS cnt FROM d8um_documents WHERE id IN (SELECT DISTINCT document_id FROM bench_license_core__model_1)\nUNION ALL\nSELECT 'chunks', COUNT(*) FROM bench_license_core__model_1\nUNION ALL\nSELECT 'chunks_with_corpusId', COUNT(*) FROM bench_license_core__model_1 WHERE metadata->>'corpusId' IS NOT NULL\nUNION ALL\nSELECT 'chunks_without_corpusId', COUNT(*) FROM bench_license_core__model_1 WHERE metadata->>'corpusId' IS NULL\nUNION ALL\nSELECT 'hashes', COUNT(*) FROM d8um_hashes WHERE store_key LIKE '%license%'\nORDER BY label;",
-  "error": "ERROR:  relation \"bench_license_core__model_1\" does not exist\nLINE 1: ...nts WHERE id IN (SELECT DISTINCT document_id FROM bench_lice...\n                                                             ^"
-}

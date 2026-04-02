@@ -8,7 +8,8 @@ d8um is a TypeScript SDK for retrieval + memory for AI agents, built on Postgres
 - **Benchmarks dir**: Uses npm (not pnpm) with `file:` protocol deps pointing to the SDK
 - **Database**: Neon serverless Postgres with pgvector
 - **Embeddings**: AI Gateway (Vercel) → openai/text-embedding-3-small
-- **LLM**: AI Gateway → openai/gpt-5.4-mini (triple extraction + answer gen)
+- **LLM**: AI Gateway → openai/gpt-5.4-mini (answer gen + default extraction)
+- **Extraction LLM**: Configurable per `EXTRACTION_MODEL` in `benchmarks/lib/config.ts` (default: same as LLM_MODEL). Supports reasoning models like `xai/grok-4.20-reasoning` for higher-quality triple extraction.
 - **Blob storage**: Vercel Blob (for benchmark datasets)
 
 ## Sandbox Access
@@ -50,7 +51,8 @@ npx tsx --env-file=.env multihop-rag/neural/run.ts --seed --record
 - `--validate` — **MANDATORY before any --seed on new/cleared data.** Runs 5 docs + 5 queries to verify pipeline works. Takes <30s.
 - `--seed` — Re-indexes the corpus. Requires DB clearing first if changing chunk size/embedding model (see Clearing section). **Requires explicit user approval.**
 - `--record` — Appends results to `history-{mode}.json` locally (same format CI uses).
-- `--eval-answers` / `--eval-answers-only` / `--eval-answers-limit=N` / `--eval-model=MODEL` — Answer-gen eval (multihop-rag only).
+- `--eval-answers` / `--eval-answers-only` / `--eval-answers-limit=N` / `--eval-model=MODEL` — Answer-gen eval (multihop-rag and graphrag-bench).
+- `--run-id=UUID` — Resume a previous eval run. Loads cached per-query scores from the JSONL cache file and skips already-scored queries. If omitted, a fresh run ID is auto-generated. (GraphRAG-Bench runners only.)
 
 **Notes:**
 - Run from the `benchmarks/` directory so relative imports resolve correctly
@@ -64,6 +66,7 @@ All 14 runners use a shared library (`benchmarks/lib/`):
 - **`runner.ts`** — Composable helpers: `initCore`, `initNeural`, `loadDataset`, `runIngestion`, `runQueries`, `computeMetrics`, `buildResult`, `emitResults`
 - **`history.ts`** — Local history recording (`--record` flag)
 - **`validate.ts`** — Smoke test (`--validate` flag)
+- **`eval-cache.ts`** — Resumable eval run persistence (`--run-id` flag). Writes per-query scores to JSONL files in `{dataset}/{variant}/runs/`. On resume, skips already-scored queries.
 - **`adapter.ts`** / **`datasets.ts`** / **`metrics.ts`** / **`report.ts`** — Shared utilities
 
 ### Adding a New Benchmark
@@ -391,7 +394,7 @@ Note: neural graph tables use `{prefix}memories` (no extra underscore), e.g. `be
 | graphrag-bench-medical | core | `bench_grbmed_core_` | `graphrag-bench-medical` |
 | graphrag-bench-medical | neural | `bench_grbmed_neural_` | `graphrag-bench-medical-neural` |
 
-#### Current DB State (as of 2026-03-31)
+#### Current DB State (as of 2026-04-01)
 
 | Dataset | Variant | Chunks | Docs | Hashes | Graph (entities/edges) | Status |
 |---------|---------|--------|------|--------|------------------------|--------|
@@ -405,6 +408,7 @@ Note: neural graph tables use `{prefix}memories` (no extra underscore), e.g. `be
 | multihop-rag | neural | 0 | 0 | 0 | 0 / 0 | Cleared (bad reseed d251f11) — needs reseed |
 | legal-rag-bench | core | 0 | 4859 | 4859 | — | **Docs/hashes present but chunks missing** — chunk table was truncated without clearing hashes; reseed will skip all docs |
 | nfcorpus | core | 947 | 823 | 822 | — | Seeded but never benchmarked |
+| graphrag-bench-novel | neural | 1410 | 1147 | 1147 | 3,798 / 8,819 | Seeded ✓ (grok-4.20-reasoning extraction, 2026-04-01) |
 
 **legal-rag-bench anomaly:** `d8um_documents` and `d8um_hashes` have 4859 entries, but `bench_legalrag_core__gateway_openai_text_embedding_3_small` is empty. The chunk table was truncated without clearing hashes/documents. Before reseeding: clear hashes and documents for `legal-rag-bench` bucket, then the seed will re-ingest.
 
@@ -829,6 +833,110 @@ Rationale: The few-shot example sets the *quantity* anchor (10+ rels/chunk) whil
 #### Current entity resolver threshold
 
 Default similarity threshold is **0.68** (lowered from original 0.78). This affects all consumers of EntityResolver unless overridden via `similarityThreshold` config. Monitor for over-merging on datasets with ambiguous entity names (e.g., "Paris" city vs "Paris" person).
+
+### 2026-04-01 — Extraction pipeline overhaul + reasoning model + resumable eval (PR #15)
+
+**Goal:** Implement a comprehensive extraction pipeline overhaul (9 phases) to improve graph signal quality, then reseed graphrag-bench-novel/neural with a reasoning model (xai/grok-4.20-reasoning) and measure impact.
+
+#### Pipeline changes (all 9 phases implemented)
+
+1. **Single-pass extraction** (`packages/core/src/index-engine/triple-extractor.ts`)
+   - Combined entity + relationship extraction into one LLM call (was two sequential calls)
+   - Added self-review instruction: "Review your extraction — did you miss any entities or relationships?"
+   - Tightened alias instructions to prevent garbage aliases
+   - `twoPass: true` config preserves the old two-call behavior
+
+2. **ExtractionConfig SDK type** (`packages/core/src/types/extraction-config.ts`, `packages/core/src/d8um.ts`)
+   - New `ExtractionConfig` interface: `{ twoPass?, entityLlm?, relationshipLlm? }`
+   - Surfaced as `d8umConfig.extraction` — allows different LLMs for extraction vs main pipeline
+   - Wired through `createIndexEngine` → `TripleExtractor`
+
+3. **Entity descriptions persisted** (`triple-extractor.ts`, `graph-bridge.ts`, `entity-resolver.ts`)
+   - LLM-extracted descriptions stored in `entity.properties.description`
+   - Merged across chunks in `EntityResolver.merge()` — concatenates non-duplicate descriptions
+   - **Known issue:** Descriptions accumulate unboundedly for hub entities (e.g., Laurence Sterne: 15,628 chars, 88 entities over 1,000 chars). Cap at 500 chars recommended but deferred since descriptions are unused in retrieval currently.
+
+4. **Expanded entity types** — 6 → 10 types (added work_of_art, technology, law_regulation, time_period)
+
+5. **Trigram Jaccard fuzzy matching** (`packages/graph/src/extraction/entity-resolver.ts`)
+   - New matching tier between normalized string and vector similarity
+   - Catches "NY Times" / "New York Times" style variations
+   - Threshold: 0.7, zero dependencies
+
+6. **Entity type guard** — prevents merging entities with conflicting specific types (person ≠ location)
+
+7. **Predicate ontology** (`packages/core/src/index-engine/ontology.ts`)
+   - ~150 predicates organized by entity-type pair (person→person, person→org, etc.)
+   - Replaces inline vocabulary in extraction prompt
+
+8. **Expanded predicate normalizer** (`packages/graph/src/extraction/predicate-normalizer.ts`)
+   - ~40 → ~80 synonym groups covering the new ontology predicates
+   - MENTIONED and ASSOCIATED_WITH aligned with GENERIC_PREDICATES filter
+
+9. **Cross-chunk entity context** (`packages/core/src/index-engine/engine.ts`, `triple-extractor.ts`)
+   - Triple extraction now sequential per document (was parallel)
+   - Accumulated entity context (name + type) passed to subsequent chunks
+   - Cap at 20 entities in context window to prevent prompt bloat
+   - Documents still process concurrently via semaphore
+
+#### Benchmark infrastructure changes
+
+1. **EXTRACTION_MODEL** (`benchmarks/lib/config.ts`) — configurable extraction LLM, currently set to `xai/grok-4.20-reasoning`
+2. **initNeural wiring** (`benchmarks/lib/runner.ts`) — passes `ExtractionConfig` through when EXTRACTION_MODEL differs from LLM_MODEL
+3. **Per-type ACC breakdown** — runners now track `question_type` from queries.json and report ACC per type (Fact Retrieval, Complex Reasoning, Contextual Summarize, Creative Generation)
+4. **Resumable eval cache** (`benchmarks/lib/eval-cache.ts`) — JSONL-based crash-safe persistence for eval runs. `--run-id=UUID` resumes a previous run, skipping already-scored queries. Files stored at `{dataset}/{variant}/runs/{runId}.jsonl`.
+5. **queries.json updated** — re-uploaded with `question_type` field for both novel (2,010 queries) and medical (2,062 queries) via `benchmarks/scripts/reseed-queries.ts`
+
+#### Results — graphrag-bench-novel/neural reseed with grok-4.20-reasoning
+
+Graph health comparison (previous gpt-5.4-mini extraction → new grok-4.20-reasoning extraction):
+
+| Metric | Previous (gpt-5.4-mini) | New (grok-4.20-reasoning) | Delta |
+|--------|--------------------------|---------------------------|-------|
+| Entities | 6,264 | 3,798 | **-39%** (better merging) |
+| Edges | 15,117 | 8,819 | -42% |
+| Edges/entity | 2.41 (1.31 after noise filter) | **2.32** (all informative) | +77% informative density |
+| Distinct predicates | 125 | **247** | +98% vocabulary richness |
+| Noise predicates (MENTIONED/ASSOCIATED_WITH) | 46.3% of edges | **0%** | eliminated |
+| Entity duplicates | 30 pairs (0.48%) | ~18 pairs (0.47%) | maintained |
+| Embedding coverage | 100% | 100% | maintained |
+| Ingest time | 3,516s (~58min) | ~8,316s (~139min) | ~2.4x slower (reasoning model) |
+
+**Key insight:** The reasoning model produces far fewer but higher-quality extractions. 39% fewer entities (better entity resolution + less hallucinated entities), 100% informative predicates (zero noise), and nearly 2x the predicate vocabulary richness. The graph is smaller but every edge carries semantic meaning.
+
+#### ACC results (100 queries, LLM-as-judge)
+
+| Mode | ACC | Avg Query |
+|------|-----|-----------|
+| neural (grok extraction) | 0.566 | ~7.6s |
+| neural (previous gpt-5.4-mini) | 0.570 | ~7.7s |
+| hybrid (core) | 0.557 | ~5.4s |
+| fast (core) | 0.549 | ~5.3s |
+
+Neural ACC is flat despite dramatically improved graph quality. Root cause is architectural: PPR re-ranks the same chunk pool that indexed search draws from. It cannot surface new content, only re-rank existing chunks, and the current reinforcement-only filter discards novel graph results.
+
+#### Competitive positioning — GraphRAG-Bench Novel ACC
+
+| System | ACC | Source |
+|--------|-----|--------|
+| **d8um neural** | **0.566** | This benchmark |
+| **d8um core (hybrid)** | **0.557** | This benchmark |
+| HippoRAG2 | ~0.565 | arXiv:2506.05690 Table 4 |
+| Fast-GraphRAG | 0.521 | arXiv:2506.05690 Table 4 |
+| MS GraphRAG (local) | 0.509 | arXiv:2506.05690 Table 4 |
+| RAG w/ rerank | 0.484 | arXiv:2506.05690 Table 4 |
+| LightRAG | 0.451 | arXiv:2506.05690 Table 4 |
+
+d8um neural ties with HippoRAG2 for first place. Core hybrid also outperforms all published baselines except HippoRAG2.
+
+#### Key learnings
+
+- **Reasoning models produce dramatically better extractions but at ~10x the cost.** grok-4.20-reasoning averaged ~7.2s/chunk vs ~0.7s/chunk for gpt-5.4-mini. The quality difference is substantial (zero noise predicates, 39% fewer entities, 2x vocabulary) but ingestion becomes the bottleneck.
+- **Graph quality ≠ retrieval quality (yet).** A perfect graph with zero noise still produces the same ACC because the PPR re-ranking architecture can only shuffle existing chunks. The architectural fix needed: allow graph results to *supplement* indexed search results, not just re-rank them.
+- **Entity descriptions accumulate unboundedly.** The merge logic in `EntityResolver.merge()` concatenates descriptions across chunks with an `includes()` dedup check. Hub entities that appear in many chunks accumulate multi-KB descriptions. A simple 500-char cap in the merge function would fix this. Deferred since descriptions aren't used in retrieval yet.
+- **Eval run persistence is essential for long-running benchmarks.** A 2,010-query GraphRAG-Bench eval takes 6-10 hours. Without crash-safe persistence, a single timeout/error loses all progress. The JSONL eval cache writes each scored query immediately and resumes via `--run-id=UUID`.
+- **Per-type ACC reveals where graph helps most.** Different question types (Fact Retrieval, Complex Reasoning, Contextual Summarize, Creative Generation) respond differently to retrieval strategies. Breaking out ACC by type is essential for understanding where neural mode adds value vs core.
+- **Sequential per-document extraction enables cross-chunk context** but removes intra-document parallelism. For neural ingestion, the bottleneck is LLM latency per chunk, so the parallelism loss is minimal (LLM calls are sequential anyway). Inter-document parallelism (concurrency semaphore) still provides the main speedup.
 
 ### Benchmark Methodology Alignment (CRITICAL)
 

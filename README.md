@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="d8um-badge.png" alt="d8um" width="150" />
+  <img src="d8um-badge.png" alt="d8um" width="200" />
 </p>
 
 <div align="center">

@@ -20,12 +20,16 @@ function djb2(s: string): number {
 }
 
 export function safeIdx(tablePrefix: string, suffix: string): string {
-  const full = `${tablePrefix}_${suffix}`
+  // Sanitize schema-qualified names for index identifiers — Postgres does not
+  // allow schema-qualified names (dots) in CREATE INDEX index name positions.
+  // e.g. "cust_abc".d8um_hashes → cust_abc_d8um_hashes
+  const sanitized = tablePrefix.replace(/"/g, '').replace(/\./g, '_')
+  const full = `${sanitized}_${suffix}`
   if (full.length <= PG_IDENT_MAX) return full
   const hash = djb2(full).toString(36).padStart(6, '0').slice(0, 6)
   // Keep as much of the table prefix as fits: prefix + _ + hash + _ + suffix
   const available = PG_IDENT_MAX - suffix.length - 1 - 6 - 1
-  return `${tablePrefix.slice(0, available)}_${hash}_${suffix}`
+  return `${sanitized.slice(0, available)}_${hash}_${suffix}`
 }
 
 /**

@@ -30,7 +30,7 @@ export interface PgMemoryAdapterConfig {
 
 // Index prefix: replace dots with underscores so schema-qualified table names
 // produce valid Postgres index names (e.g. "myschema.d8um_memories" → "myschema_d8um_memories").
-const idxPrefix = (t: string) => t.replace(/\./g, '_')
+const idxPrefix = (t: string) => t.replace(/"/g, '').replace(/\./g, '_')
 
 // Postgres limits identifiers to 63 chars. Truncate + hash when needed.
 const PG_IDENT_MAX = 63

@@ -1,4 +1,34 @@
 /**
+ * Postgres limits identifiers to 63 characters (NAMEDATALEN - 1).
+ * Index names are constructed as `${tablePrefix}_${suffix}`, which can
+ * easily exceed 63 chars with long table prefixes (e.g. schema-qualified
+ * names or embedding model key suffixes).
+ *
+ * safeIdx() produces a deterministic, collision-resistant index name
+ * that fits within the 63-char limit. When the full name fits, it's
+ * used as-is. When it doesn't, the table prefix is truncated and a
+ * 6-char hash is inserted for uniqueness.
+ */
+const PG_IDENT_MAX = 63
+
+function djb2(s: string): number {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  }
+  return h >>> 0 // unsigned
+}
+
+export function safeIdx(tablePrefix: string, suffix: string): string {
+  const full = `${tablePrefix}_${suffix}`
+  if (full.length <= PG_IDENT_MAX) return full
+  const hash = djb2(full).toString(36).padStart(6, '0').slice(0, 6)
+  // Keep as much of the table prefix as fits: prefix + _ + hash + _ + suffix
+  const available = PG_IDENT_MAX - suffix.length - 1 - 6 - 1
+  return `${tablePrefix.slice(0, available)}_${hash}_${suffix}`
+}
+
+/**
  * DDL for the model registry table - tracks which embedding models
  * have been initialized and their table names / dimensions.
  */
@@ -16,7 +46,9 @@ export const REGISTRY_SQL = (registryTable: string) => `
  * DDL for a per-model chunks table. Called lazily via ensureModel().
  * Each embedding model gets its own table with the correct VECTOR(n) column.
  */
-export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => `
+export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
+  const idx = (suffix: string) => safeIdx(chunksTable, suffix)
+  return `
   CREATE TABLE IF NOT EXISTS ${chunksTable} (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     bucket_id       TEXT NOT NULL,
@@ -39,50 +71,53 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => `
     ) STORED
   );
 
-  CREATE INDEX IF NOT EXISTS ${chunksTable}_embedding_idx
+  CREATE INDEX IF NOT EXISTS ${idx('embedding_idx')}
     ON ${chunksTable} USING hnsw (embedding vector_cosine_ops);
 
-  CREATE INDEX IF NOT EXISTS ${chunksTable}_source_tenant_idx
+  CREATE INDEX IF NOT EXISTS ${idx('bucket_tenant_idx')}
     ON ${chunksTable} (bucket_id, tenant_id);
 
-  CREATE INDEX IF NOT EXISTS ${chunksTable}_fts_idx
+  CREATE INDEX IF NOT EXISTS ${idx('fts_idx')}
     ON ${chunksTable} USING gin (search_vector);
 
-  CREATE INDEX IF NOT EXISTS ${chunksTable}_doc_chunk_idx
+  CREATE INDEX IF NOT EXISTS ${idx('doc_chunk_idx')}
     ON ${chunksTable} (document_id, chunk_index);
 
-  CREATE UNIQUE INDEX IF NOT EXISTS ${chunksTable}_ikey_chunk_idx
+  CREATE UNIQUE INDEX IF NOT EXISTS ${idx('ikey_chunk_idx')}
     ON ${chunksTable} (idempotency_key, chunk_index, bucket_id);
 
-  CREATE INDEX IF NOT EXISTS ${chunksTable}_tenant_user_idx
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')}
     ON ${chunksTable} (tenant_id, user_id);
 
-  CREATE INDEX IF NOT EXISTS ${chunksTable}_tenant_group_idx
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')}
     ON ${chunksTable} (tenant_id, group_id);
 
-  CREATE INDEX IF NOT EXISTS ${chunksTable}_tenant_agent_idx
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')}
     ON ${chunksTable} (tenant_id, agent_id);
 
-  CREATE INDEX IF NOT EXISTS ${chunksTable}_tenant_session_idx
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_session_idx')}
     ON ${chunksTable} (tenant_id, session_id);
 
-  CREATE INDEX IF NOT EXISTS ${chunksTable}_user_idx
+  CREATE INDEX IF NOT EXISTS ${idx('user_idx')}
     ON ${chunksTable} (user_id);
 
-  CREATE INDEX IF NOT EXISTS ${chunksTable}_group_idx
+  CREATE INDEX IF NOT EXISTS ${idx('group_idx')}
     ON ${chunksTable} (group_id);
 
-  CREATE INDEX IF NOT EXISTS ${chunksTable}_agent_idx
+  CREATE INDEX IF NOT EXISTS ${idx('agent_idx')}
     ON ${chunksTable} (agent_id);
 
-  CREATE INDEX IF NOT EXISTS ${chunksTable}_session_idx
+  CREATE INDEX IF NOT EXISTS ${idx('session_idx')}
     ON ${chunksTable} (session_id);
 `
+}
 
 /**
  * DDL for the shared hash store table (dimension-agnostic).
  */
-export const HASH_TABLE_SQL = (hashesTable: string) => `
+export const HASH_TABLE_SQL = (hashesTable: string) => {
+  const idx = (suffix: string) => safeIdx(hashesTable, suffix)
+  return `
   CREATE TABLE IF NOT EXISTS ${hashesTable} (
     store_key       TEXT PRIMARY KEY,
     idempotency_key TEXT NOT NULL,
@@ -98,7 +133,7 @@ export const HASH_TABLE_SQL = (hashesTable: string) => `
     chunk_count     INTEGER NOT NULL
   );
 
-  CREATE INDEX IF NOT EXISTS ${hashesTable}_bucket_idx
+  CREATE INDEX IF NOT EXISTS ${idx('bucket_idx')}
     ON ${hashesTable} (bucket_id, tenant_id);
 
   CREATE TABLE IF NOT EXISTS ${hashesTable}_run_times (
@@ -108,12 +143,15 @@ export const HASH_TABLE_SQL = (hashesTable: string) => `
     PRIMARY KEY (bucket_id, tenant_id)
   );
 `
+}
 
 /**
  * DDL for the documents table - tracks indexed documents with metadata.
  * Created once during initialize().
  */
-export const DOCUMENTS_TABLE_SQL = (documentsTable: string) => `
+export const DOCUMENTS_TABLE_SQL = (documentsTable: string) => {
+  const idx = (suffix: string) => safeIdx(documentsTable, suffix)
+  return `
   CREATE TABLE IF NOT EXISTS ${documentsTable} (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     bucket_id       TEXT NOT NULL,
@@ -137,50 +175,53 @@ export const DOCUMENTS_TABLE_SQL = (documentsTable: string) => `
     metadata        JSONB NOT NULL DEFAULT '{}'
   );
 
-  CREATE UNIQUE INDEX IF NOT EXISTS ${documentsTable}_source_hash_idx
+  CREATE UNIQUE INDEX IF NOT EXISTS ${idx('source_hash_idx')}
     ON ${documentsTable} (bucket_id, COALESCE(tenant_id, ''), content_hash);
 
-  CREATE INDEX IF NOT EXISTS ${documentsTable}_bucket_idx
+  CREATE INDEX IF NOT EXISTS ${idx('bucket_idx')}
     ON ${documentsTable} (bucket_id, tenant_id);
 
-  CREATE INDEX IF NOT EXISTS ${documentsTable}_status_idx
+  CREATE INDEX IF NOT EXISTS ${idx('status_idx')}
     ON ${documentsTable} (status);
 
-  CREATE INDEX IF NOT EXISTS ${documentsTable}_visibility_user_idx
+  CREATE INDEX IF NOT EXISTS ${idx('visibility_user_idx')}
     ON ${documentsTable} (visibility, user_id);
 
-  CREATE INDEX IF NOT EXISTS ${documentsTable}_type_idx
+  CREATE INDEX IF NOT EXISTS ${idx('type_idx')}
     ON ${documentsTable} (document_type);
 
-  CREATE INDEX IF NOT EXISTS ${documentsTable}_tenant_user_idx
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')}
     ON ${documentsTable} (tenant_id, user_id);
 
-  CREATE INDEX IF NOT EXISTS ${documentsTable}_tenant_group_idx
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')}
     ON ${documentsTable} (tenant_id, group_id);
 
-  CREATE INDEX IF NOT EXISTS ${documentsTable}_tenant_agent_idx
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')}
     ON ${documentsTable} (tenant_id, agent_id);
 
-  CREATE INDEX IF NOT EXISTS ${documentsTable}_tenant_session_idx
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_session_idx')}
     ON ${documentsTable} (tenant_id, session_id);
 
-  CREATE INDEX IF NOT EXISTS ${documentsTable}_user_idx
+  CREATE INDEX IF NOT EXISTS ${idx('user_idx')}
     ON ${documentsTable} (user_id);
 
-  CREATE INDEX IF NOT EXISTS ${documentsTable}_group_idx
+  CREATE INDEX IF NOT EXISTS ${idx('group_idx')}
     ON ${documentsTable} (group_id);
 
-  CREATE INDEX IF NOT EXISTS ${documentsTable}_agent_idx
+  CREATE INDEX IF NOT EXISTS ${idx('agent_idx')}
     ON ${documentsTable} (agent_id);
 
-  CREATE INDEX IF NOT EXISTS ${documentsTable}_session_idx
+  CREATE INDEX IF NOT EXISTS ${idx('session_idx')}
     ON ${documentsTable} (session_id);
 `
+}
 
 /**
  * DDL for the sources table - persists d8um Bucket records.
  */
-export const BUCKETS_TABLE_SQL = (table: string) => `
+export const BUCKETS_TABLE_SQL = (table: string) => {
+  const idx = (suffix: string) => safeIdx(table, suffix)
+  return `
   CREATE TABLE IF NOT EXISTS ${table} (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -196,14 +237,17 @@ export const BUCKETS_TABLE_SQL = (table: string) => `
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
 
-  CREATE INDEX IF NOT EXISTS ${table}_tenant_idx
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_idx')}
     ON ${table} (tenant_id);
 `
+}
 
 /**
  * DDL for the jobs table - persists d8um Job instances.
  */
-export const JOBS_TABLE_SQL = (table: string) => `
+export const JOBS_TABLE_SQL = (table: string) => {
+  const idx = (suffix: string) => safeIdx(table, suffix)
+  return `
   CREATE TABLE IF NOT EXISTS ${table} (
     id          TEXT PRIMARY KEY,
     tenant_id   TEXT,
@@ -227,20 +271,23 @@ export const JOBS_TABLE_SQL = (table: string) => `
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
 
-  CREATE INDEX IF NOT EXISTS ${table}_tenant_idx
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_idx')}
     ON ${table} (tenant_id);
 
-  CREATE INDEX IF NOT EXISTS ${table}_bucket_idx
+  CREATE INDEX IF NOT EXISTS ${idx('bucket_idx')}
     ON ${table} (bucket_id);
 
-  CREATE INDEX IF NOT EXISTS ${table}_type_idx
+  CREATE INDEX IF NOT EXISTS ${idx('type_idx')}
     ON ${table} (type);
 `
+}
 
 /**
  * DDL for the job runs table - persists execution history.
  */
-export const JOB_RUNS_TABLE_SQL = (table: string) => `
+export const JOB_RUNS_TABLE_SQL = (table: string) => {
+  const idx = (suffix: string) => safeIdx(table, suffix)
+  return `
   CREATE TABLE IF NOT EXISTS ${table} (
     id                TEXT PRIMARY KEY,
     job_id            TEXT NOT NULL,
@@ -258,14 +305,17 @@ export const JOB_RUNS_TABLE_SQL = (table: string) => `
     completed_at      TIMESTAMPTZ
   );
 
-  CREATE INDEX IF NOT EXISTS ${table}_job_idx
+  CREATE INDEX IF NOT EXISTS ${idx('job_idx')}
     ON ${table} (job_id);
 `
+}
 
 /**
  * DDL for the document-job relations table.
  */
-export const DOCUMENT_JOB_RELATIONS_TABLE_SQL = (table: string) => `
+export const DOCUMENT_JOB_RELATIONS_TABLE_SQL = (table: string) => {
+  const idx = (suffix: string) => safeIdx(table, suffix)
+  return `
   CREATE TABLE IF NOT EXISTS ${table} (
     document_id TEXT NOT NULL,
     job_id      TEXT NOT NULL,
@@ -274,9 +324,10 @@ export const DOCUMENT_JOB_RELATIONS_TABLE_SQL = (table: string) => `
     PRIMARY KEY (document_id, job_id)
   );
 
-  CREATE INDEX IF NOT EXISTS ${table}_job_idx
+  CREATE INDEX IF NOT EXISTS ${idx('job_idx')}
     ON ${table} (job_id);
 `
+}
 
 /**
  * Sanitize a model identifier into a valid SQL table name suffix.

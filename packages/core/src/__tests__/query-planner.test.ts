@@ -5,6 +5,7 @@ import { createMockEmbedding } from './helpers/mock-embedding.js'
 import { createMockBucket } from './helpers/mock-source.js'
 import { createTestDocuments } from './helpers/mock-connector.js'
 import { IndexEngine } from '../index-engine/engine.js'
+import { defaultChunker } from '../index-engine/chunker.js'
 import type { EmbeddingProvider } from '../embedding/provider.js'
 
 describe('QueryPlanner', () => {
@@ -19,17 +20,16 @@ describe('QueryPlanner', () => {
     bucketIds = []
     bucketEmbeddings = new Map()
 
-    // Set up a bucket with some documents
     const docs = createTestDocuments(3)
-    const { bucket, connector, indexConfig } = createMockBucket({ id: 'src-1', documents: docs })
+    const { bucket, indexConfig } = createMockBucket({ id: 'src-1', documents: docs })
     bucketIds.push(bucket.id)
     bucketEmbeddings.set(bucket.id, embedding)
 
-    // Index the documents
     await adapter.deploy()
     await adapter.connect()
     const engine = new IndexEngine(adapter, embedding)
-    await engine.indexWithConnector(bucket.id, connector, indexConfig)
+    const items = docs.map(doc => ({ doc, chunks: defaultChunker(doc, indexConfig) }))
+    await engine.ingestBatch(bucket.id, items, {}, indexConfig)
   })
 
   it('returns results for indexed sources', async () => {
@@ -46,13 +46,13 @@ describe('QueryPlanner', () => {
   })
 
   it('filters to requested sources', async () => {
-    // Add a second bucket
     const docs2 = createTestDocuments(2, 'Other')
-    const { bucket: bucket2, connector: connector2, indexConfig: indexConfig2 } = createMockBucket({ id: 'src-2', documents: docs2 })
+    const { bucket: bucket2, indexConfig: indexConfig2 } = createMockBucket({ id: 'src-2', documents: docs2 })
     bucketIds.push(bucket2.id)
     bucketEmbeddings.set(bucket2.id, embedding)
     const engine = new IndexEngine(adapter, embedding)
-    await engine.indexWithConnector(bucket2.id, connector2, indexConfig2)
+    const items = docs2.map(doc => ({ doc, chunks: defaultChunker(doc, indexConfig2) }))
+    await engine.ingestBatch(bucket2.id, items, {}, indexConfig2)
 
     const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings)
     const response = await planner.execute('test', { buckets: ['src-1'] })

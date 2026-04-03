@@ -23,18 +23,3 @@ export interface Chunk {
   metadata?: Record<string, unknown> | undefined
 }
 
-/**
- * @deprecated Use JobTypeDefinition with a `run()` function instead.
- * The Connector interface is superseded by the unified job system.
- */
-export interface Connector<TMeta extends Record<string, unknown> = Record<string, unknown>> {
-  fetch?(): AsyncIterable<RawDocument<TMeta>>
-
-  fetchSince?(since: Date): AsyncIterable<RawDocument<TMeta>>
-
-  query?(q: import('./query.js').d8umQuery): Promise<import('./query.js').d8umResult[]>
-
-  chunk?(doc: RawDocument<TMeta>, opts: ChunkOpts): Chunk[]
-
-  healthCheck?(): Promise<void>
-}

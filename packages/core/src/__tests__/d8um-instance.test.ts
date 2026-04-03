@@ -68,7 +68,7 @@ describe('d8umCreate', () => {
       registerTestBucket(instance, s1, embedding)
       registerTestBucket(instance, s2, embedding)
       const distinct = instance.getDistinctEmbeddings()
-      expect(distinct.size).toBe(1) // Both use the same default embedding
+      expect(distinct.size).toBe(1)
     })
 
     it('filters to sourceIds', () => {
@@ -93,26 +93,6 @@ describe('d8umCreate', () => {
       registerTestBucket(instance, s2, differentEmb)
       const groups = instance.groupBucketsByModel()
       expect(groups.size).toBe(2)
-    })
-  })
-
-  describe('indexWithConnector', () => {
-    it('indexes a specific bucket', async () => {
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: createTestDocuments(2) })
-      registerTestBucket(instance, bucket, embedding)
-      const result = await instance.indexWithConnector(bucket.id, connector, indexConfig)
-      expect(result.total).toBe(2)
-    })
-
-    it('throws for unknown bucket', async () => {
-      const { connector, indexConfig } = createMockBucket({ documents: [] })
-      await expect(instance.indexWithConnector('unknown', connector, indexConfig)).rejects.toThrow('not found')
-    })
-
-    it('calls adapter.deploy and adapter.connect during d8umCreate', async () => {
-      // d8umCreate calls deploy() then initialize() which calls connect()
-      expect(adapter.calls.filter(c => c.method === 'deploy')).toHaveLength(1)
-      expect(adapter.calls.filter(c => c.method === 'connect')).toHaveLength(1)
     })
   })
 
@@ -150,31 +130,41 @@ describe('d8umCreate', () => {
       expect(result.total).toBe(0)
       expect(result.inserted).toBe(0)
     })
+
+    it('throws for unknown bucket', async () => {
+      const { indexConfig } = createMockBucket({ documents: [] })
+      await expect(instance.ingest('unknown', [], indexConfig)).rejects.toThrow('not found')
+    })
+
+    it('calls adapter.deploy and adapter.connect during d8umCreate', async () => {
+      expect(adapter.calls.filter(c => c.method === 'deploy')).toHaveLength(1)
+      expect(adapter.calls.filter(c => c.method === 'connect')).toHaveLength(1)
+    })
   })
 
   describe('query', () => {
     it('returns results', async () => {
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: createTestDocuments(3) })
+      const { bucket, documents, indexConfig } = createMockBucket({ documents: createTestDocuments(3) })
       registerTestBucket(instance, bucket, embedding)
-      await instance.indexWithConnector(bucket.id, connector, indexConfig)
+      await instance.ingest(bucket.id, documents, indexConfig)
       const response = await instance.query('Document 1')
       expect(response.results.length).toBeGreaterThan(0)
     })
 
     it('passes tenantId from config', async () => {
       const inst = await d8umCreate({ vectorStore: adapter, embedding, tenantId: 'config-tenant' })
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: createTestDocuments(1) })
+      const { bucket, documents, indexConfig } = createMockBucket({ documents: createTestDocuments(1) })
       registerTestBucket(inst, bucket, embedding)
-      await inst.indexWithConnector(bucket.id, connector, indexConfig)
+      await inst.ingest(bucket.id, documents, indexConfig)
       const response = await inst.query('test')
       expect(response.query.tenantId).toBe('config-tenant')
     })
 
     it('per-query tenantId overrides config', async () => {
       const inst = await d8umCreate({ vectorStore: adapter, embedding, tenantId: 'config-tenant' })
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: createTestDocuments(1) })
+      const { bucket, documents, indexConfig } = createMockBucket({ documents: createTestDocuments(1) })
       registerTestBucket(inst, bucket, embedding)
-      await inst.indexWithConnector(bucket.id, connector, indexConfig)
+      await inst.ingest(bucket.id, documents, indexConfig)
       const response = await inst.query('test', { tenantId: 'query-tenant' })
       expect(response.query.tenantId).toBe('query-tenant')
     })
@@ -182,18 +172,18 @@ describe('d8umCreate', () => {
 
   describe('assemble', () => {
     it('assembles XML by default', async () => {
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: createTestDocuments(1) })
+      const { bucket, documents, indexConfig } = createMockBucket({ documents: createTestDocuments(1) })
       registerTestBucket(instance, bucket, embedding)
-      await instance.indexWithConnector(bucket.id, connector, indexConfig)
+      await instance.ingest(bucket.id, documents, indexConfig)
       const response = await instance.query('test')
       const xml = instance.assemble(response.results)
       expect(xml).toContain('<context>')
     })
 
     it('assembles plain text', async () => {
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: createTestDocuments(1) })
+      const { bucket, documents, indexConfig } = createMockBucket({ documents: createTestDocuments(1) })
       registerTestBucket(instance, bucket, embedding)
-      await instance.indexWithConnector(bucket.id, connector, indexConfig)
+      await instance.ingest(bucket.id, documents, indexConfig)
       const response = await instance.query('test')
       const plain = instance.assemble(response.results, { format: 'plain' })
       expect(plain).not.toContain('<context>')
@@ -209,9 +199,9 @@ describe('d8umCreate', () => {
         embedding,
         hooks: { onIndexStart, onIndexComplete },
       })
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: [createTestDocument()] })
+      const { bucket, documents, indexConfig } = createMockBucket({ documents: [createTestDocument()] })
       registerTestBucket(inst, bucket, embedding)
-      await inst.indexWithConnector(bucket.id, connector, indexConfig)
+      await inst.ingest(bucket.id, documents, indexConfig)
       expect(onIndexStart).toHaveBeenCalledOnce()
       expect(onIndexComplete).toHaveBeenCalledOnce()
     })
@@ -223,9 +213,9 @@ describe('d8umCreate', () => {
         embedding,
         hooks: { onQueryResults },
       })
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: [createTestDocument()] })
+      const { bucket, documents, indexConfig } = createMockBucket({ documents: [createTestDocument()] })
       registerTestBucket(inst, bucket, embedding)
-      await inst.indexWithConnector(bucket.id, connector, indexConfig)
+      await inst.ingest(bucket.id, documents, indexConfig)
       await inst.query('test')
       expect(onQueryResults).toHaveBeenCalledOnce()
     })
@@ -244,7 +234,6 @@ describe('d8umCreate', () => {
       const inst = await d8umDeploy({ vectorStore: a, embedding })
       expect(a.calls.filter(c => c.method === 'deploy')).toHaveLength(1)
       expect(a.calls.filter(c => c.method === 'connect')).toHaveLength(0)
-      // deploy-only instance should not be usable for runtime operations
       await expect(inst.query('test')).rejects.toThrow()
     })
 

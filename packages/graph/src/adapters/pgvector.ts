@@ -32,8 +32,24 @@ export interface PgMemoryAdapterConfig {
 // produce valid Postgres index names (e.g. "myschema.d8um_memories" → "myschema_d8um_memories").
 const idxPrefix = (t: string) => t.replace(/\./g, '_')
 
+// Postgres limits identifiers to 63 chars. Truncate + hash when needed.
+const PG_IDENT_MAX = 63
+function djb2(s: string): number {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  return h >>> 0
+}
+function safeIdx(tablePrefix: string, suffix: string): string {
+  const full = `${tablePrefix}_${suffix}`
+  if (full.length <= PG_IDENT_MAX) return full
+  const hash = djb2(full).toString(36).padStart(6, '0').slice(0, 6)
+  const available = PG_IDENT_MAX - suffix.length - 1 - 6 - 1
+  return `${tablePrefix.slice(0, available)}_${hash}_${suffix}`
+}
+
 const MEMORIES_DDL = (t: string) => {
   const i = idxPrefix(t)
+  const idx = (suffix: string) => safeIdx(i, suffix)
   return `
   CREATE TABLE IF NOT EXISTS ${t} (
     id               TEXT PRIMARY KEY,
@@ -80,23 +96,24 @@ const MEMORIES_DDL = (t: string) => {
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
 
-  CREATE INDEX IF NOT EXISTS ${i}_category_idx ON ${t} (category);
-  CREATE INDEX IF NOT EXISTS ${i}_status_idx ON ${t} (status);
-  CREATE INDEX IF NOT EXISTS ${i}_subject_idx ON ${t} (subject);
-  CREATE INDEX IF NOT EXISTS ${i}_tenant_user_idx ON ${t} (tenant_id, user_id);
-  CREATE INDEX IF NOT EXISTS ${i}_tenant_group_idx ON ${t} (tenant_id, group_id);
-  CREATE INDEX IF NOT EXISTS ${i}_tenant_agent_idx ON ${t} (tenant_id, agent_id);
-  CREATE INDEX IF NOT EXISTS ${i}_tenant_session_idx ON ${t} (tenant_id, session_id);
-  CREATE INDEX IF NOT EXISTS ${i}_user_idx ON ${t} (user_id);
-  CREATE INDEX IF NOT EXISTS ${i}_group_idx ON ${t} (group_id);
-  CREATE INDEX IF NOT EXISTS ${i}_agent_idx ON ${t} (agent_id);
-  CREATE INDEX IF NOT EXISTS ${i}_session_idx ON ${t} (session_id);
-  CREATE INDEX IF NOT EXISTS ${i}_visibility_idx ON ${t} (visibility);
+  CREATE INDEX IF NOT EXISTS ${idx('category_idx')} ON ${t} (category);
+  CREATE INDEX IF NOT EXISTS ${idx('status_idx')} ON ${t} (status);
+  CREATE INDEX IF NOT EXISTS ${idx('subject_idx')} ON ${t} (subject);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')} ON ${t} (tenant_id, user_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')} ON ${t} (tenant_id, group_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')} ON ${t} (tenant_id, agent_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_session_idx')} ON ${t} (tenant_id, session_id);
+  CREATE INDEX IF NOT EXISTS ${idx('user_idx')} ON ${t} (user_id);
+  CREATE INDEX IF NOT EXISTS ${idx('group_idx')} ON ${t} (group_id);
+  CREATE INDEX IF NOT EXISTS ${idx('agent_idx')} ON ${t} (agent_id);
+  CREATE INDEX IF NOT EXISTS ${idx('session_idx')} ON ${t} (session_id);
+  CREATE INDEX IF NOT EXISTS ${idx('visibility_idx')} ON ${t} (visibility);
 `
 }
 
 const ENTITIES_DDL = (t: string, dims?: number) => {
   const i = idxPrefix(t)
+  const idx = (suffix: string) => safeIdx(i, suffix)
   return `
   CREATE TABLE IF NOT EXISTS ${t} (
     id          TEXT PRIMARY KEY,
@@ -120,22 +137,23 @@ const ENTITIES_DDL = (t: string, dims?: number) => {
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
 
-  CREATE INDEX IF NOT EXISTS ${i}_name_idx ON ${t} (name);
-  CREATE INDEX IF NOT EXISTS ${i}_type_idx ON ${t} (entity_type);
-  CREATE INDEX IF NOT EXISTS ${i}_tenant_user_idx ON ${t} (tenant_id, user_id);
-  CREATE INDEX IF NOT EXISTS ${i}_tenant_group_idx ON ${t} (tenant_id, group_id);
-  CREATE INDEX IF NOT EXISTS ${i}_tenant_agent_idx ON ${t} (tenant_id, agent_id);
-  CREATE INDEX IF NOT EXISTS ${i}_tenant_session_idx ON ${t} (tenant_id, session_id);
-  CREATE INDEX IF NOT EXISTS ${i}_user_idx ON ${t} (user_id);
-  CREATE INDEX IF NOT EXISTS ${i}_group_idx ON ${t} (group_id);
-  CREATE INDEX IF NOT EXISTS ${i}_agent_idx ON ${t} (agent_id);
-  CREATE INDEX IF NOT EXISTS ${i}_session_idx ON ${t} (session_id);
-  CREATE INDEX IF NOT EXISTS ${i}_visibility_idx ON ${t} (visibility);
+  CREATE INDEX IF NOT EXISTS ${idx('name_idx')} ON ${t} (name);
+  CREATE INDEX IF NOT EXISTS ${idx('type_idx')} ON ${t} (entity_type);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')} ON ${t} (tenant_id, user_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')} ON ${t} (tenant_id, group_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')} ON ${t} (tenant_id, agent_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_session_idx')} ON ${t} (tenant_id, session_id);
+  CREATE INDEX IF NOT EXISTS ${idx('user_idx')} ON ${t} (user_id);
+  CREATE INDEX IF NOT EXISTS ${idx('group_idx')} ON ${t} (group_id);
+  CREATE INDEX IF NOT EXISTS ${idx('agent_idx')} ON ${t} (agent_id);
+  CREATE INDEX IF NOT EXISTS ${idx('session_idx')} ON ${t} (session_id);
+  CREATE INDEX IF NOT EXISTS ${idx('visibility_idx')} ON ${t} (visibility);
 `
 }
 
 const EDGES_DDL = (t: string) => {
   const i = idxPrefix(t)
+  const idx = (suffix: string) => safeIdx(i, suffix)
   return `
   CREATE TABLE IF NOT EXISTS ${t} (
     id               TEXT PRIMARY KEY,
@@ -160,18 +178,18 @@ const EDGES_DDL = (t: string) => {
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
 
-  CREATE INDEX IF NOT EXISTS ${i}_source_idx ON ${t} (source_entity_id);
-  CREATE INDEX IF NOT EXISTS ${i}_target_idx ON ${t} (target_entity_id);
-  CREATE INDEX IF NOT EXISTS ${i}_relation_idx ON ${t} (relation);
-  CREATE INDEX IF NOT EXISTS ${i}_tenant_user_idx ON ${t} (tenant_id, user_id);
-  CREATE INDEX IF NOT EXISTS ${i}_tenant_group_idx ON ${t} (tenant_id, group_id);
-  CREATE INDEX IF NOT EXISTS ${i}_tenant_agent_idx ON ${t} (tenant_id, agent_id);
-  CREATE INDEX IF NOT EXISTS ${i}_tenant_session_idx ON ${t} (tenant_id, session_id);
-  CREATE INDEX IF NOT EXISTS ${i}_user_idx ON ${t} (user_id);
-  CREATE INDEX IF NOT EXISTS ${i}_group_idx ON ${t} (group_id);
-  CREATE INDEX IF NOT EXISTS ${i}_agent_idx ON ${t} (agent_id);
-  CREATE INDEX IF NOT EXISTS ${i}_session_idx ON ${t} (session_id);
-  CREATE INDEX IF NOT EXISTS ${i}_visibility_idx ON ${t} (visibility);
+  CREATE INDEX IF NOT EXISTS ${idx('source_idx')} ON ${t} (source_entity_id);
+  CREATE INDEX IF NOT EXISTS ${idx('target_idx')} ON ${t} (target_entity_id);
+  CREATE INDEX IF NOT EXISTS ${idx('relation_idx')} ON ${t} (relation);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')} ON ${t} (tenant_id, user_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')} ON ${t} (tenant_id, group_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')} ON ${t} (tenant_id, agent_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_session_idx')} ON ${t} (tenant_id, session_id);
+  CREATE INDEX IF NOT EXISTS ${idx('user_idx')} ON ${t} (user_id);
+  CREATE INDEX IF NOT EXISTS ${idx('group_idx')} ON ${t} (group_id);
+  CREATE INDEX IF NOT EXISTS ${idx('agent_idx')} ON ${t} (agent_id);
+  CREATE INDEX IF NOT EXISTS ${idx('session_idx')} ON ${t} (session_id);
+  CREATE INDEX IF NOT EXISTS ${idx('visibility_idx')} ON ${t} (visibility);
 `
 }
 
@@ -239,10 +257,10 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     } catch {
       // Column may already be typed — ignore
     }
-    const idx = idxPrefix(table)
+    const idxName = safeIdx(idxPrefix(table), 'embedding_idx')
     try {
       await this.sql(
-        `CREATE INDEX IF NOT EXISTS ${idx}_embedding_idx
+        `CREATE INDEX IF NOT EXISTS ${idxName}
          ON ${table} USING hnsw (embedding vector_cosine_ops)
          WITH (m = 16, ef_construction = 200)`
       )

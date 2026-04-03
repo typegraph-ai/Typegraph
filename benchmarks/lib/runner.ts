@@ -101,6 +101,7 @@ export async function initNeural(config: BenchmarkConfig): Promise<NeuralInit> {
 
   const memoryStore = new PgMemoryStoreAdapter({
     sql: (q: string, p?: unknown[]) => sql(q, p as any) as any,
+    schema: 'bench',
     memoriesTable: `${config.tablePrefix}memories`,
     entitiesTable: `${config.tablePrefix}entities`,
     edgesTable: `${config.tablePrefix}edges`,

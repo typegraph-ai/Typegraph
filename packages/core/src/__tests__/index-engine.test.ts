@@ -4,6 +4,7 @@ import { createMockAdapter } from './helpers/mock-adapter.js'
 import { createMockEmbedding } from './helpers/mock-embedding.js'
 import { createMockBucket } from './helpers/mock-source.js'
 import { createTestDocument, createTestDocuments } from './helpers/mock-connector.js'
+import { defaultChunker } from '../index-engine/chunker.js'
 
 describe('IndexEngine', () => {
   let adapter: ReturnType<typeof createMockAdapter>
@@ -14,12 +15,24 @@ describe('IndexEngine', () => {
     embedding = createMockEmbedding()
   })
 
-  describe('indexWithConnector', () => {
+  /** Helper: chunk docs and ingest via engine.ingestBatch */
+  async function ingestDocs(
+    engine: IndexEngine,
+    bucketId: string,
+    docs: ReturnType<typeof createTestDocuments>,
+    indexConfig: ReturnType<typeof createMockBucket>['indexConfig'],
+    opts?: Parameters<IndexEngine['ingestBatch']>[2],
+  ) {
+    const items = docs.map(doc => ({ doc, chunks: defaultChunker(doc, indexConfig) }))
+    return engine.ingestBatch(bucketId, items, opts, indexConfig)
+  }
+
+  describe('ingestBatch', () => {
     it('indexes all documents', async () => {
       const docs = createTestDocuments(3)
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: docs })
+      const { bucket, indexConfig } = createMockBucket({ documents: docs })
       const engine = new IndexEngine(adapter, embedding)
-      const result = await engine.indexWithConnector(bucket.id, connector, indexConfig)
+      const result = await ingestDocs(engine, bucket.id, docs, indexConfig)
       expect(result.total).toBe(3)
       expect(result.inserted).toBe(3)
       expect(result.skipped).toBe(0)
@@ -27,11 +40,11 @@ describe('IndexEngine', () => {
 
     it('skips unchanged documents (idempotency)', async () => {
       const docs = createTestDocuments(2)
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: docs })
+      const { bucket, indexConfig } = createMockBucket({ documents: docs })
       const engine = new IndexEngine(adapter, embedding)
 
-      await engine.indexWithConnector(bucket.id, connector, indexConfig)
-      const result2 = await engine.indexWithConnector(bucket.id, connector, indexConfig)
+      await ingestDocs(engine, bucket.id, docs, indexConfig)
+      const result2 = await ingestDocs(engine, bucket.id, docs, indexConfig)
       expect(result2.total).toBe(2)
       expect(result2.skipped).toBe(2)
       expect(result2.inserted).toBe(0)
@@ -39,113 +52,54 @@ describe('IndexEngine', () => {
 
     it('re-indexes on content change', async () => {
       const docs = [createTestDocument({ id: 'doc-1', content: 'Original content' })]
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: docs })
+      const { bucket, indexConfig } = createMockBucket({ documents: docs })
       const engine = new IndexEngine(adapter, embedding)
 
-      await engine.indexWithConnector(bucket.id, connector, indexConfig)
+      await ingestDocs(engine, bucket.id, docs, indexConfig)
 
       const updatedDocs = [createTestDocument({ id: 'doc-1', content: 'Updated content' })]
-      const { connector: updatedConnector, indexConfig: updatedIndexConfig } = createMockBucket({ documents: updatedDocs })
-      const result = await engine.indexWithConnector(bucket.id, updatedConnector, updatedIndexConfig)
-      expect(result.updated).toBe(1)
+      const result = await ingestDocs(engine, bucket.id, updatedDocs, indexConfig)
+      expect(result.inserted).toBe(1)
     })
 
     it('re-indexes on model change', async () => {
       const docs = [createTestDocument()]
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: docs })
+      const { bucket, indexConfig } = createMockBucket({ documents: docs })
 
       const engine1 = new IndexEngine(adapter, createMockEmbedding({ model: 'model-v1' }))
-      await engine1.indexWithConnector(bucket.id, connector, indexConfig)
+      await ingestDocs(engine1, bucket.id, docs, indexConfig)
 
       const engine2 = new IndexEngine(adapter, createMockEmbedding({ model: 'model-v2' }))
-      const result = await engine2.indexWithConnector(bucket.id, connector, indexConfig)
-      expect(result.updated).toBe(1)
+      const result = await ingestDocs(engine2, bucket.id, docs, indexConfig)
+      expect(result.inserted).toBe(1)
     })
 
     it('calls ensureModel', async () => {
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: [createTestDocument()] })
+      const docs = [createTestDocument()]
+      const { bucket, indexConfig } = createMockBucket({ documents: docs })
       const engine = new IndexEngine(adapter, embedding)
-      await engine.indexWithConnector(bucket.id, connector, indexConfig)
+      await ingestDocs(engine, bucket.id, docs, indexConfig)
       expect(adapter.calls.some(c => c.method === 'ensureModel')).toBe(true)
     })
 
-    it('supports replace mode', async () => {
-      const docs = createTestDocuments(2)
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: docs })
-      const engine = new IndexEngine(adapter, embedding)
-
-      await engine.indexWithConnector(bucket.id, connector, indexConfig)
-      const result = await engine.indexWithConnector(bucket.id, connector, indexConfig, { mode: 'replace' })
-      expect(result.mode).toBe('replace')
-      expect(result.inserted).toBe(2)
-      // In replace mode, old chunks are deleted first
-      expect(adapter.calls.some(c => c.method === 'delete')).toBe(true)
-    })
-
     it('supports dryRun', async () => {
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: [createTestDocument()] })
+      const docs = [createTestDocument()]
+      const { bucket, indexConfig } = createMockBucket({ documents: docs })
       const engine = new IndexEngine(adapter, embedding)
-      const result = await engine.indexWithConnector(bucket.id, connector, indexConfig, { dryRun: true })
+      const result = await ingestDocs(engine, bucket.id, docs, indexConfig, { dryRun: true })
       expect(result.inserted).toBe(1)
-      // Should not call ensureModel or upsertDocument in dry run
       expect(adapter.calls.filter(c => c.method === 'upsertDocument')).toHaveLength(0)
-    })
-
-    it('sets last run time', async () => {
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: [createTestDocument()] })
-      const engine = new IndexEngine(adapter, embedding)
-      await engine.indexWithConnector(bucket.id, connector, indexConfig)
-      const lastRun = await adapter.hashStore.getLastRunTime(bucket.id, undefined)
-      expect(lastRun).toBeInstanceOf(Date)
-    })
-
-    it('throws on fetch failure', async () => {
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: [] })
-      connector.fetch = async function* () {
-        throw new Error('Network error')
-      }
-      const engine = new IndexEngine(adapter, embedding)
-      await expect(engine.indexWithConnector(bucket.id, connector, indexConfig)).rejects.toThrow('Index failed')
-    })
-
-    it('throws when no fetch method', async () => {
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: [] })
-      delete connector.fetch
-      const engine = new IndexEngine(adapter, embedding)
-      await expect(engine.indexWithConnector(bucket.id, connector, indexConfig)).rejects.toThrow('no fetch()')
-    })
-
-    it('fires onProgress', async () => {
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: [createTestDocument()] })
-      const engine = new IndexEngine(adapter, embedding)
-      const events: unknown[] = []
-      await engine.indexWithConnector(bucket.id, connector, indexConfig, { onProgress: (e) => events.push(e) })
-      expect(events.length).toBeGreaterThan(0)
-    })
-
-    it('prunes deleted documents', async () => {
-      const docs = createTestDocuments(3)
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: docs })
-      const engine = new IndexEngine(adapter, embedding)
-
-      await engine.indexWithConnector(bucket.id, connector, indexConfig)
-
-      // Re-index with only 1 doc, removeDeleted
-      const { connector: reducedConnector, indexConfig: reducedIndexConfig } = createMockBucket({ documents: [docs[0]!] })
-      const result = await engine.indexWithConnector(bucket.id, reducedConnector, reducedIndexConfig, { removeDeleted: true })
-      expect(result.pruned).toBe(2)
     })
 
     it('strips markdown for embedding when configured', async () => {
       const doc = createTestDocument({ content: '# Heading\n\n**Bold** text' })
-      const { bucket, connector, indexConfig } = createMockBucket({
+      const { bucket, indexConfig } = createMockBucket({
         documents: [doc],
         stripMarkdownForEmbedding: true,
       })
       const engine = new IndexEngine(adapter, embedding)
       const embedSpy = vi.spyOn(embedding, 'embedBatch')
-      await engine.indexWithConnector(bucket.id, connector, indexConfig)
-      // The text passed to embedBatch should have markdown stripped
+      await ingestDocs(engine, bucket.id, [doc], indexConfig)
       const embeddedTexts = embedSpy.mock.calls[0]![0]
       expect(embeddedTexts[0]).not.toContain('#')
       expect(embeddedTexts[0]).not.toContain('**')
@@ -153,13 +107,13 @@ describe('IndexEngine', () => {
 
     it('applies custom preprocessForEmbedding', async () => {
       const doc = createTestDocument({ content: 'Hello World' })
-      const { bucket, connector, indexConfig } = createMockBucket({
+      const { bucket, indexConfig } = createMockBucket({
         documents: [doc],
         preprocessForEmbedding: (c) => c.toLowerCase(),
       })
       const engine = new IndexEngine(adapter, embedding)
       const embedSpy = vi.spyOn(embedding, 'embedBatch')
-      await engine.indexWithConnector(bucket.id, connector, indexConfig)
+      await ingestDocs(engine, bucket.id, [doc], indexConfig)
       const embeddedTexts = embedSpy.mock.calls[0]![0]
       expect(embeddedTexts[0]).toBe('hello world')
     })
@@ -170,9 +124,9 @@ describe('IndexEngine', () => {
         url: 'https://example.com',
         updatedAt: new Date('2024-06-01'),
       })
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: [doc] })
+      const { bucket, indexConfig } = createMockBucket({ documents: [doc] })
       const engine = new IndexEngine(adapter, embedding)
-      await engine.indexWithConnector(bucket.id, connector, indexConfig)
+      await ingestDocs(engine, bucket.id, [doc], indexConfig)
 
       const stored = adapter._chunks.get(embedding.model)!
       expect(stored[0]!.metadata.title).toBe('My Doc')
@@ -183,12 +137,12 @@ describe('IndexEngine', () => {
       const doc = createTestDocument({
         metadata: { category: 'tech', priority: 'high' },
       })
-      const { bucket, connector, indexConfig } = createMockBucket({
+      const { bucket, indexConfig } = createMockBucket({
         documents: [doc],
         propagateMetadata: ['metadata.category', 'metadata.priority'],
       })
       const engine = new IndexEngine(adapter, embedding)
-      await engine.indexWithConnector(bucket.id, connector, indexConfig)
+      await ingestDocs(engine, bucket.id, [doc], indexConfig)
 
       const stored = adapter._chunks.get(embedding.model)!
       expect(stored[0]!.metadata.category).toBe('tech')
@@ -197,9 +151,9 @@ describe('IndexEngine', () => {
 
     it('creates document records', async () => {
       const doc = createTestDocument()
-      const { bucket, connector, indexConfig } = createMockBucket({ documents: [doc] })
+      const { bucket, indexConfig } = createMockBucket({ documents: [doc] })
       const engine = new IndexEngine(adapter, embedding)
-      await engine.indexWithConnector(bucket.id, connector, indexConfig)
+      await ingestDocs(engine, bucket.id, [doc], indexConfig)
 
       expect(adapter.calls.some(c => c.method === 'upsertDocumentRecord')).toBe(true)
     })
@@ -237,14 +191,12 @@ describe('IndexEngine', () => {
       const { bucket } = createMockBucket({ documents: [] })
       const chunks = [{ content: 'Chunk 0', chunkIndex: 0 }]
 
-      // Make embedBatch throw
       const failEmbedding = createMockEmbedding()
       failEmbedding.embedBatch = async () => { throw new Error('Embed failed') }
 
       const engine = new IndexEngine(adapter, failEmbedding)
       await expect(engine.ingestWithChunks(bucket.id, doc, chunks)).rejects.toThrow('Embed failed')
 
-      // Should have tried to set status to failed
       const statusCalls = adapter.calls.filter(c => c.method === 'updateDocumentStatus')
       if (statusCalls.length > 0) {
         expect(statusCalls[statusCalls.length - 1]!.args[1]).toBe('failed')

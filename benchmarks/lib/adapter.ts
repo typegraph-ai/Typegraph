@@ -19,6 +19,7 @@ export function createBenchmarkAdapter(tablePrefix?: string) {
   const sql = neon(databaseUrl)
   return new PgVectorAdapter({
     sql: (q, p) => sql(q, p as any) as any,
+    schema: 'bench',
     tablePrefix,
   })
 }

@@ -1,6 +1,5 @@
 import type { Bucket, IndexConfig } from '../../types/bucket.js'
-import type { RawDocument, Connector } from '../../types/connector.js'
-import { createMockConnector } from './mock-connector.js'
+import type { RawDocument } from '../../types/connector.js'
 
 export interface MockSourceOpts {
   id?: string
@@ -18,15 +17,13 @@ export interface MockSourceOpts {
 
 export interface MockSourceResult {
   bucket: Bucket
-  connector: Connector
+  documents: RawDocument[]
   indexConfig: IndexConfig
 }
 
 export function createMockBucket(opts: MockSourceOpts = {}): MockSourceResult {
   const id = opts.id ?? 'test-source'
   const documents = opts.documents ?? []
-
-  const connector = createMockConnector({ documents })
 
   const bucket: Bucket = {
     id,
@@ -45,5 +42,5 @@ export function createMockBucket(opts: MockSourceOpts = {}): MockSourceResult {
     sourceType: opts.sourceType,
   }
 
-  return { bucket, connector, indexConfig }
+  return { bucket, documents, indexConfig }
 }

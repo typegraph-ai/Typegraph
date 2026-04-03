@@ -2,7 +2,6 @@ export type {
   RawDocument,
   ChunkOpts,
   Chunk,
-  Connector,
 } from './connector.js'
 
 export type {

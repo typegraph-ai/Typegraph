@@ -197,15 +197,15 @@ export class EntityResolver {
       }
     }
 
-    // Merge descriptions: accumulate unique descriptions from different chunks
+    // Merge descriptions: keep best description, capped at 500 chars to prevent runaway growth
+    const MAX_DESCRIPTION_LENGTH = 500
     const properties = { ...existing.properties }
     if (incoming.description) {
-      const existingDesc = properties.description as string | undefined
+      const existingDesc = (properties.description as string | undefined) ?? ''
       if (!existingDesc) {
-        properties.description = incoming.description
-      } else if (!existingDesc.includes(incoming.description)) {
-        // Append new description if it's not already contained
-        properties.description = `${existingDesc} ${incoming.description}`
+        properties.description = incoming.description.slice(0, MAX_DESCRIPTION_LENGTH)
+      } else if (existingDesc.length < MAX_DESCRIPTION_LENGTH && !existingDesc.includes(incoming.description)) {
+        properties.description = `${existingDesc} ${incoming.description}`.slice(0, MAX_DESCRIPTION_LENGTH)
       }
     }
 

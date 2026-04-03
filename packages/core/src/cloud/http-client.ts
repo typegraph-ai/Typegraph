@@ -1,8 +1,27 @@
-import type { HostedConfig } from './types.js'
-import { d8umApiError } from './types.js'
-
 const DEFAULT_BASE_URL = 'https://api.d8um.dev'
 const DEFAULT_TIMEOUT = 30_000
+
+export interface CloudConfig {
+  /** API key for the d8um cloud service. */
+  apiKey: string
+  /** Base URL for the cloud API. Defaults to 'https://api.d8um.dev'. */
+  baseUrl?: string | undefined
+  /** Default tenant ID for all operations. */
+  tenantId?: string | undefined
+  /** Request timeout in milliseconds. Default: 30000. */
+  timeout?: number | undefined
+}
+
+export class d8umApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly body?: unknown,
+  ) {
+    super(message)
+    this.name = 'd8umApiError'
+  }
+}
 
 export class HttpClient {
   private baseUrl: string
@@ -10,7 +29,7 @@ export class HttpClient {
   private tenantId: string | undefined
   private timeout: number
 
-  constructor(config: HostedConfig) {
+  constructor(config: CloudConfig) {
     this.baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '')
     this.apiKey = config.apiKey
     this.tenantId = config.tenantId
@@ -25,13 +44,6 @@ export class HttpClient {
   async post<T>(path: string, body?: unknown): Promise<T> {
     const url = this.buildUrl(path)
     const init: RequestInit = { method: 'POST' }
-    if (body !== undefined) init.body = JSON.stringify(body, dateReplacer)
-    return this.request<T>(url, init)
-  }
-
-  async put<T>(path: string, body?: unknown): Promise<T> {
-    const url = this.buildUrl(path)
-    const init: RequestInit = { method: 'PUT' }
     if (body !== undefined) init.body = JSON.stringify(body, dateReplacer)
     return this.request<T>(url, init)
   }
@@ -85,7 +97,7 @@ export class HttpClient {
         throw new d8umApiError(
           `d8um API error: ${response.status} ${response.statusText}`,
           response.status,
-          body ? tryParseJson(body) : undefined
+          body ? tryParseJson(body) : undefined,
         )
       }
 
@@ -104,13 +116,11 @@ export class HttpClient {
   }
 }
 
-/** JSON replacer that serializes Date objects as ISO strings. */
 function dateReplacer(_key: string, value: unknown): unknown {
   if (value instanceof Date) return value.toISOString()
   return value
 }
 
-/** JSON reviver that deserializes ISO date strings back to Date objects. */
 function dateReviver(_key: string, value: unknown): unknown {
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) {
     const date = new Date(value)

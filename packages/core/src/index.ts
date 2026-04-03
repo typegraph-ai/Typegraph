@@ -7,7 +7,6 @@ export type {
   RawDocument,
   ChunkOpts,
   Chunk,
-  Connector,
   Bucket,
   CreateBucketInput,
   IndexConfig,
@@ -92,3 +91,7 @@ export { urlScrapeJob, fetchPage, DEFAULT_STRIP_ELEMENTS, DEFAULT_STRIP_SELECTOR
 export type { UrlMeta } from './jobs/index.js'
 export { domainCrawlJob, Crawler } from './jobs/index.js'
 export type { CrawlerConfig } from './jobs/index.js'
+
+// Cloud mode
+export { createCloudInstance, HttpClient, d8umApiError } from './cloud/index.js'
+export type { d8umCloudInstance, CloudConfig } from './cloud/index.js'

@@ -25,7 +25,6 @@ describe('searchWithContext', () => {
     embedding = createMockEmbedding()
     instance = await d8umCreate({ vectorStore: adapter, embedding })
 
-    // Create a multi-chunk document
     const longContent = Array.from({ length: 10 }, (_, i) =>
       `Chunk ${i} content. `.repeat(50)
     ).join('')
@@ -35,13 +34,13 @@ describe('searchWithContext', () => {
       title: 'Long Document',
       url: 'https://example.com/long',
     })
-    const { bucket, connector, indexConfig } = createMockBucket({
+    const { bucket, indexConfig } = createMockBucket({
       documents: [doc],
       chunkSize: 50,
       chunkOverlap: 10,
     })
     registerTestBucket(instance, bucket, embedding)
-    await instance.indexWithConnector(bucket.id, connector, indexConfig)
+    await instance.ingest(bucket.id, [doc], indexConfig)
   })
 
   it('returns passages with neighbor chunks', async () => {
@@ -91,7 +90,6 @@ describe('searchWithContext', () => {
     const response = await instance.searchWithContext('Chunk 5 content', { surroundingChunks: 1 })
     if (response.passages.length > 0) {
       const passage = response.passages[0]!
-      // Should have at least one hit chunk
       const hits = passage.chunks.filter(c => c.isHit)
       expect(hits.length).toBeGreaterThanOrEqual(1)
     }

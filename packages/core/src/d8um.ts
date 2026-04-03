@@ -17,7 +17,7 @@ import type {
 import type { QueryOpts, QueryResponse, d8umResult, AssembleOpts } from './types/query.js'
 import type { IndexOpts, IndexResult } from './types/index-types.js'
 import type { EmbeddingProvider } from './embedding/provider.js'
-import type { RawDocument, Chunk, Connector } from './types/connector.js'
+import type { RawDocument, Chunk } from './types/connector.js'
 import type { d8umHooks } from './types/hooks.js'
 import type { LLMProvider } from './types/llm-provider.js'
 import type { GraphBridge } from './types/graph-bridge.js'
@@ -38,8 +38,17 @@ import { randomUUID } from 'crypto'
 export type LLMInput = LLMProvider | AISDKLLMInput
 
 export interface d8umConfig {
-  vectorStore: VectorStoreAdapter
-  embedding: EmbeddingInput
+  // ── Cloud mode (mutually exclusive with vectorStore/embedding) ──
+  /** API key for d8um cloud. When provided, vectorStore and embedding are not required. */
+  apiKey?: string | undefined
+  /** Base URL for the cloud API. Defaults to 'https://api.d8um.dev'. */
+  baseUrl?: string | undefined
+  /** Request timeout in milliseconds for cloud mode. Default: 30000. */
+  timeout?: number | undefined
+
+  // ── Self-hosted mode ──
+  vectorStore?: VectorStoreAdapter | undefined
+  embedding?: EmbeddingInput | undefined
   tenantId?: string | undefined
   tokenizer?: ((text: string) => number) | undefined
   hooks?: d8umHooks | undefined
@@ -129,14 +138,6 @@ export interface d8umInstance {
   getEmbeddingForBucket(bucketId: string): EmbeddingProvider
   getDistinctEmbeddings(bucketIds?: string[]): Map<string, EmbeddingProvider>
   groupBucketsByModel(bucketIds?: string[]): Map<string, string[]>
-
-  /** Index documents from a connector into a bucket. */
-  indexWithConnector(
-    bucketId: string,
-    connector: Connector,
-    indexConfig: IndexConfig,
-    opts?: IndexOpts,
-  ): Promise<IndexResult>
 
   /** Ingest documents directly into a bucket. All chunks are embedded in a single batch call. */
   ingest(bucketId: string, docs: RawDocument[], indexConfig: IndexConfig, opts?: IndexOpts): Promise<IndexResult>
@@ -530,8 +531,8 @@ class d8umImpl implements d8umInstance {
 
   private applyConfig(config: d8umConfig): void {
     this.config = config
-    this.adapter = config.vectorStore
-    this.defaultEmbedding = resolveEmbeddingProvider(config.embedding)
+    this.adapter = config.vectorStore!
+    this.defaultEmbedding = resolveEmbeddingProvider(config.embedding!)
 
     // Register job types from integrations and config
     if (config.integrations) {
@@ -650,25 +651,6 @@ class d8umImpl implements d8umInstance {
       groups.set(emb.model, group)
     }
     return groups
-  }
-
-  async indexWithConnector(
-    bucketId: string,
-    connector: Connector,
-    indexConfig: IndexConfig,
-    opts?: IndexOpts,
-  ): Promise<IndexResult> {
-    await this.ensureInitialized()
-    const bucket = await this.buckets.get(bucketId)
-    if (!bucket) throw new Error(`Bucket "${bucketId}" not found`)
-
-    const embedding = this.getEmbeddingForBucket(bucketId)
-    const engine = this.createIndexEngine(embedding)
-
-    await this.config.hooks?.onIndexStart?.(bucketId, opts ?? {})
-    const result = await engine.indexWithConnector(bucketId, connector, indexConfig, opts)
-    await this.config.hooks?.onIndexComplete?.(bucketId, result)
-    return result
   }
 
   async ingest(
@@ -803,8 +785,27 @@ class d8umImpl implements d8umInstance {
   }
 }
 
-/** Deploy infrastructure then initialize a new d8um instance. Convenience for local/dev use. */
+/**
+ * Create a d8um instance.
+ *
+ * - **Cloud mode**: pass `{ apiKey }` — everything runs server-side.
+ * - **Self-hosted mode**: pass `{ vectorStore, embedding }` — deploys infrastructure then initializes.
+ */
 export async function d8umCreate(config: d8umConfig): Promise<d8umInstance> {
+  if (config.apiKey) {
+    const { createCloudInstance } = await import('./cloud/cloud-instance.js')
+    return createCloudInstance({
+      apiKey: config.apiKey,
+      baseUrl: config.baseUrl,
+      tenantId: config.tenantId,
+      timeout: config.timeout,
+    })
+  }
+
+  if (!config.vectorStore || !config.embedding) {
+    throw new Error('d8umCreate requires either apiKey (cloud mode) or vectorStore + embedding (self-hosted mode).')
+  }
+
   const instance = new d8umImpl()
   await instance.deploy(config)
   return instance.initialize(config)

@@ -1,6 +1,6 @@
 {
   "name": "@d8um-ai/graph",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Knowledge graph, cognitive memory, and neural retrieval for d8um - entities, edges, PPR, extraction, consolidation",
   "type": "module",
   "main": "./dist/index.js",

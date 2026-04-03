@@ -124,7 +124,7 @@ export interface VectorStoreAdapter {
   /** Get a job by ID. */
   getJob?(id: string): Promise<Job | null>
   /** List jobs matching an optional filter. */
-  listJobs?(filter?: { bucketId?: string; type?: string; tenantId?: string }): Promise<Job[]>
+  listJobs?(filter?: { bucketId?: string; type?: string; tenantId?: string; status?: string }): Promise<Job[]>
   /** Delete a job by ID. */
   deleteJob?(id: string): Promise<void>
 

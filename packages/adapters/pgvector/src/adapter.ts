@@ -649,12 +649,13 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     return rows.length > 0 ? mapRowToJob(rows[0]!) : null
   }
 
-  async listJobs(filter?: { bucketId?: string; type?: string; tenantId?: string }): Promise<Job[]> {
+  async listJobs(filter?: { bucketId?: string; type?: string; tenantId?: string; status?: string }): Promise<Job[]> {
     const conditions: string[] = []
     const params: unknown[] = []
     if (filter?.bucketId) { params.push(filter.bucketId); conditions.push(`bucket_id = $${params.length}`) }
     if (filter?.type) { params.push(filter.type); conditions.push(`type = $${params.length}`) }
     if (filter?.tenantId) { params.push(filter.tenantId); conditions.push(`tenant_id = $${params.length}`) }
+    if (filter?.status) { params.push(filter.status); conditions.push(`status = $${params.length}`) }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
     const rows = await this.sql(`SELECT * FROM ${this.jobsTable} ${where} ORDER BY created_at`, params)
     return rows.map(mapRowToJob)

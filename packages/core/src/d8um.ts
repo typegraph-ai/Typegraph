@@ -104,7 +104,7 @@ export interface BucketsApi {
 export interface JobsApi {
   create(input: CreateJobInput): Promise<Job>
   get(jobId: string): Promise<Job | undefined>
-  list(filter?: { bucketId?: string; type?: string; tenantId?: string }): Promise<Job[]>
+  list(filter?: { bucketId?: string; type?: string; tenantId?: string; status?: string }): Promise<Job[]>
   update(jobId: string, input: Partial<Pick<Job, 'name' | 'description' | 'config' | 'schedule' | 'status'>>): Promise<Job>
   /** Delete a job. cascade=true deletes orphaned documents (those with no other job relations). */
   delete(jobId: string, opts?: { cascade?: boolean }): Promise<void>
@@ -313,7 +313,7 @@ class d8umImpl implements d8umInstance {
       return this._jobs.get(jobId)
     },
 
-    list: async (filter?: { bucketId?: string; type?: string; tenantId?: string }): Promise<Job[]> => {
+    list: async (filter?: { bucketId?: string; type?: string; tenantId?: string; status?: string }): Promise<Job[]> => {
       if (this.adapter.listJobs) {
         const jobs = await this.adapter.listJobs(filter)
         for (const j of jobs) {
@@ -325,6 +325,7 @@ class d8umImpl implements d8umInstance {
       if (filter?.bucketId) jobs = jobs.filter(j => j.bucketId === filter.bucketId)
       if (filter?.type) jobs = jobs.filter(j => j.type === filter.type)
       if (filter?.tenantId) jobs = jobs.filter(j => j.tenantId === filter.tenantId)
+      if (filter?.status) jobs = jobs.filter(j => j.status === filter.status)
       return jobs
     },
 

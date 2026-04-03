@@ -195,6 +195,9 @@ const EDGES_DDL = (t: string) => {
 
 // ── Adapter Implementation ──
 
+/** Strip schema prefix from a qualified table name for use in ON CONFLICT column refs. */
+const unqualified = (table: string) => table.includes('.') ? table.split('.').pop()! : table
+
 export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   private sql: SqlExecutor
   private memoriesTable: string
@@ -208,7 +211,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   constructor(config: PgMemoryAdapterConfig) {
     this.sql = config.sql
     this.schema = config.schema
-    const prefix = config.schema ? `${config.schema}.` : ''
+    const prefix = config.schema ? `"${config.schema}".` : ''
     this.memoriesTable = config.memoriesTable ?? `${prefix}d8um_memories`
     this.entitiesTable = config.entitiesTable ?? `${prefix}d8um_semantic_entities`
     this.edgesTable = config.edgesTable ?? `${prefix}d8um_semantic_edges`
@@ -218,7 +221,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   async initialize(): Promise<void> {
     // Create schema if specified
     if (this.schema) {
-      await this.sql(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`)
+      await this.sql(`CREATE SCHEMA IF NOT EXISTS "${this.schema}"`)
     }
 
     // Neon cannot execute multi-statement prepared statements,
@@ -457,7 +460,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name, entity_type = EXCLUDED.entity_type,
          aliases = EXCLUDED.aliases, properties = EXCLUDED.properties,
-         embedding = COALESCE(EXCLUDED.embedding, ${this.entitiesTable}.embedding), scope = EXCLUDED.scope,
+         embedding = COALESCE(EXCLUDED.embedding, ${unqualified(this.entitiesTable)}.embedding), scope = EXCLUDED.scope,
          tenant_id = EXCLUDED.tenant_id, group_id = EXCLUDED.group_id,
          user_id = EXCLUDED.user_id, agent_id = EXCLUDED.agent_id,
          session_id = EXCLUDED.session_id, visibility = EXCLUDED.visibility,

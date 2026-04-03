@@ -75,7 +75,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     this.sql = config.sql
     this.transaction = config.transaction
     this.schema = config.schema
-    const prefix = config.schema ? `${config.schema}.` : ''
+    const prefix = config.schema ? `"${config.schema}".` : ''
     this.tablePrefix = config.tablePrefix ?? `${prefix}d8um_chunks`
     this.hashesTable = config.hashesTable ?? `${prefix}d8um_hashes`
     this.documentsTable = config.documentsTable ?? `${prefix}d8um_documents`
@@ -99,7 +99,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
   async deploy(): Promise<void> {
     await this.sql(`CREATE EXTENSION IF NOT EXISTS vector`)
     if (this.schema) {
-      await this.sql(`CREATE SCHEMA IF NOT EXISTS ${this.schema}`)
+      await this.sql(`CREATE SCHEMA IF NOT EXISTS "${this.schema}"`)
     }
     await this.execStatements(REGISTRY_SQL(this.registryTable))
     await this.execStatements(HASH_TABLE_SQL(this.hashesTable))

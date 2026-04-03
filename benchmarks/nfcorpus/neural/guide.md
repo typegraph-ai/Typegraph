@@ -64,7 +64,7 @@ NFCorpus (NeurIPS 2021, part of BEIR) is the smallest benchmark in the BEIR suit
 ```bash
 mkdir nfcorpus-benchmark && cd nfcorpus-benchmark
 npm init -y
-npm install @d8um/core @d8um/adapter-sqlite-vec @d8um/graph @ai-sdk/gateway ai
+npm install @d8um-ai/core @d8um-ai/adapter-sqlite-vec @d8um-ai/graph @ai-sdk/gateway ai
 ```
 
 Set your API key:
@@ -80,9 +80,9 @@ The script (`run-neural.ts`) runs through 7 phases:
 ### Phase 1: Initialize d8um with Graph Bridge
 
 ```typescript
-import { d8umCreate } from '@d8um/core'
-import { SqliteVecAdapter } from '@d8um/adapter-sqlite-vec'
-import { createGraphBridge } from '@d8um/graph'
+import { d8umCreate } from '@d8um-ai/core'
+import { SqliteVecAdapter } from '@d8um-ai/adapter-sqlite-vec'
+import { createGraphBridge } from '@d8um-ai/graph'
 import { gateway } from '@ai-sdk/gateway'
 import { generateText } from 'ai'
 
@@ -130,7 +130,7 @@ function createLLMProvider() {
 
 #### The Graph Bridge
 
-`createGraphBridge` from `@d8um/graph` composes:
+`createGraphBridge` from `@d8um-ai/graph` composes:
 - **d8umMemory** — semantic memory recall (the 5 required `GraphBridge` methods)
 - **EmbeddedGraph** — entity/edge CRUD and graph traversal
 - **EntityResolver** — entity deduplication (alias matching + vector similarity)

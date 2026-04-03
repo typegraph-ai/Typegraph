@@ -1,4 +1,4 @@
-import type { JobTypeDefinition, JobRunContext, JobRunResult } from '@d8um/core'
+import type { JobTypeDefinition, JobRunContext, JobRunResult } from '@d8um-ai/core'
 
 export const memoryCorrectionJob: JobTypeDefinition = {
   type: 'memory_correction',

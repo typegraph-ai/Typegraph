@@ -1,4 +1,4 @@
-import type { RawDocument } from '@d8um/core'
+import type { RawDocument } from '@d8um-ai/core'
 import type { GmailRawMessage, GmailRawMessagePart } from '../types.js'
 import type { GmailMessage } from '../models.js'
 

@@ -1,5 +1,5 @@
 {
-  "name": "@d8um/integration-gmail",
+  "name": "@d8um-ai/integration-gmail",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -16,8 +16,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@d8um/core": "workspace:*",
-    "@d8um/integration-core": "workspace:*",
+    "@d8um-ai/core": "workspace:*",
+    "@d8um-ai/integration-core": "workspace:*",
     "zod": "^3.22.0"
   },
   "devDependencies": {

@@ -1,4 +1,4 @@
-# @d8um/adapter-pgvector
+# @d8um-ai/adapter-pgvector
 
 PostgreSQL + [pgvector](https://github.com/pgvector/pgvector) adapter for d8um. Hybrid search combining vector similarity with keyword matching via `tsvector` and Reciprocal Rank Fusion.
 
@@ -7,15 +7,15 @@ Bring your own Postgres driver -- works with Neon serverless, node-postgres, Dri
 ## Install
 
 ```bash
-npm install @d8um/adapter-pgvector @d8um/core
+npm install @d8um-ai/adapter-pgvector @d8um-ai/core
 ```
 
 ## Usage
 
 ```ts
 import { neon } from '@neondatabase/serverless'
-import { PgVectorAdapter } from '@d8um/adapter-pgvector'
-import { d8um } from '@d8um/core'
+import { PgVectorAdapter } from '@d8um-ai/adapter-pgvector'
+import { d8um } from '@d8um-ai/core'
 
 const sql = neon(process.env.DATABASE_URL!)
 

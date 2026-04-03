@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ApiClient } from '@d8um/core'
+import type { ApiClient } from '@d8um-ai/core'
 
 export const CreateContactInput = z.object({
   email: z.string().email().describe('Contact email address'),

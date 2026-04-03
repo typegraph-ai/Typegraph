@@ -1,4 +1,4 @@
-import type { d8umIdentity } from '@d8um/core'
+import type { d8umIdentity } from '@d8um-ai/core'
 
 /**
  * Build an identity from partial parts. At least one identifier is required.

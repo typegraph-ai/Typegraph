@@ -11,21 +11,21 @@ Minimal infrastructure setup — SQLite for storage, AI Gateway for embeddings. 
 
 ```bash
 # Core SDK
-npm install @d8um/core
+npm install @d8um-ai/core
 
 # AI Gateway — access 40+ embedding providers through one dependency
 npm install @ai-sdk/gateway
 
 # SQLite vector store — zero-infra, single-file database
-npm install @d8um/adapter-sqlite-vec
+npm install @d8um-ai/adapter-sqlite-vec
 ```
 
 ## 2) Initialize
 
 ```ts
-import { d8um } from '@d8um/core'
+import { d8um } from '@d8um-ai/core'
 import { gateway } from '@ai-sdk/gateway'
-import { SqliteVecAdapter } from '@d8um/adapter-sqlite-vec'
+import { SqliteVecAdapter } from '@d8um-ai/adapter-sqlite-vec'
 
 const config = {
   embedding: {

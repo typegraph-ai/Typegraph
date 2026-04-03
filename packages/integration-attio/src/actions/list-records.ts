@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ApiClient } from '@d8um/core'
+import type { ApiClient } from '@d8um-ai/core'
 
 export const ListRecordsInput = z.object({
   object: z.string().describe('Object API slug (e.g. "people", "companies")'),

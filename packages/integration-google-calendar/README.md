@@ -1,18 +1,18 @@
-# @d8um/integration-google-calendar
+# @d8um-ai/integration-google-calendar
 
 Google Calendar integration for d8um - sync calendars and events into your sources.
 
 ## Install
 
 ```bash
-npm install @d8um/integration-google-calendar
+npm install @d8um-ai/integration-google-calendar
 ```
 
 ## Register
 
 ```ts
-import { registerJobType } from '@d8um/core'
-import { GoogleCalendarIntegration } from '@d8um/integration-google-calendar'
+import { registerJobType } from '@d8um-ai/core'
+import { GoogleCalendarIntegration } from '@d8um-ai/integration-google-calendar'
 
 for (const job of GoogleCalendarIntegration.jobs) {
   registerJobType(job)

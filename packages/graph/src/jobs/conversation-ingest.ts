@@ -1,4 +1,4 @@
-import type { JobTypeDefinition, JobRunResult, JobRunContext, ConfigField } from '@d8um/core'
+import type { JobTypeDefinition, JobRunResult, JobRunContext, ConfigField } from '@d8um-ai/core'
 
 /**
  * Memory conversation ingest job type definition.

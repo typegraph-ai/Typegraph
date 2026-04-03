@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { EmbeddedGraph } from '../graph/embedded-graph.js'
-import type { d8umIdentity } from '@d8um/core'
+import type { d8umIdentity } from '@d8um-ai/core'
 import type { MemoryStoreAdapter, SemanticEntity, SemanticEdge } from '../index.js'
 import { buildScope } from '../index.js'
 

@@ -1,4 +1,4 @@
-import type { d8umIdentity } from '@d8um/core'
+import type { d8umIdentity } from '@d8um-ai/core'
 import type { SemanticFact } from '../types/memory.js'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
 import type { LLMProvider } from './llm-provider.js'

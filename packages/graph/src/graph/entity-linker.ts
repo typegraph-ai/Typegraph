@@ -1,5 +1,5 @@
-import type { d8umIdentity } from '@d8um/core'
-import type { EmbeddingProvider } from '@d8um/core'
+import type { d8umIdentity } from '@d8um-ai/core'
+import type { EmbeddingProvider } from '@d8um-ai/core'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
 import type { SemanticEntity, SemanticEdge } from '../types/memory.js'
 import { randomUUID } from 'crypto'

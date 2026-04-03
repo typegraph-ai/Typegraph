@@ -1,18 +1,18 @@
-# @d8um/integration-gmail
+# @d8um-ai/integration-gmail
 
 Gmail integration for d8um - sync messages, threads, and labels into your sources.
 
 ## Install
 
 ```bash
-npm install @d8um/integration-gmail
+npm install @d8um-ai/integration-gmail
 ```
 
 ## Register
 
 ```ts
-import { registerJobType } from '@d8um/core'
-import { GmailIntegration } from '@d8um/integration-gmail'
+import { registerJobType } from '@d8um-ai/core'
+import { GmailIntegration } from '@d8um-ai/integration-gmail'
 
 for (const job of GmailIntegration.jobs) {
   registerJobType(job)

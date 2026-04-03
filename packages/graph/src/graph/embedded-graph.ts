@@ -1,4 +1,4 @@
-import type { d8umIdentity } from '@d8um/core'
+import type { d8umIdentity } from '@d8um-ai/core'
 import type { SemanticEntity, SemanticEdge } from '../types/index.js'
 import { isActiveAt } from '../temporal.js'
 import type { MemoryStoreAdapter } from '../types/adapter.js'

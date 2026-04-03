@@ -1,4 +1,4 @@
-# @d8um/adapter-sqlite-vec
+# @d8um-ai/adapter-sqlite-vec
 
 SQLite + [sqlite-vec](https://github.com/asg017/sqlite-vec) adapter for d8um. Zero-infra local development with a single-file database, WAL mode, and KNN search via sqlite-vec virtual tables.
 
@@ -7,14 +7,14 @@ Ideal for prototyping, local agents, and environments where you don't want to ru
 ## Install
 
 ```bash
-npm install @d8um/adapter-sqlite-vec @d8um/core
+npm install @d8um-ai/adapter-sqlite-vec @d8um-ai/core
 ```
 
 ## Usage
 
 ```ts
-import { SqliteVecAdapter } from '@d8um/adapter-sqlite-vec'
-import { d8um } from '@d8um/core'
+import { SqliteVecAdapter } from '@d8um-ai/adapter-sqlite-vec'
+import { d8um } from '@d8um-ai/core'
 
 const adapter = new SqliteVecAdapter({ dbPath: './my-agent.db' })
 

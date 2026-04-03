@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ApiClient } from '@d8um/core'
+import type { ApiClient } from '@d8um-ai/core'
 import { LinearIssueSchema } from '../models.js'
 
 export const ListIssuesInput = z.object({

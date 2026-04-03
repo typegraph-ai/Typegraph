@@ -1,18 +1,18 @@
-# @d8um/integration-gong
+# @d8um-ai/integration-gong
 
 Gong integration for d8um - sync calls, transcripts, and users into your sources.
 
 ## Install
 
 ```bash
-npm install @d8um/integration-gong
+npm install @d8um-ai/integration-gong
 ```
 
 ## Register
 
 ```ts
-import { registerJobType } from '@d8um/core'
-import { GongIntegration } from '@d8um/integration-gong'
+import { registerJobType } from '@d8um-ai/core'
+import { GongIntegration } from '@d8um-ai/integration-gong'
 
 for (const job of GongIntegration.jobs) {
   registerJobType(job)

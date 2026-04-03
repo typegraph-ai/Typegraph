@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ApiClient } from '@d8um/core'
+import type { ApiClient } from '@d8um-ai/core'
 
 export const QueryRecordsInput = z.object({
   soql: z.string().describe('SOQL query string (e.g. "SELECT Id, Name FROM Account LIMIT 10")'),

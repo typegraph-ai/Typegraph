@@ -1,4 +1,4 @@
-import type { IntegrationDefinition } from '@d8um/integration-core'
+import type { IntegrationDefinition } from '@d8um-ai/integration-core'
 import { eventsJob } from './jobs/events.js'
 
 export const GoogleCalendarIntegration: IntegrationDefinition = {

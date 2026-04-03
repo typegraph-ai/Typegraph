@@ -1,4 +1,4 @@
-import type { JobTypeDefinition, JobRunContext, RawDocument, JobRunResult } from '@d8um/core'
+import type { JobTypeDefinition, JobRunContext, RawDocument, JobRunResult } from '@d8um-ai/core'
 
 /**
  * Fetches call transcripts from a Gong workspace incrementally.

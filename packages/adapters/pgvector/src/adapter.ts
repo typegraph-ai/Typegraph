@@ -1,9 +1,9 @@
-import type { VectorStoreAdapter, SearchOpts, ScoredChunkWithDocument, UndeployResult } from '@d8um/core'
-import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '@d8um/core'
-import type { d8umDocument, DocumentFilter, DocumentStatus, UpsertDocumentInput } from '@d8um/core'
-import type { Bucket } from '@d8um/core'
-import type { Job, JobRun } from '@d8um/core'
-import type { DocumentJobRelation, DocumentJobRelationFilter } from '@d8um/core'
+import type { VectorStoreAdapter, SearchOpts, ScoredChunkWithDocument, UndeployResult } from '@d8um-ai/core'
+import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '@d8um-ai/core'
+import type { d8umDocument, DocumentFilter, DocumentStatus, UpsertDocumentInput } from '@d8um-ai/core'
+import type { Bucket } from '@d8um-ai/core'
+import type { Job, JobRun } from '@d8um-ai/core'
+import type { DocumentJobRelation, DocumentJobRelationFilter } from '@d8um-ai/core'
 import {
   REGISTRY_SQL, MODEL_TABLE_SQL, HASH_TABLE_SQL, DOCUMENTS_TABLE_SQL,
   BUCKETS_TABLE_SQL, JOBS_TABLE_SQL, JOB_RUNS_TABLE_SQL, DOCUMENT_JOB_RELATIONS_TABLE_SQL,

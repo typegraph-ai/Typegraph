@@ -1,11 +1,11 @@
-# @d8um/integration-core
+# @d8um-ai/integration-core
 
 Shared types and interfaces for building d8um integrations.
 
 ## Install
 
 ```bash
-npm install @d8um/integration-core
+npm install @d8um-ai/integration-core
 ```
 
 ## IntegrationDefinition
@@ -13,7 +13,7 @@ npm install @d8um/integration-core
 Every integration package exports a single `IntegrationDefinition` - the manifest that describes the integration and its capabilities.
 
 ```ts
-import type { IntegrationDefinition } from '@d8um/integration-core'
+import type { IntegrationDefinition } from '@d8um-ai/integration-core'
 
 const MyIntegration: IntegrationDefinition = {
   id: 'my-service',

@@ -17,8 +17,8 @@
  */
 
 import { neon } from '@neondatabase/serverless'
-import { PgMemoryStoreAdapter, createGraphBridge } from '@d8um/graph'
-import type { d8umIdentity } from '@d8um/core'
+import { PgMemoryStoreAdapter, createGraphBridge } from '@d8um-ai/graph'
+import type { d8umIdentity } from '@d8um-ai/core'
 
 // ── Config ──
 

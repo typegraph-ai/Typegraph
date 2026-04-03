@@ -6,7 +6,7 @@
  */
 
 import { neon } from '@neondatabase/serverless'
-import { PgVectorAdapter } from '@d8um/adapter-pgvector'
+import { PgVectorAdapter } from '@d8um-ai/adapter-pgvector'
 
 export function createBenchmarkAdapter(tablePrefix?: string) {
   const databaseUrl = process.env.NEON_DATABASE_URL

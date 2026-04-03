@@ -2,7 +2,7 @@ import type { d8umIdentity } from './identity.js'
 
 /**
  * Structural interface for the graph/memory bridge.
- * Core does NOT depend on @d8um/graph — this interface uses pure structural typing.
+ * Core does NOT depend on @d8um-ai/graph — this interface uses pure structural typing.
  * The graph package provides a factory that returns an object matching this shape.
  */
 export interface GraphBridge {

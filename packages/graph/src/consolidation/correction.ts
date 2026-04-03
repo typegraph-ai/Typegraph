@@ -1,6 +1,6 @@
-import type { LLMProvider } from '@d8um/core'
+import type { LLMProvider } from '@d8um-ai/core'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
-import type { d8umIdentity } from '@d8um/core'
+import type { d8umIdentity } from '@d8um-ai/core'
 import type { SemanticFact } from '../types/index.js'
 import { invalidateRecord, createTemporal } from '../temporal.js'
 import { randomUUID } from 'crypto'

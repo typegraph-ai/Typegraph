@@ -137,7 +137,7 @@ const response = await d8um.searchWithContext('SSO configuration', {
 **Core modules:**
 
 ```
-@d8um/core
+@d8um-ai/core
 +-- d8um()              Main orchestrator, per-source embedding resolution
 +-- embedding/
 |   +-- provider.ts     EmbeddingProvider interface
@@ -148,8 +148,8 @@ const response = await d8um.searchWithContext('SSO configuration', {
 +-- assemble()          Format results for prompt injection
 +-- types/              Full TypeScript type system
 
-@d8um/adapter-*         Swappable vector store backends (per-model table isolation)
-@d8um/integration-*     Modular 3rd party integrations (Slack, HubSpot, Google Drive, etc.)
+@d8um-ai/adapter-*         Swappable vector store backends (per-model table isolation)
+@d8um-ai/integration-*     Modular 3rd party integrations (Slack, HubSpot, Google Drive, etc.)
 ```
 
 ## Embedding Providers

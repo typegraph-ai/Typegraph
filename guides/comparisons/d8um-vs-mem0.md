@@ -11,7 +11,7 @@
 | Dimension | d8um | Mem0 (TypeScript SDK) |
 |---|---|---|
 | **Primary language** | TypeScript-native | Python-first; TS SDK is a port |
-| **npm package** | `@d8um/core` + composable packages | `mem0ai` (single package) |
+| **npm package** | `@d8um-ai/core` + composable packages | `mem0ai` (single package) |
 | **GitHub stars** | Early-stage (alpha) | ~51.2K |
 | **Funding** | N/A | $24M (October 2025) |
 | **License** | MIT | Apache 2.0 |
@@ -131,8 +131,8 @@ Mem0 Memory instance
 
 | Integration | d8um | Mem0 TS SDK |
 |---|---|---|
-| **MCP server** | Yes (`@d8um/mcp-server`) - 6 tools: remember, recall, recall_facts, forget, correct, add_conversation | OpenMemory MCP Server (local-first, dashboard UI, works with Cursor/VS Code/Claude Desktop) |
-| **Vercel AI SDK** | Yes (`@d8um/vercel-ai-provider`) - memory tools + auto-context middleware | Yes (`@mem0/vercel-ai-provider`) |
+| **MCP server** | Yes (`@d8um-ai/mcp-server`) - 6 tools: remember, recall, recall_facts, forget, correct, add_conversation | OpenMemory MCP Server (local-first, dashboard UI, works with Cursor/VS Code/Claude Desktop) |
+| **Vercel AI SDK** | Yes (`@d8um-ai/vercel-ai-provider`) - memory tools + auto-context middleware | Yes (`@mem0/vercel-ai-provider`) |
 | **LangChain** | No built-in integration | Yes (Python; limited TS) |
 | **CrewAI** | No | Yes (Python) |
 | **OpenAI Agents SDK** | No | Yes (Python) |
@@ -154,8 +154,8 @@ Mem0 Memory instance
 
 **d8um:**
 ```ts
-import { d8umCreate } from '@d8um/core'
-import { createGraphBridge } from '@d8um/graph'
+import { d8umCreate } from '@d8um-ai/core'
+import { createGraphBridge } from '@d8um-ai/graph'
 
 const d = await d8umCreate({ vectorStore, embedding, llm, graph })
 

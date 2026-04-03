@@ -1,5 +1,5 @@
-import type { LLMProvider } from '@d8um/core'
-import type { d8umIdentity } from '@d8um/core'
+import type { LLMProvider } from '@d8um-ai/core'
+import type { d8umIdentity } from '@d8um-ai/core'
 import type { MemoryRecord } from '../types/index.js'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
 import { findDecayedMemories, type DecayConfig, DEFAULT_DECAY_CONFIG } from './decay.js'

@@ -2,13 +2,13 @@
  * PostgreSQL + pgvector implementation of MemoryStoreAdapter.
  * Provides persistent storage for memories, semantic entities, and edges.
  *
- * Uses the same SqlExecutor pattern as @d8um/adapter-pgvector for
+ * Uses the same SqlExecutor pattern as @d8um-ai/adapter-pgvector for
  * driver-agnostic Postgres access (Neon, node-postgres, Drizzle, etc.).
  */
 
 import type { MemoryStoreAdapter, MemoryFilter, MemorySearchOpts } from '../types/adapter.js'
 import type { MemoryRecord, SemanticEntity, SemanticEdge } from '../types/memory.js'
-import type { d8umIdentity } from '@d8um/core'
+import type { d8umIdentity } from '@d8um-ai/core'
 
 type SqlExecutor = (
   query: string,

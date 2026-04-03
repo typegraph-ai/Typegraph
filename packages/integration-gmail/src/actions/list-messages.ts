@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ApiClient } from '@d8um/core'
+import type { ApiClient } from '@d8um-ai/core'
 import { GmailMessageSchema } from '../models.js'
 
 export const ListMessagesInput = z.object({

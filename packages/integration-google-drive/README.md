@@ -1,18 +1,18 @@
-# @d8um/integration-google-drive
+# @d8um-ai/integration-google-drive
 
 Google Drive integration for d8um - sync files and folders into your sources.
 
 ## Install
 
 ```bash
-npm install @d8um/integration-google-drive
+npm install @d8um-ai/integration-google-drive
 ```
 
 ## Register
 
 ```ts
-import { registerJobType } from '@d8um/core'
-import { GoogleDriveIntegration } from '@d8um/integration-google-drive'
+import { registerJobType } from '@d8um-ai/core'
+import { GoogleDriveIntegration } from '@d8um-ai/integration-google-drive'
 
 for (const job of GoogleDriveIntegration.jobs) {
   registerJobType(job)

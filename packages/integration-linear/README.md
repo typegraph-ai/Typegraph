@@ -1,18 +1,18 @@
-# @d8um/integration-linear
+# @d8um-ai/integration-linear
 
 Linear integration for d8um - sync issues, projects, and teams into your sources.
 
 ## Install
 
 ```bash
-npm install @d8um/integration-linear
+npm install @d8um-ai/integration-linear
 ```
 
 ## Register
 
 ```ts
-import { registerJobType } from '@d8um/core'
-import { LinearIntegration } from '@d8um/integration-linear'
+import { registerJobType } from '@d8um-ai/core'
+import { LinearIntegration } from '@d8um-ai/integration-linear'
 
 for (const job of LinearIntegration.jobs) {
   registerJobType(job)

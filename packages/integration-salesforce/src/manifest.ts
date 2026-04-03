@@ -1,4 +1,4 @@
-import type { IntegrationDefinition } from '@d8um/integration-core'
+import type { IntegrationDefinition } from '@d8um-ai/integration-core'
 import { contactsJob } from './jobs/contacts.js'
 import { accountsJob } from './jobs/accounts.js'
 import { opportunitiesJob } from './jobs/opportunities.js'

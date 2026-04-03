@@ -1,4 +1,4 @@
-import type { d8umIdentity, Visibility } from '@d8um/core'
+import type { d8umIdentity, Visibility } from '@d8um-ai/core'
 import type {
   MemoryRecord,
   MemoryCategory,
@@ -43,7 +43,7 @@ export interface MemorySearchOpts {
 
 // ── Memory Store Adapter ──
 // Persistence layer for memory records. Follows the same adapter pattern
-// as VectorStoreAdapter in @d8um/core.
+// as VectorStoreAdapter in @d8um-ai/core.
 
 export interface MemoryStoreAdapter {
   initialize(): Promise<void>

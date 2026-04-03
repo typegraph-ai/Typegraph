@@ -1,6 +1,6 @@
-import type { EmbeddingProvider, LLMProvider } from '@d8um/core'
+import type { EmbeddingProvider, LLMProvider } from '@d8um-ai/core'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
-import type { d8umIdentity } from '@d8um/core'
+import type { d8umIdentity } from '@d8um-ai/core'
 import type { EpisodicMemory, SemanticFact, ProceduralMemory } from '../types/index.js'
 import type { EmbeddedGraph } from '../graph/embedded-graph.js'
 

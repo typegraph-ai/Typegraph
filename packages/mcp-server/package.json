@@ -1,5 +1,5 @@
 {
-  "name": "@d8um/mcp-server",
+  "name": "@d8um-ai/mcp-server",
   "version": "0.1.0",
   "description": "MCP server exposing d8um cognitive memory as tools and resources for AI agents",
   "type": "module",
@@ -19,7 +19,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@d8um/graph": "workspace:*"
+    "@d8um-ai/graph": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

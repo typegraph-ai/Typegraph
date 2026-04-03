@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ApiClient } from '@d8um/core'
+import type { ApiClient } from '@d8um-ai/core'
 
 export const FetchCallTranscriptsInput = z.object({
   callIds: z.array(z.string()).describe('List of Gong call IDs to fetch transcripts for'),

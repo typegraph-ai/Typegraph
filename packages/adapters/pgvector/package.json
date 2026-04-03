@@ -1,5 +1,5 @@
 {
-  "name": "@d8um/adapter-pgvector",
+  "name": "@d8um-ai/adapter-pgvector",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -15,10 +15,13 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@d8um/core": "workspace:*"
+    "@d8um-ai/core": "workspace:*"
   },
   "peerDependencies": {
-    "@d8um/core": "workspace:*"
+    "@d8um-ai/core": "workspace:*"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   },
   "devDependencies": {
     "typescript": "^5.4.0"

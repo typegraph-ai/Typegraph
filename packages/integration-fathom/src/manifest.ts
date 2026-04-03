@@ -1,4 +1,4 @@
-import type { IntegrationDefinition } from '@d8um/integration-core'
+import type { IntegrationDefinition } from '@d8um-ai/integration-core'
 import { callsJob } from './jobs/calls.js'
 
 export const FathomIntegration: IntegrationDefinition = {

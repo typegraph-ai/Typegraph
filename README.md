@@ -38,12 +38,12 @@ d8um closes that gap:
 **Prerequisites:** A [Neon](https://neon.tech) Postgres database. `deploy()` automatically enables the pgvector extension and creates all required tables.
 
 ```bash
-npm install @d8um/core @d8um/adapter-pgvector @ai-sdk/gateway @neondatabase/serverless
+npm install @d8um-ai/core @d8um-ai/adapter-pgvector @ai-sdk/gateway @neondatabase/serverless
 ```
 
 ```ts
-import { d8um } from '@d8um/core'
-import { PgVectorAdapter } from '@d8um/adapter-pgvector'
+import { d8um } from '@d8um-ai/core'
+import { PgVectorAdapter } from '@d8um-ai/adapter-pgvector'
 import { gateway } from '@ai-sdk/gateway'
 import { neon } from '@neondatabase/serverless'
 
@@ -104,8 +104,8 @@ For local development or scripts, `d8umCreate(config)` is a convenience that cal
 d8um includes a **cognitive memory system** inspired by human memory. Memory operations live directly on the d8um singleton - identity is per-call, Segment-style:
 
 ```ts
-import { d8umCreate, aiSdkLlmProvider } from '@d8um/core'
-import { createGraphBridge } from '@d8um/graph'
+import { d8umCreate, aiSdkLlmProvider } from '@d8um-ai/core'
+import { createGraphBridge } from '@d8um-ai/graph'
 import { gateway } from '@ai-sdk/gateway'
 
 const llm = aiSdkLlmProvider({ model: gateway('openai/gpt-5.4-mini') })
@@ -133,7 +133,7 @@ await d.addConversationTurn(messages, { userId: 'alice' })
 Memory operations are also schedulable jobs:
 
 ```ts
-import { registerConsolidationJobs } from '@d8um/graph'
+import { registerConsolidationJobs } from '@d8um-ai/graph'
 registerConsolidationJobs()
 
 d.jobs.create({ type: 'memory_consolidation', schedule: '0 3 * * *' })
@@ -228,14 +228,14 @@ d8um overall ACC (58.4%) is statistically significant over HippoRAG2 (56.5%) at 
 | Package                                                                     | Description                                                           | Status |
 | --------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------ |
 | **Core**                                                                    |                                                                       |        |
-| `[@d8um/core](packages/core)`                                               | Query engine, index engine, job registry, built-in jobs               | Alpha  |
-| `[@d8um/adapter-pgvector](packages/adapters/pgvector)`                      | PostgreSQL + pgvector storage                                         | Alpha  |
-| `[@d8um/adapter-sqlite-vec](packages/adapters/sqlite-vec)`                  | SQLite + sqlite-vec - local dev / edge                                | Alpha  |
-| `[@d8um/hosted](packages/hosted)`                                           | Hosted client SDK                                                     | Alpha  |
+| `[@d8um-ai/core](packages/core)`                                               | Query engine, index engine, job registry, built-in jobs               | Alpha  |
+| `[@d8um-ai/adapter-pgvector](packages/adapters/pgvector)`                      | PostgreSQL + pgvector storage                                         | Alpha  |
+| `[@d8um-ai/adapter-sqlite-vec](packages/adapters/sqlite-vec)`                  | SQLite + sqlite-vec - local dev / edge                                | Alpha  |
+| `[@d8um-ai/hosted](packages/hosted)`                                           | Hosted client SDK                                                     | Alpha  |
 | **Graph + Memory**                                                          |                                                                       |        |
-| `[@d8um/graph](packages/graph)`                                             | Knowledge graph, cognitive memory, PPR, entity linking, consolidation | Alpha  |
-| `[@d8um/mcp-server](packages/mcp-server)`                                   | MCP tools + resources for agent frameworks                            | Alpha  |
-| `[@d8um/vercel-ai-provider](packages/vercel-ai-provider)`                   | Vercel AI SDK memory tools + middleware                               | Alpha  |
+| `[@d8um-ai/graph](packages/graph)`                                             | Knowledge graph, cognitive memory, PPR, entity linking, consolidation | Alpha  |
+| `[@d8um-ai/mcp-server](packages/mcp-server)`                                   | MCP tools + resources for agent frameworks                            | Alpha  |
+| `[@d8um-ai/vercel-ai-provider](packages/vercel-ai-provider)`                   | Vercel AI SDK memory tools + middleware                               | Alpha  |
 
 
 ## Guides

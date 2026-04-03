@@ -154,7 +154,7 @@ Edge invalidation follows Graphiti's approach: when a new fact contradicts an ex
 
 ## Consolidation, Decay, and Forgetting
 
-The `@d8um/graph` package provides lifecycle management:
+The `@d8um-ai/graph` package provides lifecycle management:
 
 - **Consolidation** promotes episodic memories to semantic facts when patterns emerge from repeated observations
 - **Decay** reduces the effective priority of memories based on access frequency, age, and importance
@@ -184,7 +184,7 @@ const context = await memory.assembleContext('user preferences')
 Schedulable, automated memory operations:
 
 ```ts
-import { registerConsolidationJobs } from '@d8um/graph'
+import { registerConsolidationJobs } from '@d8um-ai/graph'
 registerConsolidationJobs()
 
 // Schedule nightly consolidation
@@ -217,9 +217,9 @@ Scoping uses subset filtering: a query for `{ groupId: 'team-alpha' }` matches r
 
 ## MCP Server and Vercel AI SDK Integration
 
-`@d8um/mcp-server` exposes memory operations as MCP tools (`d8um_remember`, `d8um_recall`, `d8um_correct`), making d8um memory accessible to any MCP-compatible agent.
+`@d8um-ai/mcp-server` exposes memory operations as MCP tools (`d8um_remember`, `d8um_recall`, `d8um_correct`), making d8um memory accessible to any MCP-compatible agent.
 
-`@d8um/vercel-ai-provider` provides memory tools and middleware for the Vercel AI SDK, enabling seamless integration with `generateText()`, `streamText()`, and the AI SDK's tool system.
+`@d8um-ai/vercel-ai-provider` provides memory tools and middleware for the Vercel AI SDK, enabling seamless integration with `generateText()`, `streamText()`, and the AI SDK's tool system.
 
 ## Context Assembly
 

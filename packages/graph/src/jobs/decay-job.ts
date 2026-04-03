@@ -1,4 +1,4 @@
-import type { JobTypeDefinition, JobRunContext, JobRunResult } from '@d8um/core'
+import type { JobTypeDefinition, JobRunContext, JobRunResult } from '@d8um-ai/core'
 
 export const memoryDecayJob: JobTypeDefinition = {
   type: 'memory_decay',

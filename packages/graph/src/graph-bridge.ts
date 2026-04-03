@@ -1,5 +1,5 @@
-import type { EmbeddingProvider, d8umIdentity, LLMProvider } from '@d8um/core'
-import type { GraphBridge } from '@d8um/core'
+import type { EmbeddingProvider, d8umIdentity, LLMProvider } from '@d8um-ai/core'
+import type { GraphBridge } from '@d8um-ai/core'
 import type { MemoryStoreAdapter } from './types/adapter.js'
 import type { SemanticEdge } from './types/memory.js'
 import type { ConversationMessage } from './extraction/extractor.js'

@@ -1,4 +1,4 @@
-import type { d8umIdentity, Visibility } from '@d8um/core'
+import type { d8umIdentity, Visibility } from '@d8um-ai/core'
 
 // ── Memory Categories ──
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { PredicateNormalizer } from '../extraction/predicate-normalizer.js'
-import type { EmbeddingProvider } from '@d8um/core'
+import type { EmbeddingProvider } from '@d8um-ai/core'
 
 /** Returns a mock embedding provider where each call returns a unique vector. */
 function mockEmbedding(): EmbeddingProvider {

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { EntityResolver } from '../extraction/entity-resolver.js'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
-import type { EmbeddingProvider } from '@d8um/core'
+import type { EmbeddingProvider } from '@d8um-ai/core'
 import type { SemanticEntity } from '../types/memory.js'
 import { buildScope } from '../types/scope.js'
 

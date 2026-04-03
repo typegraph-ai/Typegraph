@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ApiClient } from '@d8um/core'
+import type { ApiClient } from '@d8um-ai/core'
 
 export const ListCallsInput = z.object({
   limit: z.number().optional().describe('Maximum number of calls to return'),

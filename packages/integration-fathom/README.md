@@ -1,18 +1,18 @@
-# @d8um/integration-fathom
+# @d8um-ai/integration-fathom
 
 Fathom integration for d8um - sync call recordings and transcripts into your sources.
 
 ## Install
 
 ```bash
-npm install @d8um/integration-fathom
+npm install @d8um-ai/integration-fathom
 ```
 
 ## Register
 
 ```ts
-import { registerJobType } from '@d8um/core'
-import { FathomIntegration } from '@d8um/integration-fathom'
+import { registerJobType } from '@d8um-ai/core'
+import { FathomIntegration } from '@d8um-ai/integration-fathom'
 
 for (const job of FathomIntegration.jobs) {
   registerJobType(job)

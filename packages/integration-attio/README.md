@@ -1,18 +1,18 @@
-# @d8um/integration-attio
+# @d8um-ai/integration-attio
 
 Attio integration for d8um - sync contacts, companies, and tasks into your sources.
 
 ## Install
 
 ```bash
-npm install @d8um/integration-attio
+npm install @d8um-ai/integration-attio
 ```
 
 ## Register
 
 ```ts
-import { registerJobType } from '@d8um/core'
-import { AttioIntegration } from '@d8um/integration-attio'
+import { registerJobType } from '@d8um-ai/core'
+import { AttioIntegration } from '@d8um-ai/integration-attio'
 
 for (const job of AttioIntegration.jobs) {
   registerJobType(job)

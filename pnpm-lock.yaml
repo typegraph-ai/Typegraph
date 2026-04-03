@@ -29,7 +29,7 @@ importers:
 
   packages/adapters/pgvector:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../../core
     devDependencies:
@@ -39,7 +39,7 @@ importers:
 
   packages/adapters/sqlite-vec:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../../core
       better-sqlite3:
@@ -80,7 +80,7 @@ importers:
 
   packages/graph:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -91,22 +91,12 @@ importers:
         specifier: ^1.0.0
         version: 1.6.1(@types/node@20.19.37)
 
-  packages/hosted:
-    dependencies:
-      '@d8um/core':
-        specifier: workspace:*
-        version: link:../core
-    devDependencies:
-      typescript:
-        specifier: ^5.4.0
-        version: 5.9.3
-
   packages/integration-attio:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@d8um/integration-core':
+      '@d8um-ai/integration-core':
         specifier: workspace:*
         version: link:../integration-core
       zod:
@@ -119,7 +109,7 @@ importers:
 
   packages/integration-core:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../core
       zod:
@@ -132,10 +122,10 @@ importers:
 
   packages/integration-fathom:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@d8um/integration-core':
+      '@d8um-ai/integration-core':
         specifier: workspace:*
         version: link:../integration-core
       zod:
@@ -148,10 +138,10 @@ importers:
 
   packages/integration-gmail:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@d8um/integration-core':
+      '@d8um-ai/integration-core':
         specifier: workspace:*
         version: link:../integration-core
       zod:
@@ -164,10 +154,10 @@ importers:
 
   packages/integration-gong:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@d8um/integration-core':
+      '@d8um-ai/integration-core':
         specifier: workspace:*
         version: link:../integration-core
       zod:
@@ -180,10 +170,10 @@ importers:
 
   packages/integration-google-calendar:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@d8um/integration-core':
+      '@d8um-ai/integration-core':
         specifier: workspace:*
         version: link:../integration-core
       zod:
@@ -196,10 +186,10 @@ importers:
 
   packages/integration-google-drive:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@d8um/integration-core':
+      '@d8um-ai/integration-core':
         specifier: workspace:*
         version: link:../integration-core
       zod:
@@ -212,10 +202,10 @@ importers:
 
   packages/integration-hubspot:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@d8um/integration-core':
+      '@d8um-ai/integration-core':
         specifier: workspace:*
         version: link:../integration-core
       zod:
@@ -228,10 +218,10 @@ importers:
 
   packages/integration-linear:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@d8um/integration-core':
+      '@d8um-ai/integration-core':
         specifier: workspace:*
         version: link:../integration-core
       zod:
@@ -244,10 +234,10 @@ importers:
 
   packages/integration-salesforce:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@d8um/integration-core':
+      '@d8um-ai/integration-core':
         specifier: workspace:*
         version: link:../integration-core
       zod:
@@ -260,10 +250,10 @@ importers:
 
   packages/integration-slack:
     dependencies:
-      '@d8um/core':
+      '@d8um-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@d8um/integration-core':
+      '@d8um-ai/integration-core':
         specifier: workspace:*
         version: link:../integration-core
       zod:
@@ -276,7 +266,7 @@ importers:
 
   packages/mcp-server:
     dependencies:
-      '@d8um/graph':
+      '@d8um-ai/graph':
         specifier: workspace:*
         version: link:../graph
     devDependencies:
@@ -289,7 +279,7 @@ importers:
 
   packages/vercel-ai-provider:
     dependencies:
-      '@d8um/graph':
+      '@d8um-ai/graph':
         specifier: workspace:*
         version: link:../graph
     devDependencies:

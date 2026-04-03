@@ -1,4 +1,4 @@
-import type { RawDocument } from '@d8um/core'
+import type { RawDocument } from '@d8um-ai/core'
 import type { GoogleRawCalendarEvent } from '../types.js'
 import type { GoogleCalendarEvent } from '../models.js'
 

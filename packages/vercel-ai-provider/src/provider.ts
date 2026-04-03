@@ -1,4 +1,4 @@
-import type { d8umMemory } from '@d8um/graph'
+import type { d8umMemory } from '@d8um-ai/graph'
 
 // ── Tool Definition ──
 // Structural type matching Vercel AI SDK's tool definition pattern.
@@ -16,7 +16,7 @@ export interface ToolDefinition {
  * Usage with Vercel AI SDK:
  * ```ts
  * import { generateText } from 'ai'
- * import { d8umMemoryTools } from '@d8um/vercel-ai-provider'
+ * import { d8umMemoryTools } from '@d8um-ai/vercel-ai-provider'
  *
  * const tools = d8umMemoryTools(memory)
  * const { text } = await generateText({

@@ -1,5 +1,5 @@
-import type { EmbeddingProvider } from '@d8um/core'
-import type { d8umIdentity } from '@d8um/core'
+import type { EmbeddingProvider } from '@d8um-ai/core'
+import type { d8umIdentity } from '@d8um-ai/core'
 import type { EpisodicMemory, SemanticFact } from '../types/memory.js'
 import type { LLMProvider } from './llm-provider.js'
 import { factExtractionPrompt, conflictResolutionPrompt } from './prompts.js'

@@ -1,4 +1,4 @@
-import type { d8umMemory } from '@d8um/graph'
+import type { d8umMemory } from '@d8um-ai/graph'
 
 // ── MCP Tool Definitions ──
 // These define the tools that the MCP server exposes to AI agents.

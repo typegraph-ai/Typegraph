@@ -1,4 +1,4 @@
-import type { RawDocument } from '@d8um/core'
+import type { RawDocument } from '@d8um-ai/core'
 import type { LinearRawIssue } from '../types.js'
 import type { LinearIssue } from '../models.js'
 

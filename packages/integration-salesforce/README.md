@@ -1,18 +1,18 @@
-# @d8um/integration-salesforce
+# @d8um-ai/integration-salesforce
 
 Salesforce integration for d8um - sync contacts, accounts, opportunities, and leads into your sources.
 
 ## Install
 
 ```bash
-npm install @d8um/integration-salesforce
+npm install @d8um-ai/integration-salesforce
 ```
 
 ## Register
 
 ```ts
-import { registerJobType } from '@d8um/core'
-import { SalesforceIntegration } from '@d8um/integration-salesforce'
+import { registerJobType } from '@d8um-ai/core'
+import { SalesforceIntegration } from '@d8um-ai/integration-salesforce'
 
 for (const job of SalesforceIntegration.jobs) {
   registerJobType(job)

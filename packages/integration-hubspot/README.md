@@ -1,18 +1,18 @@
-# @d8um/integration-hubspot
+# @d8um-ai/integration-hubspot
 
 HubSpot integration for d8um - sync contacts, companies, and deals into your sources.
 
 ## Install
 
 ```bash
-npm install @d8um/integration-hubspot
+npm install @d8um-ai/integration-hubspot
 ```
 
 ## Register
 
 ```ts
-import { registerJobType } from '@d8um/core'
-import { HubSpotIntegration } from '@d8um/integration-hubspot'
+import { registerJobType } from '@d8um-ai/core'
+import { HubSpotIntegration } from '@d8um-ai/integration-hubspot'
 
 for (const job of HubSpotIntegration.jobs) {
   registerJobType(job)

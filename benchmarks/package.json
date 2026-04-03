@@ -4,9 +4,9 @@
   "type": "module",
   "dependencies": {
     "@ai-sdk/gateway": "3.0.83",
-    "@d8um/adapter-pgvector": "file:../packages/adapters/pgvector",
-    "@d8um/core": "file:../packages/core",
-    "@d8um/graph": "file:../packages/graph",
+    "@d8um-ai/adapter-pgvector": "file:../packages/adapters/pgvector",
+    "@d8um-ai/core": "file:../packages/core",
+    "@d8um-ai/graph": "file:../packages/graph",
     "@neondatabase/serverless": "^0.10.0",
     "@vercel/blob": "^2.3.2",
     "ai": "6.0.141",

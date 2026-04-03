@@ -1,17 +1,17 @@
-# @d8um/mcp-server
+# @d8um-ai/mcp-server
 
 MCP server exposing d8um cognitive memory as tools for AI agents.
 
 ## Install
 
 ```bash
-npm install @d8um/mcp-server
+npm install @d8um-ai/mcp-server
 ```
 
 ## Usage
 
 ```ts
-import { getToolDefinitions, executeTool } from '@d8um/mcp-server'
+import { getToolDefinitions, executeTool } from '@d8um-ai/mcp-server'
 
 const tools = getToolDefinitions()
 // => array of MCPToolDefinition schemas
@@ -47,4 +47,4 @@ const result = await executeTool(memory, 'd8um_remember', {
 ## Related
 
 - [d8um main repo](../../README.md)
-- [@d8um/graph](../graph/README.md)
+- [@d8um-ai/graph](../graph/README.md)

@@ -1,11 +1,11 @@
-# @d8um/vercel-ai-provider
+# @d8um-ai/vercel-ai-provider
 
 Vercel AI SDK integration -- memory tools and middleware for auto-context injection.
 
 ## Install
 
 ```bash
-npm install @d8um/vercel-ai-provider
+npm install @d8um-ai/vercel-ai-provider
 ```
 
 ## Usage
@@ -16,7 +16,7 @@ Pass memory tools directly to `generateText()`:
 
 ```ts
 import { generateText } from 'ai'
-import { d8umMemoryTools } from '@d8um/vercel-ai-provider'
+import { d8umMemoryTools } from '@d8um-ai/vercel-ai-provider'
 
 const tools = d8umMemoryTools(memory)
 
@@ -32,7 +32,7 @@ const { text } = await generateText({
 Auto-inject memory context into prompts:
 
 ```ts
-import { d8umMemoryMiddleware } from '@d8um/vercel-ai-provider'
+import { d8umMemoryMiddleware } from '@d8um-ai/vercel-ai-provider'
 
 const middleware = d8umMemoryMiddleware(memory, {
   includeFacts: true,
@@ -60,4 +60,4 @@ Pure structural typing -- no `ai` or `@ai-sdk/*` imports needed.
 ## Related
 
 - [d8um main repo](../../README.md)
-- [@d8um/graph](../graph/README.md)
+- [@d8um-ai/graph](../graph/README.md)

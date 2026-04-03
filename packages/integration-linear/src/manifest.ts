@@ -1,4 +1,4 @@
-import type { IntegrationDefinition } from '@d8um/integration-core'
+import type { IntegrationDefinition } from '@d8um-ai/integration-core'
 import { issuesJob } from './jobs/issues.js'
 
 export const LinearIntegration: IntegrationDefinition = {

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ApiClient } from '@d8um/core'
+import type { ApiClient } from '@d8um-ai/core'
 
 export const SendMessageInput = z.object({
   channel: z.string().describe('Channel ID to send the message to'),

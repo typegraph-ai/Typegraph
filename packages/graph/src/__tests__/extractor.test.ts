@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { MemoryExtractor } from '../extraction/extractor.js'
 import type { LLMProvider } from '../extraction/llm-provider.js'
-import type { EmbeddingProvider } from '@d8um/core'
+import type { EmbeddingProvider } from '@d8um-ai/core'
 import type { SemanticFact } from '../types/memory.js'
 import { buildScope } from '../types/scope.js'
 

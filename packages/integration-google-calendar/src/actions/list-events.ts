@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ApiClient } from '@d8um/core'
+import type { ApiClient } from '@d8um-ai/core'
 import { GoogleCalendarEventSchema } from '../models.js'
 
 export const ListEventsInput = z.object({

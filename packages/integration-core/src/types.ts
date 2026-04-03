@@ -1,4 +1,4 @@
-import type { JobTypeDefinition } from '@d8um/core'
+import type { JobTypeDefinition } from '@d8um-ai/core'
 
 // ── Integration Manifest ──
 

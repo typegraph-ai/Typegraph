@@ -13,7 +13,7 @@
 | **What it is** | TypeScript library (composable SDK) | Full agent runtime / framework |
 | **Primary language** | TypeScript-native | Python-first (99.4%); TS SDK auto-generated via Fern |
 | **Origin** | TypeScript-native design | MemGPT research paper (arXiv:2310.08560, UC Berkeley) |
-| **npm package** | `@d8um/core` + composable packages | `@letta-ai/letta-client` (auto-generated client) |
+| **npm package** | `@d8um-ai/core` + composable packages | `@letta-ai/letta-client` (auto-generated client) |
 | **GitHub stars** | Early-stage (alpha) | ~21.8K |
 | **Funding** | N/A | $10M seed (Felicis); $70M post-money valuation |
 | **License** | MIT | Apache-2.0 |
@@ -33,7 +33,7 @@ d8um runs in-process as an imported TypeScript module. No separate server, no Do
 
 ```
 Your Node.js App
-└── import { d8um } from '@d8um/core'
+└── import { d8um } from '@d8um-ai/core'
     ├── Retrieval Engine (indexed / live / cached sources)
     ├── Cognitive Memory (episodic / semantic / procedural / working)
     ├── Knowledge Graph (entity-relation triples, PPR traversal)
@@ -149,8 +149,8 @@ Your App ──REST──> Letta Server (Docker / Cloud)
 
 | Integration | d8um | Letta |
 |---|---|---|
-| **MCP server** | Yes (`@d8um/mcp-server`) -- 6 memory tools | Yes (MCP support for tool communication) |
-| **Vercel AI SDK** | Yes (`@d8um/vercel-ai-provider`) -- tools + middleware | Yes (`@letta-ai/vercel-ai-sdk-provider`) |
+| **MCP server** | Yes (`@d8um-ai/mcp-server`) -- 6 memory tools | Yes (MCP support for tool communication) |
+| **Vercel AI SDK** | Yes (`@d8um-ai/vercel-ai-provider`) -- tools + middleware | Yes (`@letta-ai/vercel-ai-sdk-provider`) |
 | **LangChain** | No built-in | Yes (tool import support) |
 | **CrewAI** | No | Yes (tool import support) |
 | **Composio** | No | Yes (500+ external tool integrations) |
@@ -177,7 +177,7 @@ Your App ──REST──> Letta Server (Docker / Cloud)
 | **SDK origin** | Built natively in TypeScript | Auto-generated from OpenAPI spec via Fern |
 | **Type safety** | Full generics, structural typing, composable interfaces | Generated types (correct but not idiomatic) |
 | **API style** | Direct function calls (in-process) | HTTP client wrapping REST API calls |
-| **Package design** | Modular monorepo (@d8um/core, @d8um/graph, etc.) | Single client package (@letta-ai/letta-client) |
+| **Package design** | Modular monorepo (@d8um-ai/core, @d8um-ai/graph, etc.) | Single client package (@letta-ai/letta-client) |
 | **Async patterns** | Native async/await, no network overhead | Async/await over HTTP (latency per call) |
 | **Local development** | Zero external dependencies possible (SQLite + local embeddings) | Requires running Letta server (Docker) |
 

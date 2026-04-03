@@ -1,5 +1,5 @@
 {
-  "name": "@d8um/adapter-sqlite-vec",
+  "name": "@d8um-ai/adapter-sqlite-vec",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -15,7 +15,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@d8um/core": "workspace:*",
+    "@d8um-ai/core": "workspace:*",
     "better-sqlite3": "^9.0.0",
     "sqlite-vec": "^0.1.0"
   },

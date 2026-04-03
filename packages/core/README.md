@@ -1,17 +1,17 @@
-# @d8um/core
+# @d8um-ai/core
 
 TypeScript SDK and open protocol for supplying context to LLMs.
 
 ## Install
 
 ```bash
-npm install @d8um/core
+npm install @d8um-ai/core
 ```
 
 ## Usage
 
 ```ts
-import { d8um, registerJobType, assemble } from '@d8um/core'
+import { d8um, registerJobType, assemble } from '@d8um-ai/core'
 
 await d8um.deploy({
   vectorStore: myAdapter,

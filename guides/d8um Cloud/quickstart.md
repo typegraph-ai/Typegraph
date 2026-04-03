@@ -10,13 +10,13 @@ The fastest way to get started with d8um. No infrastructure to manage, no databa
 ## 1) Install
 
 ```bash
-npm install @d8um/core @d8um/hosted
+npm install @d8um-ai/core @d8um-ai/hosted
 ```
 
 ## 2) Initialize
 
 ```ts
-import { d8umHosted } from '@d8um/hosted'
+import { d8umHosted } from '@d8um-ai/hosted'
 
 // Initialize d8um using the d8um api key
 const d8um = d8umHosted({ apiKey: process.env.D8UM_API_KEY! })

@@ -64,7 +64,7 @@ export class GraphRunner {
 
 /**
  * Lightweight PPR implementation for the graph runner.
- * Avoids core depending on @d8um/graph.
+ * Avoids core depending on @d8um-ai/graph.
  */
 function runLightweightPPR(
   adjacency: Map<string, Array<{ target: string; weight: number }>>,

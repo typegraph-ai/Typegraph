@@ -1,4 +1,4 @@
-import { registerJobType } from '@d8um/core'
+import { registerJobType } from '@d8um-ai/core'
 
 // ── Types ──
 
@@ -43,7 +43,7 @@ export type { WorkingMemoryItem, WorkingMemoryConfig } from './working-memory.js
 
 // ── Extraction ──
 
-export type { LLMProvider } from '@d8um/core'
+export type { LLMProvider } from '@d8um-ai/core'
 export { MemoryExtractor } from './extraction/index.js'
 export type {
   ConversationMessage,

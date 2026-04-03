@@ -1,5 +1,5 @@
 {
-  "name": "@d8um/vercel-ai-provider",
+  "name": "@d8um-ai/vercel-ai-provider",
   "version": "0.1.0",
   "description": "Vercel AI SDK integration - memory tools and middleware for auto-context injection",
   "type": "module",
@@ -19,7 +19,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@d8um/graph": "workspace:*"
+    "@d8um-ai/graph": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

@@ -1,4 +1,4 @@
-import type { d8umDocument, DocumentFilter, DocumentStatus, UpsertDocumentInput } from '@d8um/core'
+import type { d8umDocument, DocumentFilter, DocumentStatus, UpsertDocumentInput } from '@d8um-ai/core'
 import type { SqlExecutor } from './adapter.js'
 
 function mapDocRow(row: Record<string, unknown>): d8umDocument {

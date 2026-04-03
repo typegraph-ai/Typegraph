@@ -1,5 +1,5 @@
 {
-  "name": "@d8um/graph",
+  "name": "@d8um-ai/graph",
   "version": "0.1.0",
   "description": "Knowledge graph, cognitive memory, and neural retrieval for d8um - entities, edges, PPR, extraction, consolidation",
   "type": "module",
@@ -19,7 +19,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@d8um/core": "workspace:*"
+    "@d8um-ai/core": "workspace:*"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

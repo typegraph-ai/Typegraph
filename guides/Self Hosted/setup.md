@@ -12,7 +12,7 @@ Full control over your data, embedding models, and infrastructure. You bring the
 
 ```bash
 # Core SDK
-npm install @d8um/core
+npm install @d8um-ai/core
 
 # Pick an embedding provider
 npm install @ai-sdk/openai
@@ -21,15 +21,15 @@ npm install @ai-sdk/openai
 # ... or any other pre-built, or custom embedding providers
 
 # Pick a vector store adapter
-npm install @d8um/adapter-pgvector      # Production - Postgres + pgvector
-# npm install @d8um/adapter-sqlite-vec  # Local dev - zero external dependencies
+npm install @d8um-ai/adapter-pgvector      # Production - Postgres + pgvector
+# npm install @d8um-ai/adapter-sqlite-vec  # Local dev - zero external dependencies
 # ... or any other pre-built, or custom vector store adapters
 
 # Pick integrations (optional - 3rd party connectors)
-#npm install @d8um/integration-core          # Shared integration types
-#npm install @d8um/integration-slack         # Slack messages & channels
-#npm install @d8um/integration-google-drive  # Google Drive files
-#npm install @d8um/integration-hubspot       # HubSpot CRM contacts, companies, deals
+#npm install @d8um-ai/integration-core          # Shared integration types
+#npm install @d8um-ai/integration-slack         # Slack messages & channels
+#npm install @d8um-ai/integration-google-drive  # Google Drive files
+#npm install @d8um-ai/integration-hubspot       # HubSpot CRM contacts, companies, deals
 # ... or any other integration package
 ```
 
@@ -37,8 +37,8 @@ npm install @d8um/adapter-pgvector      # Production - Postgres + pgvector
 
 ```ts
 // d8um specific import stuff
-import { d8um } from '@d8um/core'
-import { PgVectorAdapter } from '@d8um/adapter-pgvector'
+import { d8um } from '@d8um-ai/core'
+import { PgVectorAdapter } from '@d8um-ai/adapter-pgvector'
 
 // Then, these imports here will be specific to your app:
 // i.e. your embedding provider
@@ -228,11 +228,11 @@ const md = d8um.assemble(response.results, { format: 'markdown' })
 You can set a global default embedding model and override it on individual sources. Each model gets its own vector table automatically.
 
 ```ts
-import { d8um } from '@d8um/core'
+import { d8um } from '@d8um-ai/core'
 import { openai } from '@ai-sdk/openai'
 import { cohere } from '@ai-sdk/cohere'
 import { neon } from '@neondatabase/serverless'
-import { PgVectorAdapter } from '@d8um/adapter-pgvector'
+import { PgVectorAdapter } from '@d8um-ai/adapter-pgvector'
 
 const adapter = new PgVectorAdapter({ sql: neon(process.env.DATABASE_URL!) })
 

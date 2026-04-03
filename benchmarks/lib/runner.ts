@@ -5,8 +5,8 @@
  * Each runner still has its own main() — these are helpers, not a framework.
  */
 
-import { d8umCreate, aiSdkLlmProvider } from '@d8um/core'
-import { createGraphBridge, PgMemoryStoreAdapter } from '@d8um/graph'
+import { d8umCreate, aiSdkLlmProvider } from '@d8um-ai/core'
+import { createGraphBridge, PgMemoryStoreAdapter } from '@d8um-ai/graph'
 import { gateway } from '@ai-sdk/gateway'
 import { neon } from '@neondatabase/serverless'
 import { createBenchmarkAdapter } from './adapter.js'

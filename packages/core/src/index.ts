@@ -56,6 +56,7 @@ export type {
   ExtractionConfig,
 } from './types/index.js'
 export { IndexError } from './types/index.js'
+export { D8umError, NotFoundError, NotInitializedError, ConfigError } from './types/index.js'
 
 // Embedding
 export type { EmbeddingProvider } from './embedding/index.js'

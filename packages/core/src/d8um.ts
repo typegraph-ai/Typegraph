@@ -32,6 +32,7 @@ import { TripleExtractor } from './index-engine/triple-extractor.js'
 import { searchWithContext as searchWithContextFn } from './query/context-search.js'
 import { assemble as assembleResults } from './query/assemble.js'
 import { getJobType, registerJobType } from './jobs/registry.js'
+import { NotFoundError, NotInitializedError, ConfigError } from './types/errors.js'
 import { randomUUID } from 'crypto'
 
 /** Union type: pass a native LLMProvider or an AI SDK model wrapped as { model }. */
@@ -74,7 +75,7 @@ export function resolveEmbeddingProvider(config: EmbeddingInput): EmbeddingProvi
   if (isEmbeddingProvider(config)) return config
   if (isAISDKEmbeddingInput(config)) return aiSdkEmbeddingProvider(config)
 
-  throw new Error('Invalid embedding configuration')
+  throw new ConfigError('Invalid embedding configuration')
 }
 
 function isLLMProvider(value: LLMInput): value is LLMProvider {
@@ -85,7 +86,7 @@ export function resolveLLMProvider(config: LLMInput): LLMProvider {
   if (isLLMProvider(config)) return config
   if (isAISDKLLMInput(config)) return aiSdkLlmProvider(config)
 
-  throw new Error('Invalid LLM configuration')
+  throw new ConfigError('Invalid LLM configuration')
 }
 
 // ── Buckets Sub-API ──
@@ -220,7 +221,14 @@ class d8umImpl implements d8umInstance {
 
     list: async (tenantId?: string): Promise<Bucket[]> => {
       if (this.adapter.listBuckets) {
-        return this.adapter.listBuckets(tenantId)
+        const buckets = await this.adapter.listBuckets(tenantId)
+        for (const b of buckets) {
+          this._buckets.set(b.id, b)
+          if (!this.bucketEmbeddings.has(b.id)) {
+            this.bucketEmbeddings.set(b.id, this.defaultEmbedding)
+          }
+        }
+        return buckets
       }
       const all = [...this._buckets.values()]
       if (tenantId) return all.filter(s => s.tenantId === tenantId)
@@ -229,7 +237,7 @@ class d8umImpl implements d8umInstance {
 
     update: async (bucketId: string, input: Partial<Pick<Bucket, 'name' | 'description' | 'status' | 'indexDefaults'>>): Promise<Bucket> => {
       const bucket = await this.buckets.get(bucketId)
-      if (!bucket) throw new Error(`Bucket "${bucketId}" not found`)
+      if (!bucket) throw new NotFoundError('Bucket', bucketId)
       if (input.name !== undefined) bucket.name = input.name
       if (input.description !== undefined) bucket.description = input.description
       if (input.status !== undefined) bucket.status = input.status
@@ -265,13 +273,13 @@ class d8umImpl implements d8umInstance {
       // Validate bucket exists if required
       const bucket = input.bucketId ? await this.buckets.get(input.bucketId) : undefined
       if (input.bucketId && !bucket) {
-        throw new Error(`Bucket "${input.bucketId}" not found`)
+        throw new NotFoundError('Bucket', input.bucketId)
       }
 
       // Validate job type exists and check bucket requirement
       const jobType = getJobType(input.type)
       if (jobType?.requiresBucket && !input.bucketId) {
-        throw new Error(`Job type "${input.type}" requires a bucketId`)
+        throw new ConfigError(`Job type "${input.type}" requires a bucketId`)
       }
 
       const now = new Date()
@@ -298,14 +306,20 @@ class d8umImpl implements d8umInstance {
 
     get: async (jobId: string): Promise<Job | undefined> => {
       if (this.adapter.getJob) {
-        return (await this.adapter.getJob(jobId)) ?? undefined
+        const job = await this.adapter.getJob(jobId)
+        if (job) this._jobs.set(job.id, job)
+        return job ?? undefined
       }
       return this._jobs.get(jobId)
     },
 
     list: async (filter?: { bucketId?: string; type?: string; tenantId?: string }): Promise<Job[]> => {
       if (this.adapter.listJobs) {
-        return this.adapter.listJobs(filter)
+        const jobs = await this.adapter.listJobs(filter)
+        for (const j of jobs) {
+          this._jobs.set(j.id, j)
+        }
+        return jobs
       }
       let jobs = [...this._jobs.values()]
       if (filter?.bucketId) jobs = jobs.filter(j => j.bucketId === filter.bucketId)
@@ -316,7 +330,7 @@ class d8umImpl implements d8umInstance {
 
     update: async (jobId: string, input: Partial<Pick<Job, 'name' | 'description' | 'config' | 'schedule' | 'status'>>): Promise<Job> => {
       const job = await this.jobs.get(jobId)
-      if (!job) throw new Error(`Job "${jobId}" not found`)
+      if (!job) throw new NotFoundError('Job', jobId)
       if (input.name !== undefined) job.name = input.name
       if (input.description !== undefined) job.description = input.description
       if (input.config !== undefined) job.config = input.config
@@ -341,7 +355,10 @@ class d8umImpl implements d8umInstance {
             await this.adapter.deleteDocuments({ documentIds: orphanedIds })
           }
         } else {
-          // Fallback: in-memory cascade check
+          // Refresh relations from DB if available, then do in-memory cascade check
+          if (this.adapter.getDocumentJobRelations) {
+            this._documentJobRelations = await this.adapter.getDocumentJobRelations({})
+          }
           const jobRelations = this._documentJobRelations.filter(r => r.jobId === jobId)
           const orphanedIds: string[] = []
           for (const rel of jobRelations) {
@@ -374,7 +391,7 @@ class d8umImpl implements d8umInstance {
 
     run: async (jobId: string): Promise<JobRunResult> => {
       const job = await this.jobs.get(jobId)
-      if (!job) throw new Error(`Job "${jobId}" not found`)
+      if (!job) throw new NotFoundError('Job', jobId)
 
       const startMs = Date.now()
       job.status = 'running'
@@ -482,7 +499,7 @@ class d8umImpl implements d8umInstance {
 
     pause: async (jobId: string): Promise<void> => {
       const job = await this.jobs.get(jobId)
-      if (!job) throw new Error(`Job "${jobId}" not found`)
+      if (!job) throw new NotFoundError('Job', jobId)
       job.status = 'idle'
       job.nextRunAt = undefined
       job.updatedAt = new Date()
@@ -492,7 +509,7 @@ class d8umImpl implements d8umInstance {
 
     resume: async (jobId: string): Promise<void> => {
       const job = await this.jobs.get(jobId)
-      if (!job) throw new Error(`Job "${jobId}" not found`)
+      if (!job) throw new NotFoundError('Job', jobId)
       if (job.schedule) {
         job.status = 'scheduled'
       } else {
@@ -636,7 +653,7 @@ class d8umImpl implements d8umInstance {
 
   getEmbeddingForBucket(bucketId: string): EmbeddingProvider {
     const embedding = this.bucketEmbeddings.get(bucketId)
-    if (!embedding) throw new Error(`Bucket "${bucketId}" not found`)
+    if (!embedding) throw new NotFoundError('Bucket', bucketId)
     return embedding
   }
 
@@ -650,7 +667,7 @@ class d8umImpl implements d8umInstance {
     if (cached) return cached
     // Cache miss — try loading from DB before giving up
     const bucket = await this.buckets.get(bucketId)
-    if (!bucket) throw new Error(`Bucket "${bucketId}" not found`)
+    if (!bucket) throw new NotFoundError('Bucket', bucketId)
     // buckets.get() hydrates the maps, so this should now succeed
     return this.bucketEmbeddings.get(bucketId) ?? this.defaultEmbedding
   }
@@ -699,7 +716,7 @@ class d8umImpl implements d8umInstance {
   ): Promise<IndexResult> {
     await this.ensureInitialized()
     const bucket = await this.buckets.get(bucketId)
-    if (!bucket) throw new Error(`Bucket "${bucketId}" not found`)
+    if (!bucket) throw new NotFoundError('Bucket', bucketId)
     // Merge bucket-level index defaults with per-call config (per-call wins)
     const merged = this.mergeIndexConfig(indexConfig, bucket)
     const { defaultChunker: chunker } = await import('./index-engine/chunker.js')
@@ -720,7 +737,7 @@ class d8umImpl implements d8umInstance {
   ): Promise<IndexResult> {
     await this.ensureInitialized()
     const bucket = await this.buckets.get(bucketId)
-    if (!bucket) throw new Error(`Bucket "${bucketId}" not found`)
+    if (!bucket) throw new NotFoundError('Bucket', bucketId)
     const embedding = await this.resolveEmbeddingForBucket(bucketId)
     const engine = this.createIndexEngine(embedding)
 
@@ -768,7 +785,7 @@ class d8umImpl implements d8umInstance {
 
   private requireGraph(): GraphBridge {
     if (!this.config.graph) {
-      throw new Error('Graph not configured. Pass a graph bridge to d8umConfig to enable memory operations.')
+      throw new ConfigError('Graph not configured. Pass a graph bridge to d8umConfig to enable memory operations.')
     }
     return this.config.graph
   }
@@ -814,13 +831,13 @@ class d8umImpl implements d8umInstance {
 
   private assertConfigured(): void {
     if (!this.configured) {
-      throw new Error('d8um not initialized. Call d8um.initialize({ vectorStore, embedding }) first.')
+      throw new NotInitializedError()
     }
   }
 
   private async ensureInitialized(): Promise<void> {
     if (!this.configured || !this.initialized) {
-      throw new Error('d8um not initialized. Call await d8um.initialize({ vectorStore, embedding }) first.')
+      throw new NotInitializedError()
     }
   }
 }
@@ -843,7 +860,7 @@ export async function d8umCreate(config: d8umConfig): Promise<d8umInstance> {
   }
 
   if (!config.vectorStore || !config.embedding) {
-    throw new Error('d8umCreate requires either apiKey (cloud mode) or vectorStore + embedding (self-hosted mode).')
+    throw new ConfigError('d8umCreate requires either apiKey (cloud mode) or vectorStore + embedding (self-hosted mode).')
   }
 
   const instance = new d8umImpl()

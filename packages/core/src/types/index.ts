@@ -82,3 +82,5 @@ export type { d8umIdentity } from './identity.js'
 export type { GraphBridge } from './graph-bridge.js'
 
 export type { ExtractionConfig } from './extraction-config.js'
+
+export { D8umError, NotFoundError, NotInitializedError, ConfigError } from './errors.js'

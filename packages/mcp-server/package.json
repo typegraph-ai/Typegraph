@@ -1,6 +1,6 @@
 {
   "name": "@d8um-ai/mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server exposing d8um cognitive memory as tools and resources for AI agents",
   "type": "module",
   "main": "./dist/index.js",

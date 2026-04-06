@@ -191,7 +191,7 @@ function buildDocWhere(filter: DocumentFilter): { where: string; params: unknown
   }
   if (filter.documentIds != null && filter.documentIds.length > 0) {
     params.push(filter.documentIds)
-    conditions.push(`id = ANY($${params.length}::uuid[])`)
+    conditions.push(`id = ANY($${params.length}::text[])`)
   }
 
   return {

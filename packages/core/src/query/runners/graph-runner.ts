@@ -48,6 +48,8 @@ export class GraphRunner {
     // Step 5: Get chunks associated with high-PPR entities, passing PPR scores for ranking
     const chunks = await this.graph.getChunksForEntities(rankedEntities, count, pprScores)
 
+    // Store raw PPR scores — normalization happens at the planner level
+    // via normalizePPR(rawScore, dampingFactor) for cross-query comparability
     return chunks.map((chunk, i) => ({
       content: chunk.content,
       bucketId: chunk.bucketId,

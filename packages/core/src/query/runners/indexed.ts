@@ -61,6 +61,7 @@ export class IndexedRunner {
             rawScores: {
               vector: chunk.scores.vector,
               keyword: chunk.scores.keyword,
+              rrf: chunk.scores.rrf,
             },
             normalizedScore: chunk.scores.rrf ?? chunk.scores.vector ?? 0,
             mode: 'indexed',
@@ -103,6 +104,7 @@ export class IndexedRunner {
             rawScores: {
               vector: chunk.scores.vector,
               keyword: chunk.scores.keyword,
+              rrf: chunk.scores.rrf,
             },
             normalizedScore: chunk.scores.rrf ?? chunk.scores.vector ?? 0,
             mode: 'indexed',

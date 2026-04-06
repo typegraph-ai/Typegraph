@@ -74,10 +74,18 @@ export async function searchWithContext(
     content: r.content,
     score: r.normalizedScore,
     scores: {
-      vector: r.rawScores.vector,
-      keyword: r.rawScores.keyword,
-      rrf: r.normalizedScore,
+      raw: {
+        cosineSimilarity: r.rawScores.vector,
+        bm25: r.rawScores.keyword,
+        rrf: r.rawScores.rrf ?? r.normalizedScore,
+      },
+      normalized: {
+        semantic: r.rawScores.vector ?? 0,
+        keyword: r.rawScores.keyword ?? 0,
+        rrf: r.normalizedScore,
+      },
     },
+    sources: [r.mode],
     bucket: {
       id: r.bucketId,
       documentId: r.documentId,
@@ -160,7 +168,7 @@ export async function searchWithContext(
       documentType: bestHit.result.bucket.documentType,
       sourceType: bestHit.result.bucket.sourceType,
       rrfScore: bestHit.result.score,
-      similarity: 'vector' in bestHit.result.scores ? (bestHit.result.scores.vector ?? 0) : 0,
+      similarity: bestHit.result.scores.normalized.semantic ?? 0,
       chunks: chunkList,
       content: stitchedContent,
     })

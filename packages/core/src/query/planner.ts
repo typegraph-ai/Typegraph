@@ -1,5 +1,5 @@
 import type { Bucket } from '../types/bucket.js'
-import type { QueryOpts, QueryResponse, d8umResult } from '../types/query.js'
+import type { QueryOpts, QueryResponse, d8umResult, RawScores, NormalizedScores } from '../types/query.js'
 import type { VectorStoreAdapter } from '../types/adapter.js'
 import type { EmbeddingProvider } from '../embedding/provider.js'
 import type { GraphBridge } from '../types/graph-bridge.js'
@@ -7,7 +7,7 @@ import type { d8umEvent, d8umEventSink } from '../types/events.js'
 import { IndexedRunner } from './runners/indexed.js'
 import { MemoryRunner } from './runners/memory-runner.js'
 import { GraphRunner } from './runners/graph-runner.js'
-import { mergeAndRank, type NormalizedResult } from './merger.js'
+import { mergeAndRank, normalizeRRF, normalizePPR, type NormalizedResult } from './merger.js'
 import { classifyQuery } from './classifier.js'
 
 export class QueryPlanner {
@@ -63,21 +63,28 @@ export class QueryPlanner {
       const identity = { tenantId: opts.tenantId, groupId: opts.groupId, userId: opts.userId, agentId: opts.agentId, conversationId: opts.conversationId }
       const memoryRunner = new MemoryRunner(this.graph)
       const memResults = await memoryRunner.run(text, identity, count)
-      const results: d8umResult[] = memResults.map(r => ({
-        content: r.content,
-        score: r.normalizedScore,
-        scores: { memory: r.rawScores.memory ?? r.normalizedScore },
-        bucket: {
-          id: r.bucketId,
-          documentId: r.documentId,
-          title: r.title ?? '',
-          url: r.url,
-          updatedAt: r.updatedAt ?? new Date(),
-        },
-        chunk: r.chunk ?? { index: 0, total: 1, isNeighbor: false },
-        metadata: r.metadata,
-        tenantId: r.tenantId,
-      }))
+      const results: d8umResult[] = memResults.map(r => {
+        const importanceScore = r.rawScores.memory ?? r.normalizedScore
+        return {
+          content: r.content,
+          score: importanceScore,
+          scores: {
+            raw: { importance: importanceScore },
+            normalized: { memory: importanceScore },
+          },
+          sources: ['memory'],
+          bucket: {
+            id: r.bucketId,
+            documentId: r.documentId,
+            title: r.title ?? '',
+            url: r.url,
+            updatedAt: r.updatedAt ?? new Date(),
+          },
+          chunk: r.chunk ?? { index: 0, total: 1, isNeighbor: false },
+          metadata: r.metadata,
+          tenantId: r.tenantId,
+        }
+      })
       return {
         results,
         buckets: { __memory__: { mode: 'cached', resultCount: results.length, durationMs: Date.now() - startMs, status: 'ok' } },
@@ -136,6 +143,22 @@ export class QueryPlanner {
       ])
 
       if (memResults.length > 0) {
+        // Score memories with vector similarity so they compete on the same
+        // dimensions as documents (semantic, rrf) instead of only importance.
+        const firstEmb = [...this.bucketEmbeddings.values()][0]
+        if (firstEmb) {
+          try {
+            const queryEmbedding = await firstEmb.embed(text)
+            for (const mem of memResults) {
+              const memEmbedding = await firstEmb.embed(mem.content)
+              const similarity = dotProduct(queryEmbedding, memEmbedding)
+              mem.rawScores.vector = similarity
+              mem.normalizedScore = similarity
+            }
+          } catch {
+            // Embedding failed — memories still compete via importance + RRF
+          }
+        }
         runnerArrays.push(memResults)
         bucketTimings['__memory__'] = { mode: 'cached', resultCount: memResults.length, durationMs: Date.now() - startMs, status: 'ok' }
       }
@@ -167,49 +190,86 @@ export class QueryPlanner {
       ? mergeAndRank(runnerArrays, count, weights)
       : allResults.slice(0, count)
 
-    // Map NormalizedResult → d8umResult with mode-specific scores
+    // Map NormalizedResult → d8umResult with raw/normalized score structure
     const results: d8umResult[] = mergedResults.map(r => {
-      // Use finalScore from mergeAndRank when available (multi-runner merge),
-      // otherwise fall back to the individual runner's normalizedScore
-      const compositeScore = (r as any).finalScore ?? r.normalizedScore
+      const merged = r as any
 
-      // Build mode-specific scores object
-      const scores = resolvedMode === 'fast'
-        ? { vector: r.rawScores.vector ?? compositeScore }
-        : resolvedMode === 'neural'
-        ? {
-            vector: r.rawScores.vector,
-            keyword: r.rawScores.keyword,
-            memory: r.rawScores.memory,
-            graph: r.rawScores.graph,
-            rrf: compositeScore,
-          }
-        : { vector: r.rawScores.vector ?? 0, keyword: r.rawScores.keyword ?? 0, rrf: compositeScore }
+      // Get aggregated raw scores (from merger if merged, raw if not)
+      const agg = merged.rawScores ?? r.rawScores
+      const rawRrf = merged.finalScore ?? agg.rrf ?? r.normalizedScore
+
+      // Build raw scores (algorithm-level, mixed ranges)
+      const rawScores: RawScores = {}
+      // Build normalized scores (capability-level, all 0-1)
+      const normalizedScores: NormalizedScores = {}
+
+      if (resolvedMode === 'fast') {
+        rawScores.cosineSimilarity = agg.vector
+        normalizedScores.semantic = agg.vector ?? 0
+      } else {
+        // hybrid or neural — always have vector, keyword, rrf
+        rawScores.cosineSimilarity = agg.vector
+        rawScores.bm25 = agg.keyword
+        rawScores.rrf = rawRrf
+        normalizedScores.semantic = agg.vector ?? 0
+        normalizedScores.keyword = agg.keyword ?? 0
+        // For non-merge path, RRF comes from adapter (2 lists: vector+keyword)
+        // For merge path, RRF comes from merger (numLists runners)
+        const numListsForRRF = merged.compositeScore != null ? runnerArrays.length : 2
+        normalizedScores.rrf = normalizeRRF(rawRrf, numListsForRRF)
+
+        if (resolvedMode === 'neural') {
+          rawScores.ppr = agg.graph
+          rawScores.importance = agg.memory
+          normalizedScores.graph = normalizePPR(agg.graph ?? 0)
+          normalizedScores.memory = agg.memory ?? 0
+        }
+      }
+
+      // Compute top-level composite score (always 0-1)
+      let topScore: number
+      if (merged.compositeScore != null) {
+        // From mergeAndRank (multi-runner merge)
+        topScore = merged.compositeScore
+      } else if (resolvedMode === 'fast') {
+        topScore = normalizedScores.semantic!
+      } else {
+        // Non-merge hybrid path
+        const nRRF = normalizedScores.rrf!
+        const semantic = normalizedScores.semantic ?? 0
+        const kw = normalizedScores.keyword ?? 0
+        topScore = 0.4 * nRRF + 0.5 * semantic + 0.1 * kw
+      }
+
+      // Sources: which retrieval systems contributed
+      const sources: string[] = merged.modes ?? [r.mode]
 
       return {
-      content: r.content,
-      score: compositeScore,
-      scores,
-      bucket: {
-        id: r.bucketId,
-        documentId: r.documentId,
-        title: r.title ?? '',
-        url: r.url,
-        updatedAt: r.updatedAt ?? new Date(),
-        status: r.documentStatus,
-        visibility: r.documentVisibility,
-        documentType: r.documentType,
-        sourceType: r.sourceType,
+        content: r.content,
+        score: topScore,
+        scores: { raw: rawScores, normalized: normalizedScores },
+        sources,
+        bucket: {
+          id: r.bucketId,
+          documentId: r.documentId,
+          title: r.title ?? '',
+          url: r.url,
+          updatedAt: r.updatedAt ?? new Date(),
+          status: r.documentStatus,
+          visibility: r.documentVisibility,
+          documentType: r.documentType,
+          sourceType: r.sourceType,
+          tenantId: r.tenantId,
+          userId: r.userId,
+          groupId: r.groupId,
+          agentId: r.agentId,
+          conversationId: r.conversationId,
+        },
+        chunk: r.chunk ?? { index: 0, total: 1, isNeighbor: false },
+        metadata: r.metadata,
         tenantId: r.tenantId,
-        userId: r.userId,
-        groupId: r.groupId,
-        agentId: r.agentId,
-        conversationId: r.conversationId,
-      },
-      chunk: r.chunk ?? { index: 0, total: 1, isNeighbor: false },
-      metadata: r.metadata,
-      tenantId: r.tenantId,
-    }})
+      }
+    })
 
     const durationMs = Date.now() - startMs
 
@@ -245,4 +305,12 @@ export class QueryPlanner {
       warnings: warnings.length > 0 ? warnings : undefined,
     }
   }
+}
+
+/** Dot product of two vectors — equivalent to cosine similarity when vectors are L2-normalized
+ *  (which embedding models typically return). */
+function dotProduct(a: number[], b: number[]): number {
+  let sum = 0
+  for (let i = 0; i < a.length; i++) sum += a[i]! * b[i]!
+  return sum
 }

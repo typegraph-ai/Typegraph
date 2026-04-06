@@ -7,33 +7,36 @@ export interface d8umQuery {
   filters?: Record<string, unknown> | undefined
 }
 
-/** Fast mode: pure vector similarity */
-export interface FastScores { vector: number }
-
-/** Hybrid mode: vector + keyword combined via RRF */
-export interface HybridScores { vector: number; keyword: number; rrf: number }
-
-/** Neural mode: hybrid + memory + graph, merged via weighted RRF */
-export interface NeuralScores {
-  vector?: number | undefined
-  keyword?: number | undefined
-  memory?: number | undefined
-  graph?: number | undefined
-  rrf: number
+/** Raw algorithm-level scores — mixed ranges, not normalized */
+export interface RawScores {
+  cosineSimilarity?: number | undefined
+  bm25?: number | undefined
+  rrf?: number | undefined
+  ppr?: number | undefined
+  importance?: number | undefined
 }
 
-/** Memory mode: recall-based scoring */
-export interface MemoryScores { memory: number }
-
-export type d8umScores = FastScores | HybridScores | NeuralScores | MemoryScores
+/** Normalized capability-level scores — all 0-1, cross-query comparable */
+export interface NormalizedScores {
+  semantic?: number | undefined
+  keyword?: number | undefined
+  rrf?: number | undefined
+  graph?: number | undefined
+  memory?: number | undefined
+}
 
 export interface d8umResult {
   content: string
 
-  /** Composite score — the final ranking value regardless of mode */
+  /** Composite score — the final ranking value regardless of mode (0-1) */
   score: number
-  /** Mode-specific component scores that make up the composite score */
-  scores: d8umScores
+  /** Algorithm-level raw scores and their normalized 0-1 counterparts */
+  scores: {
+    raw: RawScores
+    normalized: NormalizedScores
+  }
+  /** Which retrieval systems contributed to this result (e.g. ["indexed"], ["indexed", "graph"]) */
+  sources: string[]
 
   bucket: {
     id: string

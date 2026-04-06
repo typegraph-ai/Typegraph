@@ -351,11 +351,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
           ),
           scored AS (
             SELECT *,
-              (COALESCE(1.0::float8 / (60 + vrank), 0) + COALESCE(1.0::float8 / (60 + krank), 0))::double precision AS rrf_score,
-              ROW_NUMBER() OVER (
-                PARTITION BY id
-                ORDER BY COALESCE(similarity, 0) DESC
-              ) AS dedup_rank
+              (COALESCE(1.0::float8 / (60 + vrank), 0) + COALESCE(1.0::float8 / (60 + krank), 0))::double precision AS rrf_score
             FROM combined
           )
         SELECT id, bucket_id, tenant_id, document_id, idempotency_key, content,
@@ -364,7 +360,6 @@ export class PgVectorAdapter implements VectorStoreAdapter {
                MAX(kw_score) AS keyword_score,
                SUM(rrf_score)::double precision AS rrf_score
         FROM scored
-        WHERE dedup_rank = 1
         GROUP BY id, bucket_id, tenant_id, document_id, idempotency_key, content,
                  embedding_model, chunk_index, total_chunks, metadata, indexed_at
         ORDER BY SUM(rrf_score)::double precision DESC
@@ -491,11 +486,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
           ),
           scored AS (
             SELECT *,
-              (COALESCE(1.0::float8 / (60 + vrank), 0) + COALESCE(1.0::float8 / (60 + krank), 0))::double precision AS rrf_score,
-              ROW_NUMBER() OVER (
-                PARTITION BY id
-                ORDER BY COALESCE(similarity, 0) DESC
-              ) AS dedup_rank
+              (COALESCE(1.0::float8 / (60 + vrank), 0) + COALESCE(1.0::float8 / (60 + krank), 0))::double precision AS rrf_score
             FROM combined
           ),
           final_chunks AS (
@@ -505,7 +496,6 @@ export class PgVectorAdapter implements VectorStoreAdapter {
                    MAX(kw_score) AS keyword_score,
                    SUM(rrf_score)::double precision AS rrf_score
             FROM scored
-            WHERE dedup_rank = 1
             GROUP BY id, bucket_id, tenant_id, document_id, idempotency_key, content,
                      embedding_model, chunk_index, total_chunks, metadata, indexed_at
             ORDER BY SUM(rrf_score)::double precision DESC

@@ -4,7 +4,7 @@ export interface NormalizedResult {
   content: string
   bucketId: string
   documentId: string
-  rawScores: { vector?: number | undefined; keyword?: number | undefined; liveRelevance?: number | undefined; memory?: number | undefined; graph?: number | undefined }
+  rawScores: { vector?: number | undefined; keyword?: number | undefined; rrf?: number | undefined; liveRelevance?: number | undefined; memory?: number | undefined; graph?: number | undefined }
   normalizedScore: number
   mode: 'indexed' | 'live' | 'cached' | 'memory' | 'graph'
   metadata: Record<string, unknown>
@@ -24,9 +24,9 @@ export interface NormalizedResult {
   conversationId?: string | undefined
 }
 
+/** Content-based dedup key. Uses SHA256 hash of content to ensure cross-runner dedup works
+ *  (e.g. graph runner assigns synthetic documentIds like `graph-0` that won't match indexed results). */
 export function dedupKey(r: NormalizedResult): string {
-  if (r.url) return r.url
-  if (r.chunk) return `${r.documentId}::${r.chunk.index}`
   return createHash('sha256').update(r.content).digest('hex')
 }
 
@@ -42,6 +42,22 @@ export function minMaxNormalize(results: NormalizedResult[]): NormalizedResult[]
   }))
 }
 
+/** Normalize a raw RRF score to 0-1 by dividing by its theoretical maximum.
+ *  theoreticalMax = numLists / (k + 1) where k=60 for standard RRF. */
+export function normalizeRRF(rrfScore: number, numLists: number, k = 60): number {
+  const theoreticalMax = numLists / (k + 1)
+  return theoreticalMax > 0 ? Math.min(rrfScore / theoreticalMax, 1) : 0
+}
+
+/** Normalize a raw PPR score to 0-1 by dividing by the damping factor.
+ *  The damping factor (restart probability) is the approximate theoretical max
+ *  PPR score for a strongly-connected seed node. This produces scores that are
+ *  comparable across different queries and graph structures. */
+export function normalizePPR(pprScore: number, dampingFactor = 0.35): number {
+  if (dampingFactor <= 0) return 0
+  return Math.min(pprScore / dampingFactor, 1.0)
+}
+
 const DEFAULT_WEIGHTS: Record<string, number> = {
   indexed: 0.5,
   live: 0.1,
@@ -55,6 +71,7 @@ export function mergeAndRank(
   count: number,
   weights?: Record<string, number>
 ): NormalizedResult[] {
+  const numLists = runnerResults.length
   const ranked = runnerResults.flatMap((results) =>
     results.map((r, i) => ({ ...r, runnerRank: i + 1 }))
   )
@@ -68,15 +85,44 @@ export function mergeAndRank(
   }
 
   const merged = Array.from(groups.values()).map(group => {
+    // Weighted RRF across runners
     const rrfScore = group.reduce((sum, r) => {
       const weight = (weights ?? DEFAULT_WEIGHTS)[r.mode] ?? 0.5
       return sum + weight * (1 / (60 + r.runnerRank))
     }, 0)
+
     const best = group.sort((a, b) => b.normalizedScore - a.normalizedScore)[0]!
-    return { ...best, finalScore: rrfScore }
+
+    // Aggregate rawScores: take max of each score type across all entries in the group
+    const aggregatedScores: Record<string, number> = {}
+    const modes = new Set<string>()
+    for (const r of group) {
+      modes.add(r.mode)
+      for (const [key, val] of Object.entries(r.rawScores)) {
+        if (val != null && (aggregatedScores[key] == null || val > aggregatedScores[key]!))
+          aggregatedScores[key] = val
+      }
+    }
+
+    // Compute normalized composite score (0-1 range)
+    // All signals contribute: RRF, vector, keyword, graph (PPR-normalized), memory
+    const nRRF = normalizeRRF(rrfScore, numLists)
+    const vectorScore = aggregatedScores.vector ?? 0
+    const keywordScore = aggregatedScores.keyword ?? 0
+    const graphScore = normalizePPR(aggregatedScores.graph ?? 0)
+    const memoryScore = aggregatedScores.memory ?? 0
+    const compositeScore = 0.25 * nRRF + 0.35 * vectorScore + 0.1 * keywordScore + 0.15 * graphScore + 0.15 * memoryScore
+
+    return {
+      ...best,
+      rawScores: aggregatedScores as NormalizedResult['rawScores'],
+      modes: [...modes],
+      finalScore: rrfScore,
+      compositeScore,
+    }
   })
 
   return merged
-    .sort((a, b) => b.finalScore - a.finalScore)
+    .sort((a, b) => b.compositeScore - a.compositeScore)
     .slice(0, count)
 }

@@ -1,0 +1,16 @@
+{
+  "name": "d8um-benchmarks-cloud",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed": "tsx --env-file=.env seed.ts"
+  },
+  "dependencies": {
+    "@d8um-ai/core": "workspace:*",
+    "@vercel/blob": "^2.3.2"
+  },
+  "devDependencies": {
+    "tsx": "latest",
+    "typescript": "^5.4.0"
+  }
+}

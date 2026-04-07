@@ -67,7 +67,9 @@ export async function searchWithContext(
   }
 
   const runner = new IndexedRunner(adapter)
-  const indexedResults = await runner.run(text, modelGroups, count, tenantId ? { tenantId } : undefined, opts.documentFilter)
+  const vectorOnly = !(opts.signals?.keyword ?? false)
+  const identity = { tenantId: opts.tenantId, groupId: opts.groupId, userId: opts.userId, agentId: opts.agentId, conversationId: opts.conversationId }
+  const indexedResults = await runner.run(text, modelGroups, count, identity, opts.documentFilter, vectorOnly)
 
   // Convert NormalizedResult[] to d8umResult[]
   const rawResults = indexedResults.map(r => ({

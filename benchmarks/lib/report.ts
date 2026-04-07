@@ -18,7 +18,8 @@ export interface BenchmarkMetrics {
 export interface BenchmarkResult {
   benchmark: string
   dataset: string
-  mode: string
+  /** Active signal label (e.g. "vector", "vector+keyword", "vector+keyword+graph+memory") */
+  signals: string
   variant: string
   corpus: number
   queries: number
@@ -40,7 +41,7 @@ export interface BenchmarkResult {
 export function formatMarkdown(result: BenchmarkResult): string {
   const lines: string[] = []
 
-  lines.push(`## ${result.benchmark} — ${result.variant} (${result.mode})`)
+  lines.push(`## ${result.benchmark} — ${result.variant} (${result.signals})`)
   lines.push('')
   lines.push(`| Metric | Value |`)
   lines.push(`|--------|-------|`)
@@ -48,7 +49,7 @@ export function formatMarkdown(result: BenchmarkResult): string {
     if (value != null) lines.push(`| ${name} | ${value.toFixed(4)} |`)
   }
   lines.push('')
-  lines.push(`**Corpus:** ${result.corpus.toLocaleString()} docs | **Queries:** ${result.queries} | **Mode:** ${result.mode}`)
+  lines.push(`**Corpus:** ${result.corpus.toLocaleString()} docs | **Queries:** ${result.queries} | **Signals:** ${result.signals}`)
   lines.push('')
 
   if (result.timing.ingestionSeconds != null) {
@@ -65,12 +66,12 @@ export function formatMarkdown(result: BenchmarkResult): string {
 export function printResults(result: BenchmarkResult): void {
   console.log()
   console.log('══════════════════════════════════════════════════════')
-  console.log(`  ${result.benchmark} — ${result.variant} (${result.mode})`)
+  console.log(`  ${result.benchmark} — ${result.variant} (${result.signals})`)
   console.log('══════════════════════════════════════════════════════')
   console.log()
   console.log(`  Corpus:        ${result.corpus.toLocaleString()} documents`)
   console.log(`  Queries:       ${result.queries} (full BEIR test set)`)
-  console.log(`  Mode:          ${result.mode}`)
+  console.log(`  Signals:       ${result.signals}`)
   console.log()
   console.log('  ── Retrieval Scores ──')
   for (const [name, value] of Object.entries(result.metrics)) {

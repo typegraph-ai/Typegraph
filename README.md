@@ -31,7 +31,6 @@ d8um closes that gap:
 - **Vercel AI SDK integration** - memory tools and middleware for `generateText()` / `streamText()`
 - **Composable** - works alongside your stack, not inside a framework
 - **Per-bucket embedding models** - different models for different content, merged at query time via RRF
-- **Job system** - schedule memory consolidation, decay, and extraction as recurring tasks
 
 ## Quick Start
 
@@ -72,7 +71,7 @@ await d8um.ingest(faq.id, [{
   metadata: {},
 }], { chunkSize: 512, chunkOverlap: 64, deduplicateBy: ['content'] })
 
-// Query - hybrid search (vector + BM25), score merging, ranked results
+// Query - vector search by default, composable signals for more retrieval systems
 // Identity fields (tenantId, groupId, userId, agentId, conversationId) filter results
 const { results } = await d8um.query('how do I configure SSO?')
 
@@ -90,7 +89,7 @@ d8um separates infrastructure provisioning from runtime initialization:
 | Method               | When to call                | What it does                                          |
 | -------------------- | --------------------------- | ----------------------------------------------------- |
 | `deploy(config)`     | Once (setup script, CI/CD)  | Creates tables and extensions. Idempotent.            |
-| `initialize(config)` | Every app boot / cold start | Registers jobs, loads state. Lightweight, no DDL.     |
+| `initialize(config)` | Every app boot / cold start | Loads state, registers adapters. Lightweight, no DDL. |
 | `undeploy()`         | Intentional teardown        | Drops all d8um tables. Refuses if any table has data. |
 | `destroy()`          | App shutdown                | Closes adapter connections.                           |
 
@@ -128,47 +127,52 @@ await d.correct('Actually, Alice moved to Beta Inc', { userId: 'alice', tenantId
 
 // Ingest conversations with automatic fact extraction
 await d.addConversationTurn(messages, { userId: 'alice' })
-```
 
-Memory operations are also schedulable jobs:
+// Recall memories for context
+const memories = await d.recall('Where does Alice work?', { userId: 'alice', tenantId: 'org1' })
 
-```ts
-import { registerConsolidationJobs } from '@d8um-ai/graph'
-registerConsolidationJobs()
-
-d.jobs.create({ type: 'memory_consolidation', schedule: '0 3 * * *' })
-d.jobs.create({ type: 'memory_decay', schedule: '0 * * * *' })
+// Build formatted memory context for LLM prompts
+const context = await d.assembleContext('Tell me about Alice', { userId: 'alice' }, {
+  includeFacts: true,
+  includeEpisodes: true,
+  format: 'xml',
+})
 ```
 
 > **Deep dive:** [Agentic Memory Guide](guides/Agentic%20Memory/overview.md) - memory types, lifecycle, extraction pipeline, landscape analysis
 
 ## How It Works
 
-d8um supports five query modes - the caller chooses the cost/depth tradeoff:
+d8um uses **composable query signals** - the caller chooses which retrieval systems to activate:
 
 
-| Mode     | What It Does                                             | Latency    |
-| -------- | -------------------------------------------------------- | ---------- |
-| `fast`   | Pure vector ANN. No keyword, no graph.                   | ~10-30ms   |
-| `hybrid` | Vector + keyword, RRF fusion. **Default.**               | ~30-80ms   |
-| `memory` | Cognitive memory only (facts, episodes, procedures).     | ~30-80ms   |
-| `neural` | All three in parallel: hybrid + memory + PPR graph walk. | ~100-400ms |
-| `auto`   | Heuristic picks `hybrid` or `neural` per query.          | Varies     |
+| Signal    | What It Does                                   | Default |
+| --------- | ---------------------------------------------- | ------- |
+| `vector`  | ANN vector search against chunk embeddings     | **On**  |
+| `keyword` | BM25 keyword search, fused with vector via RRF | Off     |
+| `graph`   | PPR graph traversal via entity embeddings      | Off     |
+| `memory`  | Cognitive memory recall (facts, episodes)      | Off     |
 
+
+Signals compose freely - any combination works. The default (`{ vector: true }`) gives fast vector-only search (~10-30ms). Add signals for richer retrieval:
 
 ```ts
-// Fast autocomplete
-d.query('sso', { mode: 'fast' })
+// Default: fast vector search
+d.query('sso')
 
-// Default hybrid search
-d.query('how do I configure SSO?')
+// Vector + keyword (hybrid)
+d.query('how do I configure SSO?', { signals: { vector: true, keyword: true } })
 
-// Neural mode: hippocampal associative retrieval
-// Runs vector search + memory recall + Personalized PageRank in parallel
+// All signals: vector + keyword + graph + memory
 d.query('what did Alice say about the SSO migration?', {
-  mode: 'neural',
+  signals: { vector: true, keyword: true, graph: true, memory: true },
   userId: 'alice',
   tenantId: 'org1',
+})
+
+// Graph-only: entity-centric associative retrieval
+d.query('how are Alice and Acme Corp connected?', {
+  signals: { graph: true },
 })
 ```
 
@@ -179,7 +183,7 @@ When `graph` and `llm` are configured, document indexing automatically builds a 
 3. **Predicate normalization** - relationship types are canonicalized via a predicate ontology (~150 types) and synonym groups to prevent graph fragmentation
 4. **Cross-chunk context** - entity context accumulates across chunks within a document, improving extraction consistency
 
-At query time, neural mode seeds a **Personalized PageRank** walk from entities mentioned in the query, traversing the graph to surface associatively-connected passages across documents and memory. Results are fused with hybrid search via RRF, enabling multi-hop reasoning in a single retrieval step.
+At query time, enabling the `graph` signal seeds a **Personalized PageRank** walk from entities mentioned in the query, traversing the graph to surface associatively-connected passages across documents and memory. When combined with `vector` and `keyword` signals, results are fused via RRF, enabling multi-hop reasoning in a single retrieval step. Composite score weights are configurable per-query via `scoreWeights`, and graph result filtering is tunable via `graphReinforcement` (`'only'`, `'prefer'`, or `'off'`).
 
 The extraction pipeline supports configurable LLMs - using a reasoning model for extraction produces dramatically higher-quality graphs (fewer entities, richer predicate vocabulary, zero noise edges) at the cost of slower ingestion.
 
@@ -191,7 +195,7 @@ d8um is evaluated on published academic benchmarks using the exact methodology (
 
 ### Retrieval (Core)
 
-Standard information retrieval benchmarks using hybrid search (vector + BM25 with RRF fusion). Metrics are BEIR-standard at cutoff 10.
+Standard information retrieval benchmarks using vector + keyword signals (BM25 with RRF fusion). Metrics are BEIR-standard at cutoff 10.
 
 
 | Dataset                 | nDCG@10    | Baseline | Delta       | Source           |
@@ -228,7 +232,7 @@ d8um overall ACC (58.4%) is statistically significant over HippoRAG2 (56.5%) at 
 | Package                                                                     | Description                                                           | Status |
 | --------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------ |
 | **Core**                                                                    |                                                                       |        |
-| `[@d8um-ai/core](packages/core)`                                               | Query engine, index engine, job registry, built-in jobs               | Alpha  |
+| `[@d8um-ai/core](packages/core)`                                               | Query engine, index engine, memory operations                         | Alpha  |
 | `[@d8um-ai/adapter-pgvector](packages/adapters/pgvector)`                      | PostgreSQL + pgvector storage                                         | Alpha  |
 | `[@d8um-ai/adapter-sqlite-vec](packages/adapters/sqlite-vec)`                  | SQLite + sqlite-vec - local dev / edge                                | Alpha  |
 | `[@d8um-ai/hosted](packages/hosted)`                                           | Hosted client SDK                                                     | Alpha  |

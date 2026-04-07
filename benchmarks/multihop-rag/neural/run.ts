@@ -16,7 +16,7 @@
 
 import { gateway } from '@ai-sdk/gateway'
 import { generateText } from 'ai'
-import { getConfig, LLM_MODEL, K } from '../../lib/config.js'
+import { getConfig, LLM_MODEL, K, SIGNALS, signalLabel } from '../../lib/config.js'
 import {
   parseCliArgs, initNeural, resolveBucket, loadDataset,
   runIngestion, buildResult, emitResults, printBanner, measureLatencyProfile,
@@ -91,7 +91,7 @@ async function main() {
     doIR ? 'IR metrics' : null,
     doAnswerEval ? `answers (limit ${Math.min(answerLimit, queries.length)}, model: ${evalModel})` : null,
   ].filter(Boolean).join(' + ')
-  console.log(`Phase 4: Eval — neural (${queries.length} queries, ${flags})...`)
+  console.log(`Phase 4: Eval — ${signalLabel(SIGNALS.neural)} (${queries.length} queries, ${flags})...`)
 
   const queryStart = performance.now()
   const allResults = new Map<string, string[]>()
@@ -106,7 +106,7 @@ async function main() {
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       response = await Promise.race([
-        d.query(queryText, { mode: 'neural', count: 50, buckets: [bucket.id] }),
+        d.query(queryText, { signals: SIGNALS.neural, count: 50, buckets: [bucket.id] }),
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('query timeout (90s)')), 90_000) }),
       ])
     } catch {
@@ -168,7 +168,7 @@ async function main() {
     console.log(`  Answers: ${answered}${answerErrors > 0 ? ` (${answerErrors} errors)` : ''} — ACC=${metrics['ACC']!.toFixed(4)} (word-intersection)`)
   }
 
-  const result = buildResult(config, 'neural', corpus.length, scored, metrics as BenchmarkMetrics, {
+  const result = buildResult(config, SIGNALS.neural, corpus.length, scored, metrics as BenchmarkMetrics, {
     ingestDuration,
     avgQueryMs,
     totalStart,

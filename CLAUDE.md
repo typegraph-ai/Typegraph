@@ -77,7 +77,7 @@ npx tsx --env-file=.env multihop-rag/neural/run.ts --seed --record
 **CLI flags:**
 - `--validate` — **MANDATORY before any --seed on new/cleared data.** Runs 5 docs + 5 queries to verify pipeline works. Takes <30s.
 - `--seed` — Re-indexes the corpus. Requires DB clearing first if changing chunk size/embedding model (see Clearing section). **Requires explicit user approval.**
-- `--record` — Appends results to `history-{mode}.json` locally.
+- `--record` — Appends results to `history-{signals}.json` locally (e.g., `history-vector.json`, `history-vector+keyword.json`).
 - `--eval-answers` / `--eval-answers-only` / `--eval-answers-limit=N` / `--eval-model=MODEL` — Answer-gen eval (multihop-rag and graphrag-bench).
 - `--run-id=UUID` — Resume a previous eval run. Loads cached per-query scores from the JSONL cache file and skips already-scored queries. If omitted, a fresh run ID is auto-generated. (GraphRAG-Bench runners only.)
 
@@ -89,7 +89,7 @@ npx tsx --env-file=.env multihop-rag/neural/run.ts --seed --record
 ### Benchmark Architecture
 
 All 18 runners use a shared library (`benchmarks/lib/`):
-- **`config.ts`** — Registry of all benchmark configs (dataset, bucket, table prefix, modes, scorer)
+- **`config.ts`** — Registry of all benchmark configs (dataset, bucket, table prefix, signals, scorer)
 - **`runner.ts`** — Composable helpers: `initCore`, `initNeural`, `loadDataset`, `runIngestion`, `runQueries`, `computeMetrics`, `buildResult`, `emitResults`
 - **`history.ts`** — Local history recording (`--record` flag)
 - **`validate.ts`** — Smoke test (`--validate` flag)
@@ -216,11 +216,11 @@ Hard-won learnings from debugging the benchmark pipeline. Read this before runni
 
 ### Unified Eval Loop Architecture
 
-All benchmark runners that support answer eval use a **single unified loop**. There is NO separate "answer-only mode" code path — just one loop with conditional behavior based on flags.
+All benchmark runners that support answer eval use a **single unified loop**. There is NO separate "answer-only" code path — just one loop with conditional behavior based on flags.
 
 ```
 for each query:
-  results = d.query(queryText, { mode, count: 50 })
+  results = d.query(queryText, { signals, count: 50 })
   if (computeIR)      → accumulate IR metrics (nDCG, MAP, etc.)
   if (computeAnswers) → generate answer from top-6 chunks, score vs gold
 ```
@@ -284,11 +284,12 @@ For estimating seed times (~3 docs/s embedding throughput for core):
 - Sources: MLEB Leaderboard (isaacus) for legal/tax datasets, MTEB/BEIR for nfcorpus, paper tables for multihop-rag
 - `metric_note` clarifies what's being compared (e.g., "Hit@10 not nDCG@10")
 
-**History files** (`benchmarks/{dataset}/{variant}/history-{mode}.json`):
-- Mode-specific: `history-hybrid.json`, `history-fast.json`, `history-neural.json`
+**History files** (`benchmarks/{dataset}/{variant}/history-{signals}.json`):
+- Signal-specific: `history-vector.json`, `history-vector+keyword.json`, `history-vector+keyword+graph+memory.json`
+- Legacy files: `history-hybrid.json`, `history-fast.json`, `history-neural.json` (pre-signals refactor, 2026-04-06)
 - All entries now have `timing` objects (older entries backfilled with `ingestionSeconds: null`)
 - `--record` flag appends locally
-- Entry format: `{ commit, date, metrics, avgQueryMs, timing, mode, config }`
+- Entry format: `{ commit, date, metrics, avgQueryMs, timing, signals, config }`
 
 ### Clearing Benchmark Data for Reseed
 
@@ -383,24 +384,24 @@ When asked for a readout on benchmark results, pull data from the **history file
 
 #### Where results live
 
-- **History files**: `benchmarks/{dataset}/{variant}/history-{mode}.json` (e.g., `history-hybrid.json`, `history-fast.json`, `history-neural.json`)
-- **Legacy history**: `benchmarks/{dataset}/{variant}/history.json` (pre-dual-mode runs)
+- **History files**: `benchmarks/{dataset}/{variant}/history-{signals}.json` (e.g., `history-vector.json`, `history-vector+keyword.json`, `history-vector+keyword+graph+memory.json`)
+- **Legacy history**: `benchmarks/{dataset}/{variant}/history-{mode}.json` (pre-signals refactor: `history-hybrid.json`, `history-fast.json`, `history-neural.json`) and `history.json` (pre-dual-mode runs)
 - **Baselines**: `benchmarks/{dataset}/baselines.json`
 
 #### How to produce a readout
 
 1. Read all `history-*.json` files for each dataset/variant that has been run
 2. Read each dataset's `baselines.json` for the external comparison targets
-3. Present a table per dataset showing: commit, mode, chunk size, nDCG@10, MAP@10, Recall@10, Precision@10, avg query ms, ingest time (if available), delta vs text-embedding-3-small baseline
+3. Present a table per dataset showing: commit, signals, chunk size, nDCG@10, MAP@10, Recall@10, Precision@10, avg query ms, ingest time (if available), delta vs text-embedding-3-small baseline
 4. Timing data is available in entries from 2026-03-29 onward (the `timing` object); older entries only have root-level `avgQueryMs`
 5. Highlight the best result per dataset and whether it beats baseline
-6. Call out notable patterns (e.g., fast > hybrid, neural = core, chunk ratio issues)
+6. Call out notable patterns (e.g., vector > vector+keyword, neural ≈ core, chunk ratio issues)
 
 The history JSON files are the source of truth for all benchmark results.
 
 ### Neural Ingestion Performance
 
-Neural ingestion is much slower than core due to 2 LLM calls per chunk (entity extraction + relationship extraction) plus embedding calls for entity resolution.
+Neural ingestion is much slower than core due to LLM calls per chunk (entity + relationship extraction) plus embedding calls for entity resolution. "Neural" refers to using all signals (`{ vector: true, keyword: true, graph: true, memory: true }`) which requires graph indexing at ingest time.
 
 **Concurrency:** The `concurrency` option in `IndexOpts` controls parallel document processing during ingest. Neural runners use `concurrency: 5` (default: 1 sequential). Higher values give proportional speedup but increase API rate limit risk and memory pressure.
 
@@ -469,6 +470,7 @@ SELECT entity_type, COUNT(*) FROM {prefix}entities GROUP BY entity_type ORDER BY
 **Key milestones:**
 - **2026-03-28** — Beat text-embedding-3-small baseline on 3/4 BEIR benchmarks (PR #7)
 - **2026-04-01** — 🏆 **#1 on GraphRAG-Bench Novel** (58.4% ACC, statistically significant over HippoRAG2 at 56.5%) — first published benchmark where d8um outperforms all known graph-RAG systems (PR #15)
+- **2026-04-06** — Replaced monolithic `QueryMode` with composable `QuerySignals` — users now specify which retrieval systems to activate instead of choosing from arbitrary presets
 
 ### 2026-03-28 — Beat text-embedding-3-small baseline (PR #7)
 
@@ -492,9 +494,9 @@ SELECT entity_type, COUNT(*) FROM {prefix}entities GROUP BY entity_type ORDER BY
    - `deduplicateToDocuments()` picks top K=10 unique corpus IDs
    - Combined with SDK 3x: 150 chunks → 50 docs → 10 evaluated
 
-4. **Dual-mode benchmark runners** (all 6 core runners)
-   - Core benchmarks run both `hybrid` and `fast` (pure vector) side by side
-   - Emit JSON array of results; mode-specific history files (`history-hybrid.json`, `history-fast.json`)
+4. **Dual-signal benchmark runners** (all 6 core runners)
+   - Core benchmarks run both `vector+keyword` and `vector` (pure vector) side by side
+   - Emit JSON array of results; signal-specific history files (`history-vector+keyword.json`, `history-vector.json`)
 
 5. **Neural pipeline fixes** (earlier in PR #7)
    - `await Promise.allSettled()` for triple extraction in `engine.ts` (was fire-and-forget)
@@ -993,3 +995,98 @@ Earlier 100-query sample showed 56.6% — the full eval converged to 58.4%, demo
 - Memory tables keep `scope JSONB` alongside explicit columns (parallel writes)
 - Existing deployed tables will need `ALTER TABLE ADD COLUMN` for new identity columns — not handled by this commit (deploy creates fresh tables)
 - Documents table `group_id`/`user_id` changed from UUID to TEXT — existing data will need migration
+
+### 2026-04-06 — QuerySignals: composable query routing replaces monolithic QueryMode
+
+**Problem:** d8um had 5 monolithic query modes (`fast | hybrid | memory | neural | auto`) that locked users into arbitrary presets. Users could not combine retrieval systems freely — e.g., vector+graph without keyword, or vector+memory without graph were impossible. The mode system had 10 identified gaps blocking end-user functionality.
+
+**Solution:** Replaced `QueryMode` entirely with `QuerySignals` — a composable interface where users specify which retrieval systems to activate:
+
+```typescript
+export interface QuerySignals {
+  vector?: boolean    // default: true — ANN vector search
+  keyword?: boolean   // default: false — BM25 keyword search
+  graph?: boolean     // default: false — PPR graph traversal
+  memory?: boolean    // default: false — cognitive memory recall
+}
+```
+
+Default: `{ vector: true }` (fast vector-only search). Any combination works.
+
+#### Changes made (25+ files across SDK + benchmarks)
+
+**SDK Core:**
+
+1. **Type definitions** (`packages/core/src/types/query.ts`)
+   - Removed `QueryMode` type, `mode` field on `QueryOpts`, `mergeStrategy`, `mergeWeights`
+   - Added `QuerySignals`, `signals` field on `QueryOpts`
+   - Added `scoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory', number>>` — user-configurable composite score weights
+   - Added `graphReinforcement?: 'only' | 'prefer' | 'off'` — controls how graph results interact with indexed results
+
+2. **Query planner** (`packages/core/src/query/planner.ts`) — complete rewrite
+   - `resolveSignals(opts)`: resolves user input to `Required<QuerySignals>` with defaults
+   - `signalLabel(signals)`: human-readable label (e.g., `"vector+keyword"`, `"vector+keyword+graph+memory"`)
+   - `computeCompositeScore(scores, signals, userWeights?)`: shared scoring function that auto-derives default weights from active signals or accepts user overrides
+   - Signal-based routing replaces mode-string branching: `signals.graph && this.graph` → GraphRunner, etc.
+   - New paths: graph-only (`{ graph: true }`), memory-only (`{ memory: true }`), vector+graph, vector+memory — all previously impossible
+   - `graphReinforcement` option: `'only'` (default, existing behavior — filter graph to indexed matches), `'prefer'` (boost matching, keep novel), `'off'` (all graph results as-is)
+
+3. **Classifier** (`packages/core/src/query/classifier.ts`) — returns `QuerySignals` instead of `QueryMode`
+
+4. **Merger** (`packages/core/src/query/merger.ts`) — uses shared `computeCompositeScore()`, accepts `scoreWeights` overrides
+
+5. **Context search** (`packages/core/src/query/context-search.ts`) — respects `signals.keyword` instead of hardcoded hybrid
+
+6. **Exports** (`packages/core/src/index.ts`) — `QueryMode` removed, `QuerySignals` + `resolveSignals` + `signalLabel` + `computeCompositeScore` + `classifyQuery` added
+
+**Benchmarks:**
+
+7. **Config** (`benchmarks/lib/config.ts`) — `BenchSignals` interface, `SIGNALS` presets (`SIGNALS.vector`, `SIGNALS.vectorKeyword`, `SIGNALS.neural`), `signalLabel()` function. `BenchmarkConfig.modes` → `BenchmarkConfig.signals`
+
+8. **Runner** (`benchmarks/lib/runner.ts`) — `runQueries()` accepts `BenchSignals`, passes `signals` to `d.query()`
+
+9. **Report** (`benchmarks/lib/report.ts`) — `BenchmarkResult.mode` → `BenchmarkResult.signals` (string label)
+
+10. **History** (`benchmarks/lib/history.ts`) — file naming: `history-${result.signals}.json`, entry: `signals` field
+
+11. **Validate** (`benchmarks/lib/validate.ts`) — default: `config.signals[0] ?? { vector: true }`
+
+12. **Eval cache** (`benchmarks/lib/eval-cache.ts`) — `EvalRunMeta.mode` → `EvalRunMeta.signals`
+
+13. **All 18 benchmark runners** — `mode: 'neural'` → `signals: SIGNALS.neural`, mode loops → signal loops
+
+14. **Diagnose script** (`benchmarks/scripts/diagnose-acc.ts`) — `mode: 'hybrid'` → `signals: { vector: true, keyword: true }`
+
+#### Signal ↔ old mode equivalence
+
+| Old Mode | Equivalent Signals | Notes |
+|----------|-------------------|-------|
+| fast | `{ vector: true }` | **New default** when no signals specified |
+| hybrid | `{ vector: true, keyword: true }` | |
+| graph | `{ graph: true }` | **New** — was impossible before |
+| memory | `{ memory: true }` | |
+| neural | `{ vector: true, keyword: true, graph: true, memory: true }` | |
+| auto | Removed — classifier is internal only | |
+
+#### New combinations unlocked
+
+- `{ vector: true, graph: true }` — vector + graph without keyword noise
+- `{ vector: true, memory: true }` — vector + memory without graph overhead
+- `{ vector: true, keyword: true, memory: true }` — hybrid + memory without graph
+- `{ graph: true, memory: true }` — graph + memory without indexed search
+- Custom `scoreWeights` — tune composite scoring per query
+- `graphReinforcement: 'off'` — allow graph to surface novel results not in indexed search
+
+#### Verification
+
+- Build: 7 packages compiled clean
+- Tests: 293 tests passed (no regressions)
+- Behavioral equivalence: signal defaults produce identical routing to old modes
+
+#### Key learnings
+
+- **Composable primitives > named presets.** Named modes (`fast`, `hybrid`, `neural`) hide what's actually happening and create artificial barriers. Users wanted `vector+graph` but couldn't get it because no mode offered that combination. Exposing the underlying signals directly is simpler and more powerful.
+- **Mode removal was cleaner than backward compat.** The initial plan kept `QueryMode` as convenience aliases. Removing it entirely was less code, fewer edge cases, and a clearer API. No backward-compat shims needed because the SDK is pre-1.0.
+- **Score weight auto-derivation makes composability practical.** With 15 possible signal combinations, hardcoding weights per combo is unmaintainable. `computeCompositeScore()` auto-derives equal weights from active signals, and users can override via `scoreWeights` for fine-tuning.
+- **Benchmark infrastructure is the long pole.** The SDK changes were straightforward (planner rewrite + type changes). Updating 18 benchmark runners, config, history, report, validate, and eval-cache was the bulk of the work. A shared `BenchSignals` type + `SIGNALS` presets kept it manageable.
+- **History file naming changed.** Old: `history-hybrid.json`, `history-fast.json`. New: `history-vector+keyword.json`, `history-vector.json`. Legacy files remain in the repo but new `--record` runs write to signal-named files.

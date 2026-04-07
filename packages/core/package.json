@@ -1,6 +1,6 @@
 {
   "name": "@d8um-ai/core",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "TypeScript SDK and open protocol for supplying context to LLMs",
   "type": "module",
   "main": "./dist/index.js",

@@ -29,7 +29,7 @@ export type {
 } from './adapter.js'
 
 export type {
-  QueryMode,
+  QuerySignals,
   d8umQuery,
   d8umResult,
   RawScores,

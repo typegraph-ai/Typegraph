@@ -31,7 +31,7 @@ async function main() {
     console.log('QUERY [' + queryId + ']: ' + queryText.slice(0, 150))
     console.log('GOLD: ' + gold)
 
-    const response = await d.query(queryText, { mode: 'hybrid', count: 50, buckets: [bucket.id] })
+    const response = await d.query(queryText, { signals: { vector: true, keyword: true }, count: 50, buckets: [bucket.id] })
 
     console.log('\nTOP 3 CHUNKS:')
     for (let i = 0; i < Math.min(3, response.results.length); i++) {

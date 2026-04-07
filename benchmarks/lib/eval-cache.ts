@@ -26,7 +26,7 @@ export interface EvalRunMeta {
   runId: string
   dataset: string
   variant: string
-  mode: string
+  signals: string
   evalModel: string
   startedAt: string
   totalQueries: number

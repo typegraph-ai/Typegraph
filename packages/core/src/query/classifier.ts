@@ -1,16 +1,23 @@
-import type { QueryMode } from '../types/query.js'
+import type { QuerySignals } from '../types/query.js'
+
+/** All signals active — used for complex/multi-hop queries that benefit from graph+memory. */
+const FULL_SIGNALS: QuerySignals = { vector: true, keyword: true, graph: true, memory: true }
+
+/** Vector-only — used for simple lookups and factual queries. */
+const VECTOR_ONLY: QuerySignals = { vector: true }
 
 /**
  * Lightweight query complexity classifier. No LLM call — pure heuristics.
  *
- * Returns 'neural' for queries that likely benefit from graph-augmented retrieval:
+ * Returns full signals (vector+keyword+graph+memory) for queries that likely
+ * benefit from graph-augmented retrieval:
  * - Multi-entity queries (mentions multiple names/concepts)
  * - Multi-hop questions (require connecting information across documents)
  * - Relational queries (ask about connections between entities)
  *
- * Returns 'hybrid' for simple lookups and factual queries.
+ * Returns vector-only for simple lookups and factual queries.
  */
-export function classifyQuery(text: string): QueryMode {
+export function classifyQuery(text: string): QuerySignals {
   const lower = text.toLowerCase()
 
   // Multi-hop indicators: connecting language
@@ -34,12 +41,12 @@ export function classifyQuery(text: string): QueryMode {
 
   // Check for relational/multi-hop patterns
   for (const pattern of multiHopPatterns) {
-    if (pattern.test(lower)) return 'neural'
+    if (pattern.test(lower)) return FULL_SIGNALS
   }
 
   // Check for complex questions
   for (const pattern of complexityIndicators) {
-    if (pattern.test(lower)) return 'neural'
+    if (pattern.test(lower)) return FULL_SIGNALS
   }
 
   // Count potential entity mentions (capitalized words not at sentence start)
@@ -51,7 +58,7 @@ export function classifyQuery(text: string): QueryMode {
       entityCount++
     }
   }
-  if (entityCount >= 3) return 'neural'
+  if (entityCount >= 3) return FULL_SIGNALS
 
-  return 'hybrid'
+  return VECTOR_ONLY
 }

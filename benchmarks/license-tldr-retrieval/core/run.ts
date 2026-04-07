@@ -12,7 +12,7 @@
  *   npx tsx --env-file=.env license-tldr-retrieval/core/run.ts --record      # save to history
  */
 
-import { getConfig } from '../../lib/config.js'
+import { getConfig, signalLabel } from '../../lib/config.js'
 import {
   parseCliArgs, initCore, resolveBucket, loadDataset,
   runIngestion, runQueries, computeMetrics, buildResult,
@@ -62,16 +62,16 @@ async function main() {
   // Phase 4+: Query in both modes
   const benchResults: BenchmarkResult[] = []
 
-  for (const mode of config.modes) {
-    console.log(`Running ${testQueries.length} queries (mode: ${mode})...`)
-    const { allResults, avgQueryMs } = await runQueries(d, bucket.id, testQueries, mode)
+  for (const signals of config.signals) {
+    console.log(`Running ${testQueries.length} queries (signals: ${signalLabel(signals)})...`)
+    const { allResults, avgQueryMs } = await runQueries(d, bucket.id, testQueries, signals)
     console.log()
 
-    console.log(`Computing IR metrics (${mode})...`)
+    console.log(`Computing IR metrics (${signalLabel(signals)})...`)
     const { metrics, scored } = computeMetrics(config, allResults, qrelsMap)
 
-    benchResults.push(buildResult(config, mode, corpus.length, scored, metrics, {
-      ingestDuration: mode === config.modes[0] ? ingestDuration : undefined,
+    benchResults.push(buildResult(config, signals, corpus.length, scored, metrics, {
+      ingestDuration: signals === config.signals[0] ? ingestDuration : undefined,
       avgQueryMs,
       totalStart,
       latency,

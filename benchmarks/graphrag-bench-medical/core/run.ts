@@ -16,7 +16,7 @@
 
 import { gateway } from '@ai-sdk/gateway'
 import { generateText } from 'ai'
-import { getConfig } from '../../lib/config.js'
+import { getConfig, signalLabel } from '../../lib/config.js'
 import {
   parseCliArgs, initCore, resolveBucket, loadDataset,
   runIngestion, buildResult, emitResults, printBanner, measureLatencyProfile,
@@ -84,8 +84,8 @@ async function main() {
     return result.embeddings[0]! as number[]
   }
 
-  for (const mode of config.modes) {
-    console.log(`Phase 4: Answer-generation eval — ${mode} (${evalQueries.length} queries, model: ${evalModel})...`)
+  for (const signals of config.signals) {
+    console.log(`Phase 4: Answer-generation eval — ${signalLabel(signals)} (${evalQueries.length} queries, model: ${evalModel})...`)
     console.log('  Single loop: retrieve → generate → score (GraphRAG-Bench LLM-as-judge)')
     const queryStart = performance.now()
 
@@ -100,7 +100,7 @@ async function main() {
       try {
         // Retrieve
         const response = await d.query(queryText, {
-          mode: mode as any, count: 50, buckets: [bucket.id],
+          signals, count: 50, buckets: [bucket.id],
         })
         const chunks = response.results.slice(0, 6).map(r => r.content)
         const context = chunks.join('\n\n---\n\n')
@@ -141,8 +141,8 @@ async function main() {
       ACC: answered > 0 ? sumACC / answered : 0,
     }
 
-    benchResults.push(buildResult(config, mode, corpus.length, answered, metrics, {
-      ingestDuration: mode === config.modes[0] ? ingestDuration : undefined,
+    benchResults.push(buildResult(config, signals, corpus.length, answered, metrics, {
+      ingestDuration: signals === config.signals[0] ? ingestDuration : undefined,
       avgQueryMs,
       totalStart,
       latency,

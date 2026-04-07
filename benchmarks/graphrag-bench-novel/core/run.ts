@@ -17,7 +17,7 @@
 
 import { gateway } from '@ai-sdk/gateway'
 import { generateText } from 'ai'
-import { getConfig } from '../../lib/config.js'
+import { getConfig, signalLabel } from '../../lib/config.js'
 import {
   parseCliArgs, initCore, resolveBucket, loadDataset,
   runIngestion, buildResult, emitResults, printBanner, measureLatencyProfile,
@@ -89,30 +89,31 @@ async function main() {
   // Parse run ID — for core, we append the mode to create per-mode cache files
   const baseRunId = parseRunId()
 
-  for (const mode of config.modes) {
-    // Each mode gets its own cache file (same run ID, different variant key)
+  for (const signals of config.signals) {
+    const label = signalLabel(signals)
+    // Each signals config gets its own cache file (same run ID, different variant key)
     const cache = new EvalCache({
       dataset: config.dataset,
-      variant: `core-${mode}`,
+      variant: `core-${label}`,
       runId: baseRunId,
     })
     cache.writeMeta({
       dataset: config.dataset,
       variant: 'core',
-      mode,
+      signals: label,
       evalModel,
       startedAt: new Date().toISOString(),
       totalQueries: evalQueries.length,
     })
 
     if (cache.resumed) {
-      console.log(`  Resuming run ${cache.runId} (${mode}) — ${cache.size} queries already scored`)
+      console.log(`  Resuming run ${cache.runId} (${label}) — ${cache.size} queries already scored`)
     } else {
-      console.log(`  Run ID: ${cache.runId} (${mode})`)
+      console.log(`  Run ID: ${cache.runId} (${label})`)
     }
     console.log(`  Cache file: ${cache.filePath}`)
 
-    console.log(`Phase 4: Answer-generation eval — ${mode} (${evalQueries.length} queries, model: ${evalModel})...`)
+    console.log(`Phase 4: Answer-generation eval — ${label} (${evalQueries.length} queries, model: ${evalModel})...`)
     console.log('  Single loop: retrieve → generate → score (GraphRAG-Bench LLM-as-judge)')
     const queryStart = performance.now()
 
@@ -135,7 +136,7 @@ async function main() {
       try {
         // Retrieve
         const response = await d.query(queryText, {
-          mode: mode as any, count: 50, buckets: [bucket.id],
+          signals, count: 50, buckets: [bucket.id],
         })
         const chunks = response.results.slice(0, 6).map(r => r.content)
         const context = chunks.join('\n\n---\n\n')
@@ -196,8 +197,8 @@ async function main() {
       ...perTypeACC,
     }
 
-    benchResults.push(buildResult(config, mode, corpus.length, answered, metrics, {
-      ingestDuration: mode === config.modes[0] ? ingestDuration : undefined,
+    benchResults.push(buildResult(config, signals, corpus.length, answered, metrics, {
+      ingestDuration: signals === config.signals[0] ? ingestDuration : undefined,
       avgQueryMs,
       totalStart,
       latency,

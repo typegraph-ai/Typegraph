@@ -81,7 +81,7 @@ export async function runValidation(
     // Step 3: Run 5 queries
     const queryCount = Math.min(VALIDATE_COUNT, testQueries.length)
     console.log(`  [3/4] Running ${queryCount} queries...`)
-    const mode = config.modes[0] ?? 'hybrid'
+    const signals = config.signals[0] ?? { vector: true }
     let totalResults = 0
     let totalMs = 0
 
@@ -91,7 +91,7 @@ export async function runValidation(
       const start = performance.now()
 
       const response = await d.query(queryText, {
-        mode: mode as any,
+        signals,
         count: QUERY_FETCH,
         buckets: [bucket.id],
       })

@@ -20,6 +20,31 @@ export const BATCH_SIZE = 30
 
 // ── Per-benchmark configuration ──
 
+/** Which retrieval signals to activate. Mirrors @d8um-ai/core QuerySignals. */
+export interface BenchSignals {
+  vector?: boolean
+  keyword?: boolean
+  graph?: boolean
+  memory?: boolean
+}
+
+/** Human-readable label from active signals (e.g. "vector+keyword"). */
+export function signalLabel(signals: BenchSignals): string {
+  const active: string[] = []
+  if (signals.vector) active.push('vector')
+  if (signals.keyword) active.push('keyword')
+  if (signals.graph) active.push('graph')
+  if (signals.memory) active.push('memory')
+  return active.join('+') || 'none'
+}
+
+/** Common signal presets */
+export const SIGNALS = {
+  vector: { vector: true } as BenchSignals,
+  vectorKeyword: { vector: true, keyword: true } as BenchSignals,
+  neural: { vector: true, keyword: true, graph: true, memory: true } as BenchSignals,
+} as const
+
 export interface BenchmarkConfig {
   /** Directory name under benchmarks/ */
   dataset: string
@@ -35,8 +60,8 @@ export interface BenchmarkConfig {
   loader: 'beir' | 'legal-rag' | 'graphrag-bench'
   /** Metrics to compute: standard (4 metrics) or extended (+MRR, Hit) */
   scorer: 'standard' | 'extended'
-  /** Search modes to run: core=['hybrid','fast'], neural=['neural'] */
-  modes: string[]
+  /** Signal configurations to test */
+  signals: BenchSignals[]
   /** Variant label for results */
   variant: 'core' | 'neural'
   /** Whether this benchmark supports --eval-answers flags */
@@ -62,7 +87,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/beir',
     loader: 'beir',
     scorer: 'standard',
-    modes: ['hybrid', 'fast'],
+    signals: [SIGNALS.vector, SIGNALS.vectorKeyword],
     variant: 'core',
     supportsAnswerEval: false,
   },
@@ -74,7 +99,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/beir',
     loader: 'beir',
     scorer: 'standard',
-    modes: ['neural'],
+    signals: [SIGNALS.neural],
     variant: 'neural',
     supportsAnswerEval: false,
   },
@@ -88,7 +113,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/isaacus',
     loader: 'beir',
     scorer: 'standard',
-    modes: ['hybrid', 'fast'],
+    signals: [SIGNALS.vector, SIGNALS.vectorKeyword],
     variant: 'core',
     supportsAnswerEval: false,
   },
@@ -100,7 +125,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/isaacus',
     loader: 'beir',
     scorer: 'standard',
-    modes: ['neural'],
+    signals: [SIGNALS.neural],
     variant: 'neural',
     supportsAnswerEval: false,
   },
@@ -114,7 +139,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/isaacus',
     loader: 'beir',
     scorer: 'standard',
-    modes: ['hybrid', 'fast'],
+    signals: [SIGNALS.vector, SIGNALS.vectorKeyword],
     variant: 'core',
     supportsAnswerEval: false,
   },
@@ -126,7 +151,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/isaacus',
     loader: 'beir',
     scorer: 'standard',
-    modes: ['neural'],
+    signals: [SIGNALS.neural],
     variant: 'neural',
     supportsAnswerEval: false,
   },
@@ -140,7 +165,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/isaacus',
     loader: 'beir',
     scorer: 'standard',
-    modes: ['hybrid', 'fast'],
+    signals: [SIGNALS.vector, SIGNALS.vectorKeyword],
     variant: 'core',
     supportsAnswerEval: false,
   },
@@ -152,7 +177,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/isaacus',
     loader: 'beir',
     scorer: 'standard',
-    modes: ['neural'],
+    signals: [SIGNALS.neural],
     variant: 'neural',
     supportsAnswerEval: false,
   },
@@ -166,7 +191,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/isaacus',
     loader: 'beir',
     scorer: 'standard',
-    modes: ['hybrid', 'fast'],
+    signals: [SIGNALS.vector, SIGNALS.vectorKeyword],
     variant: 'core',
     supportsAnswerEval: false,
   },
@@ -178,7 +203,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/isaacus',
     loader: 'beir',
     scorer: 'standard',
-    modes: ['neural'],
+    signals: [SIGNALS.neural],
     variant: 'neural',
     supportsAnswerEval: false,
   },
@@ -192,7 +217,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: '',  // custom loader, not blob-based
     loader: 'legal-rag',
     scorer: 'standard',
-    modes: ['hybrid', 'fast'],
+    signals: [SIGNALS.vector, SIGNALS.vectorKeyword],
     variant: 'core',
     supportsAnswerEval: false,
   },
@@ -204,7 +229,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: '',  // custom loader, not blob-based
     loader: 'legal-rag',
     scorer: 'standard',
-    modes: ['neural'],
+    signals: [SIGNALS.neural],
     variant: 'neural',
     supportsAnswerEval: false,
   },
@@ -219,7 +244,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets',
     loader: 'beir',
     scorer: 'extended',
-    modes: ['hybrid', 'fast'],
+    signals: [SIGNALS.vector, SIGNALS.vectorKeyword],
     variant: 'core',
     supportsAnswerEval: true,
     chunkSize: 256,
@@ -233,7 +258,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets',
     loader: 'beir',
     scorer: 'extended',
-    modes: ['neural'],
+    signals: [SIGNALS.neural],
     variant: 'neural',
     supportsAnswerEval: true,
     chunkSize: 256,
@@ -248,7 +273,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/graphrag-bench/novel',
     loader: 'graphrag-bench',
     scorer: 'standard',  // retrieval metrics have no qrels; answer-gen eval is primary
-    modes: ['hybrid', 'fast'],
+    signals: [SIGNALS.vector, SIGNALS.vectorKeyword],
     variant: 'core',
     supportsAnswerEval: true,
     chunkSize: 1200,
@@ -262,7 +287,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/graphrag-bench/novel',
     loader: 'graphrag-bench',
     scorer: 'standard',
-    modes: ['neural'],
+    signals: [SIGNALS.neural],
     variant: 'neural',
     supportsAnswerEval: true,
     chunkSize: 1200,
@@ -278,7 +303,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/graphrag-bench/medical',
     loader: 'graphrag-bench',
     scorer: 'standard',
-    modes: ['hybrid', 'fast'],
+    signals: [SIGNALS.vector, SIGNALS.vectorKeyword],
     variant: 'core',
     supportsAnswerEval: true,
     chunkSize: 1200,
@@ -292,7 +317,7 @@ export const BENCHMARK_CONFIGS: Record<string, BenchmarkConfig> = {
     blobPrefix: 'datasets/graphrag-bench/medical',
     loader: 'graphrag-bench',
     scorer: 'standard',
-    modes: ['neural'],
+    signals: [SIGNALS.neural],
     variant: 'neural',
     supportsAnswerEval: true,
     chunkSize: 1200,

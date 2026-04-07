@@ -21,7 +21,7 @@ export type {
   VectorStoreAdapter,
   UndeployResult,
   ScoredChunkWithDocument,
-  QueryMode,
+  QuerySignals,
   d8umQuery,
   d8umResult,
   RawScores,
@@ -78,6 +78,7 @@ export { IndexEngine, defaultChunker, sha256, stripMarkdown } from './index-engi
 // Query engine
 export { assemble } from './query/index.js'
 export { mergeAndRank, minMaxNormalize } from './query/index.js'
+export { resolveSignals, signalLabel, computeCompositeScore, classifyQuery } from './query/index.js'
 export { searchWithContext } from './query/index.js'
 export type { NormalizedResult } from './query/index.js'
 export type { ContextSearchOpts, ContextPassage, ContextSearchResponse } from './query/index.js'

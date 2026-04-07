@@ -1,4 +1,6 @@
 import { createHash } from 'crypto'
+import type { QuerySignals, NormalizedScores } from '../types/query.js'
+import { computeCompositeScore } from './planner.js'
 
 export interface NormalizedResult {
   content: string
@@ -58,7 +60,8 @@ export function normalizePPR(pprScore: number, dampingFactor = 0.35): number {
   return Math.min(pprScore / dampingFactor, 1.0)
 }
 
-const DEFAULT_WEIGHTS: Record<string, number> = {
+/** RRF weights by internal runner mode (used for inter-runner rank fusion). */
+const RRF_WEIGHTS: Record<string, number> = {
   indexed: 0.5,
   live: 0.1,
   cached: 0.1,
@@ -69,7 +72,9 @@ const DEFAULT_WEIGHTS: Record<string, number> = {
 export function mergeAndRank(
   runnerResults: NormalizedResult[][],
   count: number,
-  weights?: Record<string, number>
+  weights?: Record<string, number>,
+  signals?: Required<QuerySignals>,
+  scoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory', number>>
 ): NormalizedResult[] {
   const numLists = runnerResults.length
   const ranked = runnerResults.flatMap((results) =>
@@ -84,10 +89,13 @@ export function mergeAndRank(
     groups.set(key, group)
   }
 
+  // Default signals if not provided (all active — preserves legacy behavior)
+  const resolvedSignals: Required<QuerySignals> = signals ?? { vector: true, keyword: true, graph: true, memory: true }
+
   const merged = Array.from(groups.values()).map(group => {
     // Weighted RRF across runners
     const rrfScore = group.reduce((sum, r) => {
-      const weight = (weights ?? DEFAULT_WEIGHTS)[r.mode] ?? 0.5
+      const weight = (weights ?? RRF_WEIGHTS)[r.mode] ?? 0.5
       return sum + weight * (1 / (60 + r.runnerRank))
     }, 0)
 
@@ -104,14 +112,16 @@ export function mergeAndRank(
       }
     }
 
-    // Compute normalized composite score (0-1 range)
-    // All signals contribute: RRF, vector, keyword, graph (PPR-normalized), memory
+    // Compute normalized composite score using shared function
     const nRRF = normalizeRRF(rrfScore, numLists)
-    const vectorScore = aggregatedScores.vector ?? 0
-    const keywordScore = aggregatedScores.keyword ?? 0
-    const graphScore = normalizePPR(aggregatedScores.graph ?? 0)
-    const memoryScore = aggregatedScores.memory ?? 0
-    const compositeScore = 0.25 * nRRF + 0.35 * vectorScore + 0.1 * keywordScore + 0.15 * graphScore + 0.15 * memoryScore
+    const normalizedScores: NormalizedScores = {
+      rrf: nRRF,
+      semantic: aggregatedScores.vector ?? 0,
+      keyword: aggregatedScores.keyword ?? 0,
+      graph: normalizePPR(aggregatedScores.graph ?? 0),
+      memory: aggregatedScores.memory ?? 0,
+    }
+    const compositeScore = computeCompositeScore(normalizedScores, resolvedSignals, scoreWeights)
 
     return {
       ...best,

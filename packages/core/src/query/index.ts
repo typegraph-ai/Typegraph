@@ -1,4 +1,5 @@
-export { QueryPlanner } from './planner.js'
+export { QueryPlanner, resolveSignals, signalLabel, computeCompositeScore } from './planner.js'
+export { classifyQuery } from './classifier.js'
 export { mergeAndRank, minMaxNormalize, dedupKey, normalizeRRF, normalizePPR } from './merger.js'
 export type { NormalizedResult } from './merger.js'
 export { assemble } from './assemble.js'

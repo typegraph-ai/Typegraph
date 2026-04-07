@@ -1,7 +1,7 @@
 /**
  * history.ts — Local benchmark history recording
  *
- * Records benchmark results to history-{mode}.json files,
+ * Records benchmark results to history-{signals}.json files,
  * matching the format CI uses for auto-committed history.
  */
 
@@ -20,7 +20,7 @@ interface HistoryEntry {
     avgQueryMs: number
     totalSeconds: number
   }
-  mode: string
+  signals: string
   config: Record<string, unknown>
 }
 
@@ -37,14 +37,14 @@ function getToday(): string {
 }
 
 /**
- * Record a benchmark result to its mode-specific history file.
+ * Record a benchmark result to its signal-specific history file.
  *
- * File: benchmarks/{dataset}/{variant}/history-{mode}.json
+ * File: benchmarks/{dataset}/{variant}/history-{signals}.json
  */
 export function recordResult(result: BenchmarkResult): void {
   const variant = result.variant === 'neural' || result.variant === 'graph' ? 'neural' : 'core'
   const historyDir = join(dirname(new URL(import.meta.url).pathname), '..', result.dataset, variant)
-  const historyFile = join(historyDir, `history-${result.mode}.json`)
+  const historyFile = join(historyDir, `history-${result.signals}.json`)
 
   // Read existing history or start fresh
   let history: HistoryEntry[] = []
@@ -70,7 +70,7 @@ export function recordResult(result: BenchmarkResult): void {
       avgQueryMs: result.timing.avgQueryMs,
       totalSeconds: result.timing.totalSeconds,
     },
-    mode: result.mode,
+    signals: result.signals,
     config: result.config,
   }
 

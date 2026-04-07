@@ -16,7 +16,7 @@
 
 import { gateway } from '@ai-sdk/gateway'
 import { generateText } from 'ai'
-import { getConfig, LLM_MODEL } from '../../lib/config.js'
+import { getConfig, LLM_MODEL, SIGNALS, signalLabel } from '../../lib/config.js'
 import {
   parseCliArgs, initNeural, resolveBucket, loadDataset,
   runIngestion, buildResult, emitResults, printBanner, measureLatencyProfile,
@@ -82,7 +82,7 @@ async function main() {
   cache.writeMeta({
     dataset: config.dataset,
     variant: 'neural',
-    mode: 'neural',
+    signals: signalLabel(SIGNALS.neural),
     evalModel,
     startedAt: new Date().toISOString(),
     totalQueries: evalQueries.length,
@@ -131,7 +131,7 @@ async function main() {
     try {
       // Retrieve
       const response = await d.query(queryText, {
-        mode: 'neural', count: 50, buckets: [bucket.id],
+        signals: SIGNALS.neural, count: 50, buckets: [bucket.id],
       })
       const chunks = response.results.slice(0, 6).map(r => r.content)
       const context = chunks.join('\n\n---\n\n')
@@ -193,7 +193,7 @@ async function main() {
     ...perTypeACC,
   }
 
-  const result = buildResult(config, 'neural', corpus.length, answered, metrics, {
+  const result = buildResult(config, SIGNALS.neural, corpus.length, answered, metrics, {
     ingestDuration,
     avgQueryMs,
     totalStart,

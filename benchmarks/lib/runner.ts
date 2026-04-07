@@ -22,7 +22,9 @@ import {
   EMBEDDING_MODEL, EMBEDDING_DIMS, LLM_MODEL, EXTRACTION_MODEL,
   CHUNK_SIZE, CHUNK_OVERLAP, K, QUERY_FETCH, BATCH_SIZE,
   resolveChunkSize, resolveChunkOverlap, resolveEmbeddingModel, resolveEmbeddingDims,
+  signalLabel,
 } from './config.js'
+import type { BenchSignals } from './config.js'
 
 // ── CLI Argument Parsing ──
 
@@ -423,7 +425,7 @@ export async function runQueries(
   d: CoreInit['d'],
   bucketId: string,
   testQueries: Record<string, unknown>[],
-  mode: string,
+  signals: BenchSignals,
   opts?: {
     queryFetch?: number
     returnChunks?: boolean
@@ -444,7 +446,7 @@ export async function runQueries(
     const queryText = String(query['text'])
 
     const response = await d.query(queryText, {
-      mode: mode as any,
+      signals,
       count: queryFetch,
       buckets: [bucketId],
     })
@@ -489,7 +491,7 @@ export function computeMetrics(
 
 export function buildResult(
   config: BenchmarkConfig,
-  mode: string,
+  signals: BenchSignals,
   corpusSize: number,
   scored: number,
   metrics: BenchmarkMetrics,
@@ -517,7 +519,7 @@ export function buildResult(
   return {
     benchmark: config.displayName,
     dataset: config.dataset,
-    mode,
+    signals: signalLabel(signals),
     variant: config.variant,
     corpus: corpusSize,
     queries: scored,

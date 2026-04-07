@@ -1,4 +1,14 @@
-export type QueryMode = 'fast' | 'hybrid' | 'memory' | 'neural' | 'auto'
+/** Which retrieval signals to activate. All fields default to false except `vector` which defaults to true. */
+export interface QuerySignals {
+  /** ANN vector search against chunk embeddings. Default: true */
+  vector?: boolean | undefined
+  /** BM25 keyword search (requires adapter.hybridSearch). Default: false */
+  keyword?: boolean | undefined
+  /** PPR graph traversal via entity embeddings. Requires graph bridge. Default: false */
+  graph?: boolean | undefined
+  /** Cognitive memory recall. Requires graph bridge. Default: false */
+  memory?: boolean | undefined
+}
 
 export interface d8umQuery {
   text: string
@@ -66,8 +76,8 @@ export interface d8umResult {
 }
 
 export interface QueryOpts {
-  /** Retrieval strategy. Default: 'hybrid'. */
-  mode?: QueryMode | undefined
+  /** Which retrieval signals to activate. Default: { vector: true } (vector-only search). */
+  signals?: QuerySignals | undefined
   buckets?: string[] | undefined
   count?: number | undefined
   filters?: Record<string, unknown> | undefined
@@ -81,14 +91,15 @@ export interface QueryOpts {
   /** Filter results by document-level fields (status, scope, type, etc.). */
   documentFilter?: import('./d8um-document.js').DocumentFilter | undefined
 
-  mergeStrategy?: 'rrf' | 'linear' | 'custom' | undefined
-  mergeWeights?: {
-    indexed?: number | undefined
-    live?: number | undefined
-    cached?: number | undefined
-    memory?: number | undefined
-    graph?: number | undefined
-  } | undefined
+  /** Override composite score weights. Keys are signal names; values are 0-1 weights.
+   *  When omitted, defaults are derived from active signals. */
+  scoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory', number>> | undefined
+
+  /** Controls how graph results interact with indexed results.
+   *  - 'only': keep graph results only if they also appear in indexed results (default)
+   *  - 'prefer': boost matching results, but keep novel graph results at lower weight
+   *  - 'off': include all graph results as-is */
+  graphReinforcement?: 'only' | 'prefer' | 'off' | undefined
 
   timeouts?: {
     indexed?: number | undefined

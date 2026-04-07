@@ -12,7 +12,7 @@
  *   npx tsx --env-file=.env australian-tax-guidance-retrieval/neural/run.ts --record      # save to history
  */
 
-import { getConfig, LLM_MODEL } from '../../lib/config.js'
+import { getConfig, LLM_MODEL, SIGNALS, signalLabel } from '../../lib/config.js'
 import {
   parseCliArgs, initNeural, resolveBucket, loadDataset,
   runIngestion, runQueries, computeMetrics, buildResult,
@@ -62,16 +62,16 @@ async function main() {
   console.log()
 
   // Phase 4: Query (neural mode)
-  console.log(`Phase 4: Running ${testQueries.length} queries (mode: neural)...`)
+  console.log(`Phase 4: Running ${testQueries.length} queries (signals: ${signalLabel(SIGNALS.neural)})...`)
   console.log('  Neural = hybrid + memory recall + PPR graph traversal, merged via RRF')
-  const { allResults, avgQueryMs } = await runQueries(d, bucket.id, testQueries, 'neural')
+  const { allResults, avgQueryMs } = await runQueries(d, bucket.id, testQueries, SIGNALS.neural)
   console.log()
 
   // Phase 5: Score
   console.log('Phase 5: Computing IR metrics...')
   const { metrics, scored } = computeMetrics(config, allResults, qrelsMap)
 
-  const result = buildResult(config, 'neural', corpus.length, scored, metrics, {
+  const result = buildResult(config, SIGNALS.neural, corpus.length, scored, metrics, {
     ingestDuration,
     avgQueryMs,
     totalStart,

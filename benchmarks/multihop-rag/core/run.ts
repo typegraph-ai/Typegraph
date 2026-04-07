@@ -16,7 +16,7 @@
 
 import { gateway } from '@ai-sdk/gateway'
 import { generateText } from 'ai'
-import { getConfig, K } from '../../lib/config.js'
+import { getConfig, K, signalLabel } from '../../lib/config.js'
 import {
   parseCliArgs, initCore, resolveBucket, loadDataset,
   runIngestion, buildResult, emitResults, printBanner, measureLatencyProfile,
@@ -75,7 +75,7 @@ async function main() {
   const answerLimit = cli.evalAnswersLimit
   const evalModel = cli.evalLlmModel
 
-  for (const mode of config.modes) {
+  for (const signals of config.signals) {
     // Determine which queries to run
     let queries = testQueries
     if (cli.evalAnswersOnly) {
@@ -86,7 +86,7 @@ async function main() {
       doIR ? 'IR metrics' : null,
       doAnswerEval ? `answers (limit ${Math.min(answerLimit, queries.length)}, model: ${evalModel})` : null,
     ].filter(Boolean).join(' + ')
-    console.log(`Phase 4: Eval — ${mode} (${queries.length} queries, ${flags})...`)
+    console.log(`Phase 4: Eval — ${signalLabel(signals)} (${queries.length} queries, ${flags})...`)
 
     const queryStart = performance.now()
     const allResults = new Map<string, string[]>()
@@ -98,7 +98,7 @@ async function main() {
 
       // Retrieve
       const response = await d.query(queryText, {
-        mode: mode as any, count: 50, buckets: [bucket.id],
+        signals, count: 50, buckets: [bucket.id],
       })
 
       // IR: accumulate document-level results for scoring
@@ -151,8 +151,8 @@ async function main() {
       console.log(`  Answers: ${answered}${answerErrors > 0 ? ` (${answerErrors} errors)` : ''} — ACC=${metrics['ACC']!.toFixed(4)} (word-intersection)`)
     }
 
-    benchResults.push(buildResult(config, mode, corpus.length, scored, metrics as BenchmarkMetrics, {
-      ingestDuration: mode === config.modes[0] ? ingestDuration : undefined,
+    benchResults.push(buildResult(config, signals, corpus.length, scored, metrics as BenchmarkMetrics, {
+      ingestDuration: signals === config.signals[0] ? ingestDuration : undefined,
       avgQueryMs,
       totalStart,
       latency,

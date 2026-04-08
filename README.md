@@ -1,12 +1,10 @@
 <p align="center">
-  <img src="typegraph-logo-dark.png" alt="TypeGraph" width="250" />
+  <img src="typegraph-logo-dark.png" alt="TypeGraph" width="100" />
 </p>
 
 <div align="center">
   <h1>TypeGraph</h1>
 </div>
-
----
 
 <p align="center">
   <img src="https://img.shields.io/badge/MIT%20License-3DA639?logo=opensourceinitiative&logoColor=white" alt="MIT License" />

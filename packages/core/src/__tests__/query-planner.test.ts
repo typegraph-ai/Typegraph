@@ -33,14 +33,14 @@ describe('QueryPlanner', () => {
   })
 
   it('returns results for indexed sources', async () => {
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings)
     const response = await planner.execute('Document 1')
     expect(response.results.length).toBeGreaterThan(0)
     expect(response.results[0]!.content).toBeDefined()
   })
 
   it('respects count', async () => {
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings)
     const response = await planner.execute('test query', { count: 1 })
     expect(response.results).toHaveLength(1)
   })
@@ -54,7 +54,7 @@ describe('QueryPlanner', () => {
     const items = docs2.map(doc => ({ doc, chunks: defaultChunker(doc, indexConfig2) }))
     await engine.ingestBatch(bucket2.id, items, {}, indexConfig2)
 
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings)
     const response = await planner.execute('test', { buckets: ['src-1'] })
     for (const r of response.results) {
       expect(r.document.bucketId).toBe('src-1')
@@ -62,7 +62,7 @@ describe('QueryPlanner', () => {
   })
 
   it('records per-source timings', async () => {
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings)
     const response = await planner.execute('test')
     expect(response.buckets['src-1']).toBeDefined()
     expect(response.buckets['src-1']!.durationMs).toBeGreaterThanOrEqual(0)
@@ -70,19 +70,19 @@ describe('QueryPlanner', () => {
   })
 
   it('returns empty results when no sources', async () => {
-    const planner = new QueryPlanner(adapter, [], new Map())
+    const planner = new QueryPlanner(adapter, [], new Map(), new Map())
     const response = await planner.execute('test')
     expect(response.results).toHaveLength(0)
   })
 
   it('passes tenantId through', async () => {
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings)
     const response = await planner.execute('test', { tenantId: 'tenant-1' })
     expect(response.query.tenantId).toBe('tenant-1')
   })
 
   it('maps results to typegraphResult shape', async () => {
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings)
     const response = await planner.execute('Document 1')
     const result = response.results[0]!
     expect(result).toHaveProperty('content')
@@ -98,7 +98,7 @@ describe('QueryPlanner', () => {
   })
 
   it('uses "semantic" source label for indexed results', async () => {
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings)
     const response = await planner.execute('Document 1')
     const result = response.results[0]!
     expect(result.sources).toContain('semantic')

@@ -50,7 +50,14 @@ export interface typegraphConfig {
 
   // ── Self-hosted mode ──
   vectorStore?: VectorStoreAdapter | undefined
+  /** Default embedding provider for ingest and query. Required in self-hosted mode. */
   embedding?: EmbeddingConfig | undefined
+  /** Optional separate default query embedding. Must embed into the same vector space as `embedding`.
+   *  When set, all buckets use this for queries unless overridden per-bucket. */
+  queryEmbedding?: EmbeddingConfig | undefined
+  /** Register additional embedding providers for per-bucket overrides.
+   *  Each provider is keyed by its `.model` string. Buckets reference these by model name. */
+  additionalEmbeddings?: EmbeddingConfig[] | undefined
   tenantId?: string | undefined
   tokenizer?: ((text: string) => number) | undefined
   hooks?: typegraphHooks | undefined
@@ -169,6 +176,7 @@ export interface typegraphInstance {
   graph: GraphApi
 
   getEmbeddingForBucket(bucketId: string): EmbeddingProvider
+  getQueryEmbeddingForBucket(bucketId: string): EmbeddingProvider
   getDistinctEmbeddings(bucketIds?: string[]): Map<string, EmbeddingProvider>
   groupBucketsByModel(bucketIds?: string[]): Map<string, string[]>
 
@@ -228,11 +236,15 @@ export interface typegraphInstance {
 class TypegraphImpl implements typegraphInstance {
   private _buckets = new Map<string, Bucket>()
   private bucketEmbeddings = new Map<string, EmbeddingProvider>()
+  private bucketQueryEmbeddings = new Map<string, EmbeddingProvider>()
+  private embeddingRegistry = new Map<string, EmbeddingProvider>()
   private adapter!: VectorStoreAdapter
   private defaultEmbedding!: EmbeddingProvider
+  private defaultQueryEmbedding?: EmbeddingProvider
   private config!: typegraphConfig
   private configured = false
   private initialized = false
+  private bucketsLoaded = false
   private policyEngine?: PolicyEngine
 
   private get logger() { return this.config?.logger }
@@ -254,24 +266,36 @@ class TypegraphImpl implements typegraphInstance {
   buckets: BucketsApi = {
     create: async (input: CreateBucketInput): Promise<Bucket> => {
       this.assertConfigured()
+      const embeddingModel = input.embeddingModel ?? this.defaultEmbedding.model
+      const queryEmbeddingModel = input.queryEmbeddingModel ?? this.defaultQueryEmbedding?.model
+
+      // Validate model strings exist in registry
+      if (!this.embeddingRegistry.has(embeddingModel)) {
+        throw new ConfigError(`Embedding model "${embeddingModel}" is not registered. Register it via embedding, queryEmbedding, or additionalEmbeddings in typegraphConfig.`)
+      }
+      if (queryEmbeddingModel && !this.embeddingRegistry.has(queryEmbeddingModel)) {
+        throw new ConfigError(`Query embedding model "${queryEmbeddingModel}" is not registered. Register it via embedding, queryEmbedding, or additionalEmbeddings in typegraphConfig.`)
+      }
+
       const bucket: Bucket = {
         id: generateId('bkt'),
         name: input.name,
         description: input.description,
         status: 'active',
-        embeddingModel: input.embeddingModel ?? this.defaultEmbedding.model,
+        embeddingModel,
+        queryEmbeddingModel,
         indexDefaults: input.indexDefaults,
         tenantId: input.tenantId ?? this.config.tenantId,
       }
       if (this.adapter.upsertBucket) {
         const persisted = await this.adapter.upsertBucket(bucket)
         this._buckets.set(persisted.id, persisted)
-        this.bucketEmbeddings.set(persisted.id, this.defaultEmbedding)
+        this.resolveBucketEmbeddings(persisted)
         this.emitEvent('bucket.create', persisted.id, { name: persisted.name })
         return persisted
       }
       this._buckets.set(bucket.id, bucket)
-      this.bucketEmbeddings.set(bucket.id, this.defaultEmbedding)
+      this.resolveBucketEmbeddings(bucket)
       this.emitEvent('bucket.create', bucket.id, { name: bucket.name })
       return bucket
     },
@@ -282,7 +306,7 @@ class TypegraphImpl implements typegraphInstance {
         if (bucket) {
           this._buckets.set(bucket.id, bucket)
           if (!this.bucketEmbeddings.has(bucket.id)) {
-            this.bucketEmbeddings.set(bucket.id, this.defaultEmbedding)
+            this.resolveBucketEmbeddings(bucket)
           }
         }
         return bucket ?? undefined
@@ -297,7 +321,7 @@ class TypegraphImpl implements typegraphInstance {
         for (const b of buckets) {
           this._buckets.set(b.id, b)
           if (!this.bucketEmbeddings.has(b.id)) {
-            this.bucketEmbeddings.set(b.id, this.defaultEmbedding)
+            this.resolveBucketEmbeddings(b)
           }
         }
         return result
@@ -347,6 +371,7 @@ class TypegraphImpl implements typegraphInstance {
         this._buckets.delete(bucketId)
       }
       this.bucketEmbeddings.delete(bucketId)
+      this.bucketQueryEmbeddings.delete(bucketId)
       this.emitEvent('bucket.delete', bucketId)
     },
   }
@@ -474,7 +499,77 @@ class TypegraphImpl implements typegraphInstance {
   private applyConfig(config: typegraphConfig): void {
     this.config = config
     this.adapter = config.vectorStore!
+
+    // Resolve default providers
     this.defaultEmbedding = resolveEmbeddingProvider(config.embedding!)
+    if (config.queryEmbedding) {
+      this.defaultQueryEmbedding = resolveEmbeddingProvider(config.queryEmbedding)
+    }
+
+    // Build embedding registry — keyed by model string
+    this.embeddingRegistry.clear()
+    this.embeddingRegistry.set(this.defaultEmbedding.model, this.defaultEmbedding)
+    if (this.defaultQueryEmbedding) {
+      if (this.embeddingRegistry.has(this.defaultQueryEmbedding.model)) {
+        // Same model string is fine (user might provide same model as both default + query)
+      } else {
+        this.embeddingRegistry.set(this.defaultQueryEmbedding.model, this.defaultQueryEmbedding)
+      }
+    }
+    if (config.additionalEmbeddings) {
+      for (const embConfig of config.additionalEmbeddings) {
+        const provider = resolveEmbeddingProvider(embConfig)
+        if (this.embeddingRegistry.has(provider.model)) {
+          throw new ConfigError(`Duplicate embedding model "${provider.model}" in additionalEmbeddings. Each model string must be unique.`)
+        }
+        this.embeddingRegistry.set(provider.model, provider)
+      }
+    }
+  }
+
+  /** Resolve a bucket's embedding + query embedding model strings to providers from the registry. */
+  private resolveBucketEmbeddings(bucket: Bucket): void {
+    // Resolve ingest embedding
+    const ingestModel = bucket.embeddingModel ?? this.defaultEmbedding.model
+    const ingestProvider = this.embeddingRegistry.get(ingestModel)
+    if (!ingestProvider) {
+      throw new ConfigError(
+        `Bucket "${bucket.name}" uses embedding model "${ingestModel}" which was not provided in config. ` +
+        `Register it via embedding, queryEmbedding, or additionalEmbeddings.`
+      )
+    }
+    this.bucketEmbeddings.set(bucket.id, ingestProvider)
+
+    // Resolve query embedding: explicit bucket override → default query embedding → ingest provider
+    const queryModel = bucket.queryEmbeddingModel
+    if (queryModel) {
+      const queryProvider = this.embeddingRegistry.get(queryModel)
+      if (!queryProvider) {
+        throw new ConfigError(
+          `Bucket "${bucket.name}" uses query embedding model "${queryModel}" which was not provided in config. ` +
+          `Register it via embedding, queryEmbedding, or additionalEmbeddings.`
+        )
+      }
+      this.bucketQueryEmbeddings.set(bucket.id, queryProvider)
+    } else if (this.defaultQueryEmbedding) {
+      this.bucketQueryEmbeddings.set(bucket.id, this.defaultQueryEmbedding)
+    } else {
+      this.bucketQueryEmbeddings.set(bucket.id, ingestProvider)
+    }
+  }
+
+  /** Lazy-load buckets from DB on first use. No-op after first call. */
+  private async ensureBucketsLoaded(): Promise<void> {
+    if (this.bucketsLoaded) return
+    if (this.adapter.listBuckets) {
+      const result = await this.adapter.listBuckets()
+      const allBuckets = Array.isArray(result) ? result : result.items
+      for (const bucket of allBuckets) {
+        this._buckets.set(bucket.id, bucket)
+        this.resolveBucketEmbeddings(bucket)
+      }
+    }
+    this.bucketsLoaded = true
   }
 
   async deploy(config: typegraphConfig): Promise<this> {
@@ -496,6 +591,7 @@ class TypegraphImpl implements typegraphInstance {
       description: DEFAULT_BUCKET_DESCRIPTION,
       status: 'active',
       embeddingModel: this.defaultEmbedding.model,
+      queryEmbeddingModel: this.defaultQueryEmbedding?.model,
       tenantId: config.tenantId,
     }
     if (this.adapter.upsertBucket) {
@@ -504,7 +600,8 @@ class TypegraphImpl implements typegraphInstance {
     } else {
       this._buckets.set(defaultBucket.id, defaultBucket)
     }
-    this.bucketEmbeddings.set(DEFAULT_BUCKET_ID, this.defaultEmbedding)
+    this.resolveBucketEmbeddings(defaultBucket)
+    this.bucketsLoaded = true
 
     return this
   }
@@ -515,24 +612,15 @@ class TypegraphImpl implements typegraphInstance {
 
     await this.adapter.connect()
 
-    if (this.adapter.ensureModel) {
-      await this.adapter.ensureModel(this.defaultEmbedding.model, this.defaultEmbedding.dimensions)
-    }
+    // Bucket loading and ensureModel deferred to first use via ensureBucketsLoaded()
+    // for faster cold starts. ensureModel() also runs in IndexEngine before each ingest.
 
-    if (this.adapter.listBuckets) {
-      const result = await this.adapter.listBuckets()
-      const allBuckets = Array.isArray(result) ? result : result.items
-      for (const s of allBuckets) {
-        this._buckets.set(s.id, s)
-        this.bucketEmbeddings.set(s.id, this.defaultEmbedding)
-      }
-    }
     if (config.policyStore) {
       this.policyEngine = new PolicyEngine(config.policyStore, config.eventSink)
     }
     this.configured = true
     this.initialized = true
-    this.logger?.info('typegraph initialized', { tenantId: config.tenantId, bucketCount: this._buckets.size })
+    this.logger?.info('typegraph initialized', { tenantId: config.tenantId })
     return this
   }
 
@@ -545,6 +633,8 @@ class TypegraphImpl implements typegraphInstance {
     if (result.success) {
       this._buckets.clear()
       this.bucketEmbeddings.clear()
+      this.bucketQueryEmbeddings.clear()
+      this.bucketsLoaded = false
       this.configured = false
       this.initialized = false
     }
@@ -557,7 +647,12 @@ class TypegraphImpl implements typegraphInstance {
     return embedding
   }
 
+  getQueryEmbeddingForBucket(bucketId: string): EmbeddingProvider {
+    return this.bucketQueryEmbeddings.get(bucketId) ?? this.getEmbeddingForBucket(bucketId)
+  }
+
   private async resolveEmbeddingForBucket(bucketId: string): Promise<EmbeddingProvider> {
+    await this.ensureBucketsLoaded()
     const cached = this.bucketEmbeddings.get(bucketId)
     if (cached) return cached
     const bucket = await this.buckets.get(bucketId)
@@ -605,6 +700,7 @@ class TypegraphImpl implements typegraphInstance {
 
   async ingest(docs: RawDocument[], indexConfig: IndexConfig, opts: IndexOpts = {}): Promise<IndexResult> {
     await this.ensureInitialized()
+    await this.ensureBucketsLoaded()
     const resolvedBucketId = opts.bucketId || DEFAULT_BUCKET_ID
     await this.enforcePolicy('index', { tenantId: this.config.tenantId }, resolvedBucketId)
     const bucket = await this.buckets.get(resolvedBucketId)
@@ -625,6 +721,7 @@ class TypegraphImpl implements typegraphInstance {
 
   async ingestPreChunked(doc: RawDocument, chunks: Chunk[], opts: IndexOpts = {}): Promise<IndexResult> {
     await this.ensureInitialized()
+    await this.ensureBucketsLoaded()
     const resolvedBucketId = opts.bucketId || DEFAULT_BUCKET_ID
     await this.enforcePolicy('index', { tenantId: this.config.tenantId }, resolvedBucketId)
     const bucket = await this.buckets.get(resolvedBucketId)
@@ -641,12 +738,14 @@ class TypegraphImpl implements typegraphInstance {
 
   async query(text: string, opts?: QueryOpts): Promise<QueryResponse> {
     await this.ensureInitialized()
+    await this.ensureBucketsLoaded()
     await this.enforcePolicy('query', { tenantId: opts?.tenantId ?? this.config.tenantId })
     const { QueryPlanner } = await import('./query/planner.js')
     const planner = new QueryPlanner(
       this.adapter,
       [...this._buckets.keys()],
       this.bucketEmbeddings,
+      this.bucketQueryEmbeddings,
       this.config.graph,
       this.config.eventSink,
       this.logger,

@@ -604,13 +604,16 @@ export class PgVectorAdapter implements VectorStoreAdapter {
   async upsertBucket(bucket: Bucket): Promise<Bucket> {
     const rows = await this.sql(
       `INSERT INTO ${this.bucketsTable}
-        (id, name, description, status, tenant_id, group_id, user_id, agent_id, conversation_id, index_defaults, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+        (id, name, description, status, tenant_id, group_id, user_id, agent_id, conversation_id,
+         embedding_model, query_embedding_model, index_defaults, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name, description = EXCLUDED.description,
          status = EXCLUDED.status, tenant_id = EXCLUDED.tenant_id,
          group_id = EXCLUDED.group_id, user_id = EXCLUDED.user_id,
          agent_id = EXCLUDED.agent_id, conversation_id = EXCLUDED.conversation_id,
+         embedding_model = EXCLUDED.embedding_model,
+         query_embedding_model = EXCLUDED.query_embedding_model,
          index_defaults = EXCLUDED.index_defaults,
          updated_at = NOW()
        RETURNING *`,
@@ -618,6 +621,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
         bucket.id, bucket.name, bucket.description ?? null, bucket.status,
         bucket.tenantId ?? null, bucket.groupId ?? null, bucket.userId ?? null,
         bucket.agentId ?? null, bucket.conversationId ?? null,
+        bucket.embeddingModel ?? null, bucket.queryEmbeddingModel ?? null,
         bucket.indexDefaults ? JSON.stringify(bucket.indexDefaults) : null,
       ]
     )
@@ -755,6 +759,8 @@ function mapRowToBucket(row: Record<string, unknown>): Bucket {
     name: row.name as string,
     description: (row.description as string) ?? undefined,
     status: row.status as Bucket['status'],
+    embeddingModel: (row.embedding_model as string) ?? undefined,
+    queryEmbeddingModel: (row.query_embedding_model as string) ?? undefined,
     indexDefaults,
     tenantId: (row.tenant_id as string) ?? undefined,
     groupId: (row.group_id as string) ?? undefined,

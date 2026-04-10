@@ -264,8 +264,14 @@ export class TripleExtractor {
       }
 
       return { entities: entities.map(e => ({ name: e.name, type: e.type })) }
-    } catch {
-      // Triple extraction failures should not block indexing
+    } catch (err) {
+      // Triple extraction failures should not block indexing, but log for observability
+      console.error('[typegraph] Triple extraction failed', {
+        bucketId,
+        documentId,
+        chunkIndex,
+        error: err instanceof Error ? err.message : String(err),
+      })
       return undefined
     }
   }

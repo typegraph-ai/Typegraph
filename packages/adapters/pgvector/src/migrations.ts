@@ -237,6 +237,8 @@ export const BUCKETS_TABLE_SQL = (table: string) => {
     user_id     TEXT,
     agent_id    TEXT,
     conversation_id  TEXT,
+    embedding_model TEXT,
+    query_embedding_model TEXT,
     index_defaults JSONB,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()

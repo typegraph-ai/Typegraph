@@ -55,6 +55,13 @@ export interface IndexResult {
   durationMs: number
   /** 'accepted' in cloud mode (async), 'complete' in self-hosted mode (sync). */
   status?: 'accepted' | 'complete' | undefined
+  /** Triple extraction stats (present when graph is configured). */
+  extraction?: {
+    /** Number of chunks where extraction succeeded. */
+    succeeded: number
+    /** Number of chunks where extraction failed (errors swallowed). */
+    failed: number
+  } | undefined
 }
 
 export class IndexError extends Error {

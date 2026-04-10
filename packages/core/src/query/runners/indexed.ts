@@ -17,7 +17,7 @@ export class IndexedRunner {
    */
   async run(
     text: string,
-    sourcesByModel: Map<string, { embedding: EmbeddingProvider; bucketIds: string[] }>,
+    sourcesByModel: Map<string, { embedding: EmbeddingProvider; ingestModelId: string; bucketIds: string[] }>,
     count: number,
     identity?: typegraphIdentity,
     documentFilter?: DocumentFilter,
@@ -29,7 +29,8 @@ export class IndexedRunner {
     const allResults: NormalizedResult[] = []
     const fetchCount = count * 3
 
-    for (const [modelId, group] of sourcesByModel) {
+    for (const [, group] of sourcesByModel) {
+      const modelId = group.ingestModelId
       const bucketStartMs = Date.now()
       const queryEmbedding = await group.embedding.embed(text)
 

@@ -317,19 +317,21 @@ export class SqliteVecAdapter implements VectorStoreAdapter {
 
   async upsertBucket(bucket: Bucket): Promise<Bucket> {
     this.db.prepare(
-      `INSERT INTO ${this.bucketsTable} (id, name, description, status, tenant_id, updated_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO ${this.bucketsTable} (id, name, description, status, tenant_id, embedding_model, query_embedding_model, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT (id) DO UPDATE SET
          name = excluded.name, description = excluded.description,
-         status = excluded.status, tenant_id = excluded.tenant_id, updated_at = datetime('now')`
-    ).run(bucket.id, bucket.name, bucket.description ?? null, bucket.status, bucket.tenantId ?? null)
+         status = excluded.status, tenant_id = excluded.tenant_id,
+         embedding_model = excluded.embedding_model, query_embedding_model = excluded.query_embedding_model,
+         updated_at = datetime('now')`
+    ).run(bucket.id, bucket.name, bucket.description ?? null, bucket.status, bucket.tenantId ?? null, bucket.embeddingModel ?? null, bucket.queryEmbeddingModel ?? null)
     return bucket
   }
 
   async getBucket(id: string): Promise<Bucket | null> {
     const row = this.db.prepare(`SELECT * FROM ${this.bucketsTable} WHERE id = ?`).get(id) as Record<string, unknown> | undefined
     if (!row) return null
-    return { id: row.id as string, name: row.name as string, description: (row.description as string) ?? undefined, status: row.status as Bucket['status'], tenantId: (row.tenant_id as string) ?? undefined }
+    return mapRowToBucket(row)
   }
 
   async listBuckets(filter?: BucketListFilter): Promise<Bucket[]> {
@@ -342,7 +344,7 @@ export class SqliteVecAdapter implements VectorStoreAdapter {
     if (filter?.conversationId) { conditions.push('conversation_id = ?'); params.push(filter.conversationId) }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : ''
     const rows = this.db.prepare(`SELECT * FROM ${this.bucketsTable}${where} ORDER BY created_at`).all(...params) as Record<string, unknown>[]
-    return rows.map(r => ({ id: r.id as string, name: r.name as string, description: (r.description as string) ?? undefined, status: r.status as Bucket['status'], tenantId: (r.tenant_id as string) ?? undefined }))
+    return rows.map(r => mapRowToBucket(r))
   }
 
   async deleteBucket(id: string): Promise<void> {
@@ -380,6 +382,18 @@ function buildWhere(filter?: ChunkFilter): { where: string; params: unknown[] } 
   return {
     where: conditions.join(' AND '),
     params,
+  }
+}
+
+function mapRowToBucket(row: Record<string, unknown>): Bucket {
+  return {
+    id: row.id as string,
+    name: row.name as string,
+    description: (row.description as string) ?? undefined,
+    status: row.status as Bucket['status'],
+    tenantId: (row.tenant_id as string) ?? undefined,
+    embeddingModel: (row.embedding_model as string) ?? undefined,
+    queryEmbeddingModel: (row.query_embedding_model as string) ?? undefined,
   }
 }
 

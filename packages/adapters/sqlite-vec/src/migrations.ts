@@ -97,6 +97,8 @@ export const BUCKETS_TABLE_SQL = (table: string) => `
     description TEXT,
     status      TEXT NOT NULL DEFAULT 'active',
     tenant_id   TEXT,
+    embedding_model       TEXT,
+    query_embedding_model TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
   );

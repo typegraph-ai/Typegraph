@@ -121,6 +121,7 @@ export class QueryPlanner {
     private adapter: VectorStoreAdapter,
     private bucketIds: string[],
     private bucketEmbeddings: Map<string, EmbeddingProvider>,
+    private bucketQueryEmbeddings: Map<string, EmbeddingProvider>,
     private graph?: GraphBridge,
     private eventSink?: typegraphEventSink,
     private logger?: typegraphLogger,
@@ -149,21 +150,25 @@ export class QueryPlanner {
       ? opts.buckets.filter(id => this.bucketIds.includes(id))
       : this.bucketIds
 
-    // Group sources by embedding model
-    const modelGroups = new Map<string, { embedding: EmbeddingProvider; bucketIds: string[] }>()
+    // Group sources by ingest embedding model (determines table routing).
+    // Attach query embedding provider (may differ from ingest model).
+    const modelGroups = new Map<string, { embedding: EmbeddingProvider; ingestModelId: string; bucketIds: string[] }>()
     const warnings: string[] = []
 
     for (const bucketId of activeBucketIds) {
-      const emb = this.bucketEmbeddings.get(bucketId)
-      if (!emb) {
+      const ingestEmb = this.bucketEmbeddings.get(bucketId)
+      if (!ingestEmb) {
         warnings.push(`Bucket "${bucketId}" has no embedding provider - skipped`)
         continue
       }
-      const existing = modelGroups.get(emb.model)
+      const queryEmb = this.bucketQueryEmbeddings.get(bucketId) ?? ingestEmb
+      const ingestModelId = ingestEmb.model
+
+      const existing = modelGroups.get(ingestModelId)
       if (existing) {
         existing.bucketIds.push(bucketId)
       } else {
-        modelGroups.set(emb.model, { embedding: emb, bucketIds: [bucketId] })
+        modelGroups.set(ingestModelId, { embedding: queryEmb, ingestModelId, bucketIds: [bucketId] })
       }
     }
 

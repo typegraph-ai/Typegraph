@@ -15,8 +15,10 @@ export interface Bucket {
   name: string
   description?: string | undefined
   status: 'active' | 'inactive'
-  /** Embedding model for this bucket. Set at creation, immutable. */
+  /** Embedding model for this bucket (ingest). Set at creation, immutable. */
   embeddingModel?: string | undefined
+  /** Query embedding model for this bucket. Must embed into same vector space as embeddingModel. */
+  queryEmbeddingModel?: string | undefined
   indexDefaults?: IndexDefaults | undefined
   tenantId?: string | undefined
   groupId?: string | undefined
@@ -41,8 +43,11 @@ export interface IndexDefaults {
 export interface CreateBucketInput {
   name: string
   description?: string | undefined
-  /** Embedding model for this bucket. Once set, cannot be changed. Defaults to the instance's default embedding. */
+  /** Embedding model for this bucket (ingest). Once set, cannot be changed. Defaults to the instance's default embedding. */
   embeddingModel?: string | undefined
+  /** Query embedding model for this bucket. Must embed into same vector space as embeddingModel.
+   *  Defaults to the instance's queryEmbedding, or the ingest embeddingModel if not set. */
+  queryEmbeddingModel?: string | undefined
   indexDefaults?: IndexDefaults | undefined
   tenantId?: string | undefined
   groupId?: string | undefined

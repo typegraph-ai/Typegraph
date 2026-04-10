@@ -173,6 +173,10 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
       throw new Error('groupBucketsByModel() is not available in cloud mode — embedding is managed server-side.')
     },
 
+    getQueryEmbeddingForBucket(_bucketId: string): EmbeddingProvider {
+      throw new Error('getQueryEmbeddingForBucket() is not available in cloud mode — embedding is managed server-side.')
+    },
+
     async query(text: string, opts?: QueryOpts): Promise<QueryResponse> {
       return client.post<QueryResponse>('/v1/query', { text, ...opts })
     },

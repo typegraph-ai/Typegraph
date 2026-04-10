@@ -106,8 +106,9 @@ export class IndexEngine {
       }))
 
       // Extract triples for entity graph — await before hash store write
+      let extraction: { succeeded: number; failed: number } | undefined
       if (this.tripleExtractor && !dryRun) {
-        await Promise.allSettled(
+        const extractionResults = await Promise.allSettled(
           chunks.map(chunk =>
             withTimeout(
               this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex, documentId, { ...propagated, ...chunk.metadata }),
@@ -115,6 +116,8 @@ export class IndexEngine {
             )
           )
         )
+        const failed = extractionResults.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && r.value === undefined)).length
+        extraction = { succeeded: extractionResults.length - failed, failed }
       }
 
       if (!dryRun) {
@@ -146,6 +149,7 @@ export class IndexEngine {
         inserted: 1,
         pruned: 0,
         durationMs: Date.now() - startMs,
+        extraction,
       }
     } catch (error) {
       if (this.adapter.updateDocumentStatus && !dryRun) {
@@ -311,7 +315,7 @@ export class IndexEngine {
 
       // Extract triples for entity graph — await before hash store write
       if (this.tripleExtractor && !dryRun) {
-        await Promise.allSettled(
+        const extractionResults = await Promise.allSettled(
           chunks.map(chunk =>
             withTimeout(
               this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex, documentId, { ...propagated, ...chunk.metadata }),
@@ -319,6 +323,10 @@ export class IndexEngine {
             )
           )
         )
+        const failed = extractionResults.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && r.value === undefined)).length
+        if (!result.extraction) result.extraction = { succeeded: 0, failed: 0 }
+        result.extraction.succeeded += extractionResults.length - failed
+        result.extraction.failed += failed
       }
 
       if (!dryRun) {

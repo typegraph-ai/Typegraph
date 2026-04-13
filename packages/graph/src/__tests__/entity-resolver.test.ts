@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { EntityResolver, hasConflictingDistinguishers, hasSharedNameToken } from '../extraction/entity-resolver.js'
+import { EntityResolver, hasConflictingDistinguishers, hasSharedNameToken, isValidAlias } from '../extraction/entity-resolver.js'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
 import type { EmbeddingProvider } from '@typegraph-ai/core'
 import type { SemanticEntity } from '../types/memory.js'
@@ -658,6 +658,121 @@ describe('EntityResolver', () => {
       // Similarity 0.75 < threshold 0.85 → Phase 3 rejects (would have merged at old 0.68)
       // No description provided → Phase 3.5 doesn't fire
       expect(isNew).toBe(true)
+    })
+  })
+
+  describe('isValidAlias', () => {
+    // ── Should reject ──
+
+    it('rejects empty string', () => {
+      expect(isValidAlias('')).toBe(false)
+    })
+
+    it('rejects single character', () => {
+      expect(isValidAlias('a')).toBe(false)
+      expect(isValidAlias('X')).toBe(false)
+    })
+
+    it('rejects pronouns', () => {
+      expect(isValidAlias('it')).toBe(false)
+      expect(isValidAlias('he')).toBe(false)
+      expect(isValidAlias('she')).toBe(false)
+      expect(isValidAlias('they')).toBe(false)
+      expect(isValidAlias('them')).toBe(false)
+      expect(isValidAlias('we')).toBe(false)
+      expect(isValidAlias('this')).toBe(false)
+      expect(isValidAlias('that')).toBe(false)
+    })
+
+    it('rejects generic references with articles', () => {
+      expect(isValidAlias('the team')).toBe(false)
+      expect(isValidAlias('the roster')).toBe(false)
+      expect(isValidAlias('the company')).toBe(false)
+      expect(isValidAlias('the city')).toBe(false)
+      expect(isValidAlias('a league')).toBe(false)
+      expect(isValidAlias('an organization')).toBe(false)
+    })
+
+    it('rejects generic references with adjectives', () => {
+      expect(isValidAlias('the final team')).toBe(false)
+      expect(isValidAlias('the professional roster')).toBe(false)
+      expect(isValidAlias('the forthcoming event')).toBe(false)
+    })
+
+    it('rejects pure numbers', () => {
+      expect(isValidAlias('2024')).toBe(false)
+      expect(isValidAlias('42')).toBe(false)
+      expect(isValidAlias('1984')).toBe(false)
+    })
+
+    // ── Should accept ──
+
+    it('accepts abbreviations', () => {
+      expect(isValidAlias('NASA')).toBe(true)
+      expect(isValidAlias('NBA')).toBe(true)
+      expect(isValidAlias('MIT')).toBe(true)
+      expect(isValidAlias('AI')).toBe(true)
+      expect(isValidAlias('US')).toBe(true)
+    })
+
+    it('accepts proper names', () => {
+      expect(isValidAlias('Stephen Curry')).toBe(true)
+      expect(isValidAlias('Klay Thompson')).toBe(true)
+    })
+
+    it('accepts single-word proper nouns', () => {
+      expect(isValidAlias('Google')).toBe(true)
+      expect(isValidAlias('Apple')).toBe(true)
+      expect(isValidAlias('Celtics')).toBe(true)
+    })
+
+    it('accepts "the"-prefixed proper names', () => {
+      expect(isValidAlias('The New York Times')).toBe(true)
+      expect(isValidAlias('The Beatles')).toBe(true)
+    })
+
+    it('accepts legitimate nicknames', () => {
+      expect(isValidAlias('KD')).toBe(true)
+      expect(isValidAlias('The Slim Reaper')).toBe(true)
+      expect(isValidAlias('Magic Johnson')).toBe(true)
+    })
+
+    it('accepts alphanumeric combinations', () => {
+      expect(isValidAlias('Apollo 13')).toBe(true)
+      expect(isValidAlias('2024 Finals')).toBe(true)
+    })
+  })
+
+  describe('merge with isValidAlias filtering', () => {
+    it('filters garbage aliases during merge', async () => {
+      const resolver = new EntityResolver({
+        store: mockStore(),
+        embedding: mockEmbedding(),
+      })
+
+      const existing: SemanticEntity = {
+        id: 'e-celtics',
+        name: 'Boston Celtics',
+        entityType: 'organization',
+        aliases: ['Celtics'],
+        properties: {},
+        scope: testScope,
+        temporal: { validAt: new Date(), createdAt: new Date() },
+      }
+
+      const merged = await resolver.merge(existing, {
+        name: 'Boston Celtics',
+        entityType: 'organization',
+        aliases: ['it', 'the team', 'Team USA', 'Celtics'],
+      })
+
+      // "Team USA" is valid and new → kept
+      expect(merged.aliases).toContain('Team USA')
+      // "Celtics" already exists → not duplicated
+      expect(merged.aliases.filter(a => a === 'Celtics')).toHaveLength(1)
+      // "it" and "the team" are garbage → rejected
+      expect(merged.aliases).not.toContain('it')
+      expect(merged.aliases).not.toContain('the team')
     })
   })
 })

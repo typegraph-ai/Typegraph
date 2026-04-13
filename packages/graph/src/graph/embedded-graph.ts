@@ -93,6 +93,24 @@ export class EmbeddedGraph {
   }
 
   /**
+   * Get multiple entities by ID in a single batch query.
+   * Falls back to sequential getEntity() if batch not supported.
+   */
+  async getEntitiesBatch(ids: string[]): Promise<SemanticEntity[]> {
+    if (this.store.getEntitiesBatch) {
+      return this.store.getEntitiesBatch(ids)
+    }
+    // Fallback to sequential
+    if (!this.store.getEntity) return []
+    const results: SemanticEntity[] = []
+    for (const id of ids) {
+      const entity = await this.store.getEntity(id)
+      if (entity) results.push(entity)
+    }
+    return results
+  }
+
+  /**
    * Breadth-first traversal from a starting entity.
    * Returns all entities reachable within the given depth.
    */
@@ -149,55 +167,72 @@ export class EmbeddedGraph {
 
   /**
    * Extract a subgraph containing the given entities and all edges between them.
+   * Uses batch operations to minimise DB roundtrips (4 instead of ~N*depth).
    */
   async getSubgraph(
     entityIds: string[],
     depth: number = 0,
   ): Promise<Subgraph> {
-    const entitySet = new Set(entityIds)
-    const entities: SemanticEntity[] = []
-    const edges: SemanticEdge[] = []
-    const edgeSet = new Set<string>()
+    // Step 1: Batch-load seed entities (1 roundtrip)
+    const seedEntities = await this.getEntitiesBatch(entityIds)
+    const entityMap = new Map<string, SemanticEntity>()
+    for (const e of seedEntities) entityMap.set(e.id, e)
 
-    // Get all requested entities
-    for (const id of entityIds) {
-      if (this.store.getEntity) {
-        const entity = await this.store.getEntity(id)
-        if (entity) entities.push(entity)
-      }
-    }
+    // Track which entity IDs have had their edges loaded
+    const edgeLoadedIds = new Set<string>()
+    const allEdges: SemanticEdge[] = []
 
-    // If depth > 0, expand the entity set with neighbors
+    // Step 2: BFS expansion using batch operations
     if (depth > 0) {
-      for (const id of entityIds) {
-        const neighbors = await this.getNeighbors(id, depth)
-        for (const n of neighbors) {
-          if (!entitySet.has(n.entity.id)) {
-            entitySet.add(n.entity.id)
-            entities.push(n.entity)
-          }
+      let frontier = entityIds.filter(id => entityMap.has(id))
+
+      for (let d = 0; d < depth && frontier.length > 0; d++) {
+        // Batch-load edges for current frontier (1 roundtrip per depth level)
+        const frontierEdges = await this.getEdgesBatch(frontier, 'both')
+        allEdges.push(...frontierEdges)
+        for (const id of frontier) edgeLoadedIds.add(id)
+
+        // Collect newly discovered neighbor IDs
+        const newIds: string[] = []
+        for (const edge of frontierEdges) {
+          if (!entityMap.has(edge.sourceEntityId)) newIds.push(edge.sourceEntityId)
+          if (!entityMap.has(edge.targetEntityId)) newIds.push(edge.targetEntityId)
         }
+        const uniqueNewIds = [...new Set(newIds)]
+
+        if (uniqueNewIds.length > 0) {
+          // Batch-load neighbor entities (1 roundtrip per depth level)
+          const neighbors = await this.getEntitiesBatch(uniqueNewIds)
+          for (const n of neighbors) entityMap.set(n.id, n)
+        }
+
+        // Next frontier = newly discovered entities
+        frontier = uniqueNewIds.filter(id => entityMap.has(id))
       }
     }
 
-    // Collect edges between entities in the set
-    for (const id of entitySet) {
-      if (this.store.getEdges) {
-        const entityEdges = await this.store.getEdges(id, 'both')
-        for (const edge of entityEdges) {
-          if (
-            !edgeSet.has(edge.id) &&
-            entitySet.has(edge.sourceEntityId) &&
-            entitySet.has(edge.targetEntityId)
-          ) {
-            edgeSet.add(edge.id)
-            edges.push(edge)
-          }
-        }
+    // Step 3: Load edges for entities that haven't had edges loaded yet
+    const needEdgeIds = [...entityMap.keys()].filter(id => !edgeLoadedIds.has(id))
+    if (needEdgeIds.length > 0) {
+      const remaining = await this.getEdgesBatch(needEdgeIds, 'both')
+      allEdges.push(...remaining)
+    }
+
+    // Deduplicate edges and filter to those with both endpoints in the entity set
+    const edgeSet = new Set<string>()
+    const edges: SemanticEdge[] = []
+    for (const edge of allEdges) {
+      if (
+        !edgeSet.has(edge.id) &&
+        entityMap.has(edge.sourceEntityId) &&
+        entityMap.has(edge.targetEntityId)
+      ) {
+        edgeSet.add(edge.id)
+        edges.push(edge)
       }
     }
 
-    return { entities, edges }
+    return { entities: [...entityMap.values()], edges }
   }
 
   /**

@@ -53,11 +53,23 @@ function mockStore(
     }),
     searchEntities: vi.fn().mockResolvedValue([]),
     upsertEdge: vi.fn().mockImplementation(async (e: SemanticEdge) => { edges.push(e); return e }),
+    getEntitiesBatch: vi.fn().mockImplementation(async (ids: string[]) => {
+      return ids.map(id => entities.get(id)).filter(Boolean) as SemanticEntity[]
+    }),
     getEdges: vi.fn().mockImplementation(async (entityId: string, direction: string = 'both') => {
       return edges.filter(e => {
         if (direction === 'out') return e.sourceEntityId === entityId
         if (direction === 'in') return e.targetEntityId === entityId
         return e.sourceEntityId === entityId || e.targetEntityId === entityId
+      })
+    }),
+    getEdgesBatch: vi.fn().mockImplementation(async (entityIds: string[], direction: string = 'both') => {
+      return edges.filter(e => {
+        const matchSource = entityIds.includes(e.sourceEntityId)
+        const matchTarget = entityIds.includes(e.targetEntityId)
+        if (direction === 'out') return matchSource
+        if (direction === 'in') return matchTarget
+        return matchSource || matchTarget
       })
     }),
     findEdges: vi.fn().mockResolvedValue([]),
@@ -149,6 +161,67 @@ describe('EmbeddedGraph', () => {
       const subgraph = await graph.getSubgraph(['alice', 'bob'])
       expect(subgraph.entities).toHaveLength(2)
       expect(subgraph.edges).toHaveLength(1)
+    })
+
+    it('uses batch operations instead of sequential calls', async () => {
+      const alice = makeEntity('alice', 'Alice')
+      const bob = makeEntity('bob', 'Bob')
+      const entities = new Map([['alice', alice], ['bob', bob]])
+
+      const edgeList = [makeEdge('e1', 'alice', 'bob', 'KNOWS')]
+      const store = mockStore(entities, edgeList)
+      const graph = new EmbeddedGraph(store)
+
+      await graph.getSubgraph(['alice', 'bob'])
+
+      // Should use batch operations, not sequential getEntity calls
+      expect(store.getEntitiesBatch).toHaveBeenCalled()
+      expect(store.getEdgesBatch).toHaveBeenCalled()
+    })
+
+    it('expands neighbors at depth=1 using batch operations', async () => {
+      const alice = makeEntity('alice', 'Alice')
+      const bob = makeEntity('bob', 'Bob')
+      const charlie = makeEntity('charlie', 'Charlie')
+      const entities = new Map([['alice', alice], ['bob', bob], ['charlie', charlie]])
+
+      const edgeList = [
+        makeEdge('e1', 'alice', 'bob', 'KNOWS'),
+        makeEdge('e2', 'bob', 'charlie', 'KNOWS'),
+      ]
+      const store = mockStore(entities, edgeList)
+      const graph = new EmbeddedGraph(store)
+
+      const subgraph = await graph.getSubgraph(['alice'], 1)
+
+      // Alice + Bob (discovered via edge)
+      expect(subgraph.entities).toHaveLength(2)
+      expect(subgraph.entities.map(e => e.name).sort()).toEqual(['Alice', 'Bob'])
+      // Only e1 (alice->bob), not e2 (bob->charlie) since charlie is not in the set at depth=1
+      expect(subgraph.edges).toHaveLength(1)
+    })
+
+    it('deduplicates edges across BFS and final collection', async () => {
+      const a = makeEntity('a', 'A')
+      const b = makeEntity('b', 'B')
+      const c = makeEntity('c', 'C')
+      const entities = new Map([['a', a], ['b', b], ['c', c]])
+
+      const edgeList = [
+        makeEdge('e1', 'a', 'b', 'R1'),
+        makeEdge('e2', 'b', 'c', 'R2'),
+        makeEdge('e3', 'a', 'c', 'R3'),
+      ]
+      const graph = new EmbeddedGraph(mockStore(entities, edgeList))
+
+      const subgraph = await graph.getSubgraph(['a'], 2)
+
+      // All 3 entities reachable within depth=2
+      expect(subgraph.entities).toHaveLength(3)
+      // All 3 edges should appear exactly once (no duplicates)
+      expect(subgraph.edges).toHaveLength(3)
+      const edgeIds = subgraph.edges.map(e => e.id).sort()
+      expect(edgeIds).toEqual(['e1', 'e2', 'e3'])
     })
   })
 

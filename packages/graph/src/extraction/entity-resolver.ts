@@ -5,6 +5,99 @@ import type { MemoryStoreAdapter } from '../types/adapter.js'
 import { createTemporal } from '../temporal.js'
 import { generateId } from '@typegraph-ai/core'
 
+// ── Alias validation ──
+
+const PRONOUN_BLOCKLIST = new Set([
+  'i', 'me', 'my', 'mine', 'myself',
+  'you', 'your', 'yours', 'yourself',
+  'he', 'him', 'his', 'himself',
+  'she', 'her', 'hers', 'herself',
+  'it', 'its', 'itself',
+  'we', 'us', 'our', 'ours', 'ourselves',
+  'they', 'them', 'their', 'theirs', 'themselves',
+  'this', 'that', 'these', 'those',
+  'who', 'whom', 'whose', 'which', 'what',
+])
+
+const GENERIC_NOUNS = new Set([
+  'team', 'teams', 'roster', 'rosters', 'squad', 'squads',
+  'company', 'companies', 'firm', 'firms', 'corporation', 'corporations',
+  'organization', 'organizations', 'group', 'groups', 'unit', 'units',
+  'city', 'cities', 'town', 'towns', 'country', 'countries', 'state', 'states',
+  'nation', 'nations', 'area', 'areas', 'region', 'regions', 'place', 'places',
+  'player', 'players', 'person', 'people', 'man', 'woman', 'individual', 'individuals',
+  'league', 'leagues', 'conference', 'conferences', 'division', 'divisions',
+  'game', 'games', 'match', 'matches', 'series', 'season', 'seasons',
+  'award', 'awards', 'prize', 'prizes', 'committee', 'committees',
+  'event', 'events', 'show', 'shows', 'movie', 'movies', 'film', 'films',
+  'book', 'books', 'album', 'albums', 'song', 'songs',
+  'thing', 'things', 'item', 'items', 'entity', 'entities',
+  'one', 'ones', 'other', 'others', 'same', 'first', 'last', 'next', 'final',
+  'protocol', 'protocols', 'framework', 'frameworks', 'ingredient', 'ingredients',
+  'system', 'systems', 'service', 'services', 'project', 'projects',
+])
+
+/**
+ * Validates whether a string is a legitimate alias (proper name, abbreviation, or nickname).
+ * Rejects pronouns, generic noun phrases, pure numbers, and too-short strings.
+ *
+ * Examples:
+ *   isValidAlias("NASA") → true
+ *   isValidAlias("Celtics") → true
+ *   isValidAlias("it") → false
+ *   isValidAlias("the team") → false
+ *   isValidAlias("2024") → false
+ */
+export function isValidAlias(alias: string): boolean {
+  const trimmed = alias.trim()
+
+  // Reject empty or single-character
+  if (trimmed.length < 2) return false
+
+  const lower = trimmed.toLowerCase()
+
+  // Reject pronouns — only when original is all-lowercase (preserves "US", "IT" as abbreviations)
+  if (trimmed === lower && PRONOUN_BLOCKLIST.has(lower)) return false
+
+  // Reject pure numbers (years, counts, etc.)
+  if (/^\d+$/.test(trimmed)) return false
+
+  // Reject "the/a/an/this/that + optional adjectives + generic noun" patterns
+  // Matches: "the team", "a company", "the final team", "the forthcoming American roster",
+  //          "this professional roster", "an organization"
+  const genericPattern = /^(?:the|a|an|this|that|these|those)\s+(?:\w+\s+)*(\w+)$/i
+  const match = trimmed.match(genericPattern)
+  if (match) {
+    const lastWord = match[1]!.toLowerCase()
+    if (GENERIC_NOUNS.has(lastWord)) return false
+  }
+
+  // Reject bare generic nouns (without article)
+  // e.g., "professional roster", "defending champions"
+  const words = lower.split(/\s+/)
+  if (words.length <= 2) {
+    const lastWord = words[words.length - 1]!
+    if (GENERIC_NOUNS.has(lastWord) && words.every(w => !w.match(/^[A-Z]/) || GENERIC_NOUNS.has(w) || isCommonAdjective(w))) {
+      // Only reject if ALL words are generic/adjective — keeps "Boston team" → hmm, that's debatable
+      // Be conservative: only reject if the entire string is lowercase (no proper noun capitalization signal)
+      if (trimmed === lower) return false
+    }
+  }
+
+  return true
+}
+
+/** Common adjectives that appear in generic references but not proper names */
+function isCommonAdjective(word: string): boolean {
+  const ADJECTIVES = new Set([
+    'professional', 'defending', 'former', 'current', 'main', 'primary',
+    'final', 'forthcoming', 'upcoming', 'previous', 'next', 'last',
+    'first', 'second', 'third', 'new', 'old', 'big', 'small',
+    'american', 'national', 'international', 'local', 'regional',
+  ])
+  return ADJECTIVES.has(word)
+}
+
 // ── Entity Resolver ──
 // Deduplicates entities using a 6-phase cascade:
 //   Phase 0: In-memory session cache (instant)
@@ -48,6 +141,7 @@ export class EntityResolver {
   private cacheEntity(entity: SemanticEntity): void {
     this.nameCache.set(normalizeForComparison(entity.name), entity)
     for (const alias of entity.aliases) {
+      if (!isValidAlias(alias)) continue // skip indexing garbage aliases
       this.nameCache.set(normalizeForComparison(alias), entity)
     }
   }
@@ -71,8 +165,9 @@ export class EntityResolver {
       this.cacheEntity(merged)
       return { entity: merged, isNew: false }
     }
-    // Also check aliases against cache
+    // Also check aliases against cache (skip invalid aliases to prevent false cache hits)
     for (const alias of aliases) {
+      if (!isValidAlias(alias)) continue
       const cachedByAlias = this.nameCache.get(normalizeForComparison(alias))
       if (cachedByAlias) {
         const merged = await this.merge(cachedByAlias, { name, entityType, aliases, description })
@@ -213,15 +308,16 @@ export class EntityResolver {
     const existingAliases = new Set(existing.aliases.map(a => a.toLowerCase()))
     const newAliases = [...existing.aliases]
 
-    // Add the incoming name as an alias if different from canonical
+    // Add the incoming name as an alias if different from canonical (validate first)
     if (incoming.name.toLowerCase() !== existing.name.toLowerCase()) {
-      if (!existingAliases.has(incoming.name.toLowerCase())) {
+      if (!existingAliases.has(incoming.name.toLowerCase()) && isValidAlias(incoming.name)) {
         newAliases.push(incoming.name)
       }
     }
 
-    // Add new aliases
+    // Add new aliases (filter out garbage)
     for (const alias of incoming.aliases) {
+      if (!isValidAlias(alias)) continue
       if (!existingAliases.has(alias.toLowerCase()) && alias.toLowerCase() !== existing.name.toLowerCase()) {
         newAliases.push(alias)
       }

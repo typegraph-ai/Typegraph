@@ -1,6 +1,6 @@
 {
   "name": "@typegraph-ai/graph",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "Knowledge graph, cognitive memory, and neural retrieval for typegraph - entities, edges, PPR, extraction, consolidation",
   "type": "module",
   "main": "./dist/index.js",

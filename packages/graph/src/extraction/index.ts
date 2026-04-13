@@ -13,7 +13,7 @@ export type {
   ExtractionConfig,
 } from './extractor.js'
 
-export { EntityResolver, hasConflictingDistinguishers, hasSharedNameToken } from './entity-resolver.js'
+export { EntityResolver, hasConflictingDistinguishers, hasSharedNameToken, isValidAlias } from './entity-resolver.js'
 export type { EntityResolverConfig } from './entity-resolver.js'
 
 export { InvalidationEngine } from './invalidation.js'

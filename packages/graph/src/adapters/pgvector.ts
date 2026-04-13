@@ -574,8 +574,26 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   }
 
   async getEntity(id: string): Promise<SemanticEntity | null> {
-    const rows = await this.sql(`SELECT * FROM ${this.entitiesTable} WHERE id = $1`, [id])
+    const rows = await this.sql(
+      `SELECT id, name, entity_type, aliases, properties, scope,
+              tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
+              valid_at, invalid_at, created_at, updated_at
+       FROM ${this.entitiesTable} WHERE id = $1`,
+      [id]
+    )
     return rows.length > 0 ? mapRowToEntity(rows[0]!) : null
+  }
+
+  async getEntitiesBatch(ids: string[]): Promise<SemanticEntity[]> {
+    if (ids.length === 0) return []
+    const rows = await this.sql(
+      `SELECT id, name, entity_type, aliases, properties, scope,
+              tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
+              valid_at, invalid_at, created_at, updated_at
+       FROM ${this.entitiesTable} WHERE id = ANY($1::text[])`,
+      [ids]
+    )
+    return rows.map(mapRowToEntity)
   }
 
   async findEntities(query: string, scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]> {
@@ -587,7 +605,10 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const limitParam = `$${baseIdx + 2}`
     const scopeClause = where ? ` AND ${where}` : ''
     const rows = await this.sql(
-      `SELECT * FROM ${this.entitiesTable}
+      `SELECT id, name, entity_type, aliases, properties, scope,
+              tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
+              valid_at, invalid_at, created_at, updated_at
+       FROM ${this.entitiesTable}
        WHERE (name ILIKE ${nameParam}
               OR EXISTS (SELECT 1 FROM unnest(aliases) AS a WHERE a ILIKE ${nameParam}))
          ${scopeClause}
@@ -671,19 +692,19 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
 
   async getEdgesBatch(entityIds: string[], direction: 'in' | 'out' | 'both' = 'both'): Promise<SemanticEdge[]> {
     if (entityIds.length === 0) return []
-    const placeholders = entityIds.map((_, i) => `$${i + 1}`).join(',')
-    let where: string
+    let query: string
     if (direction === 'out') {
-      where = `source_entity_id IN (${placeholders})`
+      query = `SELECT * FROM ${this.edgesTable} WHERE source_entity_id = ANY($1::text[]) AND invalid_at IS NULL`
     } else if (direction === 'in') {
-      where = `target_entity_id IN (${placeholders})`
+      query = `SELECT * FROM ${this.edgesTable} WHERE target_entity_id = ANY($1::text[]) AND invalid_at IS NULL`
     } else {
-      where = `(source_entity_id IN (${placeholders}) OR target_entity_id IN (${placeholders}))`
+      // UNION ALL lets Postgres use each B-tree index separately (faster than bitmap OR).
+      // Duplicates (edges where both endpoints are in the set) are expected — callers deduplicate by edge ID.
+      query = `SELECT * FROM ${this.edgesTable} WHERE source_entity_id = ANY($1::text[]) AND invalid_at IS NULL
+               UNION ALL
+               SELECT * FROM ${this.edgesTable} WHERE target_entity_id = ANY($1::text[]) AND invalid_at IS NULL`
     }
-    const rows = await this.sql(
-      `SELECT * FROM ${this.edgesTable} WHERE ${where} AND invalid_at IS NULL`,
-      entityIds
-    )
+    const rows = await this.sql(query, [entityIds])
     return rows.map(mapRowToEdge)
   }
 

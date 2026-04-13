@@ -50,26 +50,44 @@ const ENTITY_TYPES_LIST = [...VALID_ENTITY_TYPES].join(', ')
 
 // ── Single-pass prompt (default) ──
 
-function buildSinglePassPrompt(content: string, entityContext?: EntityContext[]): string {
+function buildSinglePassPrompt(content: string, entityContext?: EntityContext[], documentTitle?: string): string {
   const contextSection = entityContext?.length
     ? `\nPreviously identified entities in this document:\n${entityContext.map(e => `- ${e.name} (${e.type})`).join('\n')}\n\nUse these names when the text refers to these entities by pronoun, abbreviation, or epithet.\n`
     : ''
+  const titleSection = documentTitle
+    ? `\nThis text is from a document titled: "${documentTitle}". Entities referenced in the title should be extracted as primary entities using their full formal names.\n`
+    : ''
 
   return `Extract all named entities and relationships from the following text.
-${contextSection}
+${contextSection}${titleSection}
 ## Step 1: Entity Extraction
 
 For each entity, provide:
-- "name": The canonical name of the entity
+- "name": The most complete, formal name of the entity. Always use full proper names — NOT surnames, nicknames, shortened forms, or abbreviations alone. Examples across domains:
+  People: "Stephen Curry" not "Curry"; "Barack Obama" not "Obama"; "Marie Curie" not "Curie"; "Ada Lovelace" not "Lovelace"
+  Organizations: "Goldman Sachs Group" not "Goldman"; "European Central Bank" not "ECB"; "Massachusetts Institute of Technology" not "MIT"; "World Health Organization" not "WHO"
+  Technology: "Amazon Web Services" not "AWS"; "React Native" not "React"; "PostgreSQL" not "Postgres"; "Large Language Model" not "LLM" (when first introduced)
+  Locations: "San Francisco Bay Area" not "Bay Area"; "United Kingdom" not "UK"; "Silicon Valley" not "the Valley"; "Cape Town" not "the Cape"
+  Events: "2024 United States presidential election" not "the election"; "1984 Summer Olympics" not "1984 games"; "CES 2025" not "CES"; "World War II" not "the war"
+  Legal/Science: "General Data Protection Regulation" not "GDPR"; "Clean Air Act of 1970" not "Clean Air Act"; "Hubble Space Telescope" not "Hubble"; "CRISPR-Cas9" not "CRISPR"
+  Products: "iPhone 16 Pro Max" not "iPhone"; "Tesla Model 3" not "Model 3"; "GPT-4" not "GPT"
+  Culture: "Naismith Memorial Basketball Hall of Fame" not "Hall of Fame"; "Academy Award for Best Picture" not "Best Picture"; "The Great Gatsby" not "Gatsby"
 - "type": One of: ${ENTITY_TYPES_LIST}
 - "description": A one-sentence description of what this entity IS — its defining attributes, NOT its relationships to other entities
-- "aliases": Other names or abbreviations used for THIS entity in the text (array of strings)
+- "aliases": Other proper names, abbreviations, or widely-recognized nicknames for THIS SAME entity in the text (array of strings).
+  Valid aliases: "NYC" for "New York City", "WHO" for "World Health Organization", "The Iron Lady" for "Margaret Thatcher", "Python" for "Python programming language"
+  NEVER include as aliases:
+  - Pronouns or pronoun phrases (he, she, it, they, them, we, his, her, its)
+  - Generic references (the team, the roster, the company, the city, the league, the organization, the event, the protocol, the framework, the ingredient)
+  - Surnames or first names alone (Curry, Obama, Kevin, Marie) — these are ambiguous, not aliases
+  - Names of DIFFERENT entities — "FIBA Hall of Fame" and "Naismith Hall of Fame" are SEPARATE entities; "React" and "React Native" are SEPARATE; "Python 2" and "Python 3" are SEPARATE
+  - Descriptive phrases (the American team, the defending champions, the former president, the lead researcher, the main ingredient)
 
 Entity rules:
 - Only extract specific named entities — NOT dates, dollar amounts, percentages, or generic descriptions
-- If an entity is referred to by multiple names (e.g., "OpenAI" and "the company"), list all as aliases
-- Aliases must be alternative names for THIS entity only — do NOT include unrelated names, titles of works containing the entity name, or descriptions
+- If an entity is referred to by multiple names (e.g., "OpenAI" and "the company"), list the proper name variants as aliases — NOT the generic reference
 - Include entities even if they only appear once
+- For events, awards, seasons, software versions, product generations, or any time/version-specific entities, ALWAYS include the year, version, or edition in the name. Each distinct occurrence is a SEPARATE entity — e.g., "2023 NBA Finals" and "2024 NBA Finals" are different, "Python 2" and "Python 3" are different, "iPhone 15" and "iPhone 16" are different, "HTTP/1.1" and "HTTP/2" are different, "Michelin Guide 2024" and "Michelin Guide 2025" are different.
 
 CRITICAL — Aliases vs. Relationships:
 - An ALIAS is a different name for THE SAME entity (e.g., "NYC" is an alias for "New York City")
@@ -133,25 +151,43 @@ ${content}`
 
 // ── Two-pass prompts ──
 
-function buildEntityExtractionPrompt(content: string, entityContext?: EntityContext[]): string {
+function buildEntityExtractionPrompt(content: string, entityContext?: EntityContext[], documentTitle?: string): string {
   const contextSection = entityContext?.length
     ? `\nPreviously identified entities in this document:\n${entityContext.map(e => `- ${e.name} (${e.type})`).join('\n')}\n\nUse these names when the text refers to these entities by pronoun, abbreviation, or epithet.\n`
     : ''
+  const titleSection = documentTitle
+    ? `\nThis text is from a document titled: "${documentTitle}". Entities referenced in the title should be extracted as primary entities using their full formal names.\n`
+    : ''
 
   return `Extract all named entities from the following text.
-${contextSection}
+${contextSection}${titleSection}
 For each entity, provide:
-- "name": The canonical name of the entity as it appears in the text
+- "name": The most complete, formal name of the entity. Always use full proper names — NOT surnames, nicknames, shortened forms, or abbreviations alone. Examples across domains:
+  People: "Stephen Curry" not "Curry"; "Barack Obama" not "Obama"; "Marie Curie" not "Curie"; "Ada Lovelace" not "Lovelace"
+  Organizations: "Goldman Sachs Group" not "Goldman"; "European Central Bank" not "ECB"; "Massachusetts Institute of Technology" not "MIT"; "World Health Organization" not "WHO"
+  Technology: "Amazon Web Services" not "AWS"; "React Native" not "React"; "PostgreSQL" not "Postgres"; "Large Language Model" not "LLM" (when first introduced)
+  Locations: "San Francisco Bay Area" not "Bay Area"; "United Kingdom" not "UK"; "Silicon Valley" not "the Valley"; "Cape Town" not "the Cape"
+  Events: "2024 United States presidential election" not "the election"; "1984 Summer Olympics" not "1984 games"; "CES 2025" not "CES"; "World War II" not "the war"
+  Legal/Science: "General Data Protection Regulation" not "GDPR"; "Clean Air Act of 1970" not "Clean Air Act"; "Hubble Space Telescope" not "Hubble"; "CRISPR-Cas9" not "CRISPR"
+  Products: "iPhone 16 Pro Max" not "iPhone"; "Tesla Model 3" not "Model 3"; "GPT-4" not "GPT"
+  Culture: "Naismith Memorial Basketball Hall of Fame" not "Hall of Fame"; "Academy Award for Best Picture" not "Best Picture"; "The Great Gatsby" not "Gatsby"
 - "type": One of: ${ENTITY_TYPES_LIST}
 - "description": A one-sentence description of what this entity IS — its defining attributes, NOT its relationships to other entities
-- "aliases": Other names or abbreviations used for THIS entity in the text (array of strings)
+- "aliases": Other proper names, abbreviations, or widely-recognized nicknames for THIS SAME entity in the text (array of strings).
+  Valid aliases: "NYC" for "New York City", "WHO" for "World Health Organization", "The Iron Lady" for "Margaret Thatcher", "Python" for "Python programming language"
+  NEVER include as aliases:
+  - Pronouns or pronoun phrases (he, she, it, they, them, we, his, her, its)
+  - Generic references (the team, the roster, the company, the city, the league, the organization, the event, the protocol, the framework, the ingredient)
+  - Surnames or first names alone (Curry, Obama, Kevin, Marie) — these are ambiguous, not aliases
+  - Names of DIFFERENT entities — "FIBA Hall of Fame" and "Naismith Hall of Fame" are SEPARATE entities; "React" and "React Native" are SEPARATE; "Python 2" and "Python 3" are SEPARATE
+  - Descriptive phrases (the American team, the defending champions, the former president, the lead researcher, the main ingredient)
 
 Rules:
 - Only extract specific named entities — NOT dates, dollar amounts, percentages, or generic descriptions
-- If an entity is referred to by multiple names (e.g., "OpenAI" and "the company"), list all as aliases
-- Aliases must be alternative names for THIS entity only — do NOT include unrelated names, titles of works containing the entity name, or descriptions
+- If an entity is referred to by multiple names (e.g., "OpenAI" and "the company"), list the proper name variants as aliases — NOT the generic reference
 - Include entities even if they only appear once
 - Return an empty array if no named entities exist
+- For events, awards, seasons, software versions, product generations, or any time/version-specific entities, ALWAYS include the year, version, or edition in the name. Each distinct occurrence is a SEPARATE entity — e.g., "2023 NBA Finals" and "2024 NBA Finals" are different, "Python 2" and "Python 3" are different, "iPhone 15" and "iPhone 16" are different, "HTTP/1.1" and "HTTP/2" are different, "Michelin Guide 2024" and "Michelin Guide 2025" are different.
 
 CRITICAL — Aliases vs. Relationships:
 - An ALIAS is a different name for THE SAME entity (e.g., "NYC" is an alias for "New York City")
@@ -259,13 +295,14 @@ export class TripleExtractor {
     documentId?: string,
     metadata?: Record<string, unknown>,
     entityContext?: EntityContext[],
+    documentTitle?: string,
   ): Promise<{ entities: EntityContext[] } | undefined> {
     if (!this.graph.addTriple) return undefined
 
     try {
       const { entities, relationships } = this.twoPass
-        ? await this.extractTwoPass(content, entityContext)
-        : await this.extractSinglePass(content, entityContext)
+        ? await this.extractTwoPass(content, entityContext, documentTitle)
+        : await this.extractSinglePass(content, entityContext, documentTitle)
 
       if (entities.length < 2) return { entities: entities.map(e => ({ name: e.name, type: e.type })) }
 
@@ -319,8 +356,9 @@ export class TripleExtractor {
   private async extractSinglePass(
     content: string,
     entityContext?: EntityContext[],
+    documentTitle?: string,
   ): Promise<ExtractionResult> {
-    const prompt = buildSinglePassPrompt(content, entityContext)
+    const prompt = buildSinglePassPrompt(content, entityContext, documentTitle)
     const result = await this.llm.generateJSON<ExtractionResult>(
       prompt,
       'You are a precise knowledge graph extractor. Extract entities and relationships from text. Return only valid JSON.',
@@ -342,10 +380,11 @@ export class TripleExtractor {
   private async extractTwoPass(
     content: string,
     entityContext?: EntityContext[],
+    documentTitle?: string,
   ): Promise<ExtractionResult> {
     // Pass 1: Extract entities
     const rawEntities = await this.llm.generateJSON<ExtractedEntity[]>(
-      buildEntityExtractionPrompt(content, entityContext),
+      buildEntityExtractionPrompt(content, entityContext, documentTitle),
       'You are a precise named entity extractor. Return only valid JSON arrays.',
     )
 

@@ -440,10 +440,8 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
     }
     neighborIds.delete(id)
     const nameMap = new Map<string, string>([[id, entity.name]])
-    for (const nid of neighborIds) {
-      const n = await graph.getEntity(nid)
-      if (n) nameMap.set(nid, n.name)
-    }
+    const neighbors = await graph.getEntitiesBatch([...neighborIds])
+    for (const n of neighbors) nameMap.set(n.id, n.name)
 
     const topEdges: EdgeResult[] = edges
       .sort((a, b) => b.weight - a.weight)
@@ -493,10 +491,8 @@ export function createGraphBridge(config: CreateGraphBridgeConfig): GraphBridge 
       entityIds.add(e.targetEntityId)
     }
     const nameMap = new Map<string, string>()
-    for (const eid of entityIds) {
-      const ent = await graph.getEntity(eid)
-      if (ent) nameMap.set(eid, ent.name)
-    }
+    const ents = await graph.getEntitiesBatch([...entityIds])
+    for (const ent of ents) nameMap.set(ent.id, ent.name)
 
     const limit = opts?.limit ?? 50
     return edges.slice(0, limit).map(e => ({

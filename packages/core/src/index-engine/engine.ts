@@ -106,19 +106,61 @@ export class IndexEngine {
         indexedAt: new Date(),
       }))
 
-      // Extract triples for entity graph — await before hash store write
+      // Extract triples for entity graph — first-chunk-then-parallel for entity context propagation
       let extraction: { succeeded: number; failed: number } | undefined
       if (this.tripleExtractor && !dryRun) {
-        const extractionResults = await Promise.allSettled(
-          chunks.map(chunk =>
-            withTimeout(
-              this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex, documentId, { ...propagated, ...chunk.metadata }),
+        const documentTitle = (propagated.title as string | undefined) ?? undefined
+        let entityContext: EntityContext[] = []
+        let succeeded = 0
+        let failed = 0
+
+        // Phase A: Extract chunk 0 first to establish entity context for this document
+        if (chunks.length > 0) {
+          try {
+            const firstResult = await withTimeout(
+              this.tripleExtractor.extractFromChunk(
+                chunks[0]!.content, bucketId, chunks[0]!.chunkIndex, documentId,
+                { ...propagated, ...chunks[0]!.metadata },
+                undefined,
+                documentTitle,
+              ),
               TRIPLE_EXTRACTION_TIMEOUT_MS,
             )
+            if (firstResult) {
+              succeeded++
+              for (const e of firstResult.entities) {
+                if (entityContext.length >= 20) break
+                if (!entityContext.some(ec => ec.name.toLowerCase() === e.name.toLowerCase())) {
+                  entityContext.push(e)
+                }
+              }
+            } else { failed++ }
+          } catch { failed++ }
+        }
+
+        // Phase B: Extract remaining chunks in parallel, seeded with chunk 0's entity context
+        if (chunks.length > 1) {
+          const remainingResults = await Promise.allSettled(
+            chunks.slice(1).map(chunk =>
+              withTimeout(
+                this.tripleExtractor!.extractFromChunk(
+                  chunk.content, bucketId, chunk.chunkIndex, documentId,
+                  { ...propagated, ...chunk.metadata },
+                  entityContext.length > 0 ? entityContext : undefined,
+                  documentTitle,
+                ),
+                TRIPLE_EXTRACTION_TIMEOUT_MS,
+              )
+            )
           )
-        )
-        const failed = extractionResults.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && r.value === undefined)).length
-        extraction = { succeeded: extractionResults.length - failed, failed }
+          const remainingFailed = remainingResults.filter(
+            r => r.status === 'rejected' || (r.status === 'fulfilled' && r.value === undefined)
+          ).length
+          succeeded += remainingResults.length - remainingFailed
+          failed += remainingFailed
+        }
+
+        extraction = { succeeded, failed }
       }
 
       if (!dryRun) {
@@ -314,19 +356,61 @@ export class IndexEngine {
         indexedAt: new Date(),
       }))
 
-      // Extract triples for entity graph — await before hash store write
+      // Extract triples for entity graph — first-chunk-then-parallel for entity context propagation
       if (this.tripleExtractor && !dryRun) {
-        const extractionResults = await Promise.allSettled(
-          chunks.map(chunk =>
-            withTimeout(
-              this.tripleExtractor!.extractFromChunk(chunk.content, bucketId, chunk.chunkIndex, documentId, { ...propagated, ...chunk.metadata }),
+        const documentTitle = (propagated.title as string | undefined) ?? undefined
+        let entityContext: EntityContext[] = []
+        let succeeded = 0
+        let failed = 0
+
+        // Phase A: Extract chunk 0 first to establish entity context for this document
+        if (chunks.length > 0) {
+          try {
+            const firstResult = await withTimeout(
+              this.tripleExtractor.extractFromChunk(
+                chunks[0]!.content, bucketId, chunks[0]!.chunkIndex, documentId,
+                { ...propagated, ...chunks[0]!.metadata },
+                undefined,
+                documentTitle,
+              ),
               TRIPLE_EXTRACTION_TIMEOUT_MS,
             )
+            if (firstResult) {
+              succeeded++
+              for (const e of firstResult.entities) {
+                if (entityContext.length >= 20) break
+                if (!entityContext.some(ec => ec.name.toLowerCase() === e.name.toLowerCase())) {
+                  entityContext.push(e)
+                }
+              }
+            } else { failed++ }
+          } catch { failed++ }
+        }
+
+        // Phase B: Extract remaining chunks in parallel, seeded with chunk 0's entity context
+        if (chunks.length > 1) {
+          const remainingResults = await Promise.allSettled(
+            chunks.slice(1).map(chunk =>
+              withTimeout(
+                this.tripleExtractor!.extractFromChunk(
+                  chunk.content, bucketId, chunk.chunkIndex, documentId,
+                  { ...propagated, ...chunk.metadata },
+                  entityContext.length > 0 ? entityContext : undefined,
+                  documentTitle,
+                ),
+                TRIPLE_EXTRACTION_TIMEOUT_MS,
+              )
+            )
           )
-        )
-        const failed = extractionResults.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && r.value === undefined)).length
+          const remainingFailed = remainingResults.filter(
+            r => r.status === 'rejected' || (r.status === 'fulfilled' && r.value === undefined)
+          ).length
+          succeeded += remainingResults.length - remainingFailed
+          failed += remainingFailed
+        }
+
         if (!result.extraction) result.extraction = { succeeded: 0, failed: 0 }
-        result.extraction.succeeded += extractionResults.length - failed
+        result.extraction.succeeded += succeeded
         result.extraction.failed += failed
       }
 

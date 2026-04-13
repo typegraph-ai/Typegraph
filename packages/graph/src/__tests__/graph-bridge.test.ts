@@ -68,11 +68,23 @@ function mockStore(
       edges.push(e)
       return e
     }),
+    getEntitiesBatch: vi.fn().mockImplementation(async (ids: string[]) => {
+      return ids.map(id => entities.get(id)).filter(Boolean) as SemanticEntity[]
+    }),
     getEdges: vi.fn().mockImplementation(async (entityId: string, direction: string = 'both') => {
       return edges.filter(e => {
         if (direction === 'out') return e.sourceEntityId === entityId
         if (direction === 'in') return e.targetEntityId === entityId
         return e.sourceEntityId === entityId || e.targetEntityId === entityId
+      })
+    }),
+    getEdgesBatch: vi.fn().mockImplementation(async (entityIds: string[], direction: string = 'both') => {
+      return edges.filter(e => {
+        const matchSource = entityIds.includes(e.sourceEntityId)
+        const matchTarget = entityIds.includes(e.targetEntityId)
+        if (direction === 'out') return matchSource
+        if (direction === 'in') return matchTarget
+        return matchSource || matchTarget
       })
     }),
     findEdges: vi.fn().mockResolvedValue([]),

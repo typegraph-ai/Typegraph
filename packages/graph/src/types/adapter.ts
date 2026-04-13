@@ -84,6 +84,7 @@ export interface MemoryStoreAdapter {
 
   upsertEntity?(entity: SemanticEntity): Promise<SemanticEntity>
   getEntity?(id: string): Promise<SemanticEntity | null>
+  getEntitiesBatch?(ids: string[]): Promise<SemanticEntity[]>
   findEntities?(query: string, scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]>
   searchEntities?(embedding: number[], scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]>
 

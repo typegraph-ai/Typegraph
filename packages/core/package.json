@@ -1,6 +1,6 @@
 {
   "name": "@typegraph-ai/core",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "description": "TypeScript SDK and open protocol for supplying context to LLMs",
   "type": "module",
   "main": "./dist/index.js",

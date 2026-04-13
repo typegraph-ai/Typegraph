@@ -86,6 +86,12 @@ For each entity, provide:
   - Shortened generic forms — "Finals" is NOT an alias of "NBA Finals"; "MVP" is NOT an alias of any specific MVP award; "Olympics" is NOT an alias of "2024 Summer Olympics"
 
 Entity rules:
+- Extract a MAXIMUM of 15 entities. When the text contains more potential entities, prioritize:
+  1. Primary subjects — entities the text is primarily ABOUT, not merely mentioned
+  2. Entities with explicit relationships — entities that have stated connections to other entities in the text
+  3. Specific over generic — prefer "2006 FIBA World Championship" over "basketball"
+  4. Actors over settings — prefer entities that DO things over entities that are merely locations or backdrops
+  Omit entities that appear only in lists, parenthetical asides, or as minor supporting context with no described relationships.
 - Only extract specific named entities — NOT dates, dollar amounts, percentages, or generic descriptions
 - If an entity is referred to by multiple names (e.g., "OpenAI" and "the company"), list the proper name variants as aliases — NOT the generic reference
 - Include entities even if they only appear once
@@ -189,6 +195,12 @@ For each entity, provide:
   - Shortened generic forms — "Finals" is NOT an alias of "NBA Finals"; "MVP" is NOT an alias of any specific MVP award; "Olympics" is NOT an alias of "2024 Summer Olympics"
 
 Rules:
+- Extract a MAXIMUM of 15 entities. When the text contains more potential entities, prioritize:
+  1. Primary subjects — entities the text is primarily ABOUT, not merely mentioned
+  2. Entities with explicit relationships — entities that have stated connections to other entities in the text
+  3. Specific over generic — prefer "2006 FIBA World Championship" over "basketball"
+  4. Actors over settings — prefer entities that DO things over entities that are merely locations or backdrops
+  Omit entities that appear only in lists, parenthetical asides, or as minor supporting context with no described relationships.
 - Only extract specific named entities — NOT dates, dollar amounts, percentages, or generic descriptions
 - If an entity is referred to by multiple names (e.g., "OpenAI" and "the company"), list the proper name variants as aliases — NOT the generic reference
 - Include entities even if they only appear once

@@ -11,6 +11,13 @@ export interface LLMGenerateOptions {
    * Example: `{ openai: { reasoningEffort: 'high' } }`
    */
   providerOptions?: Record<string, Record<string, unknown>>
+
+  /**
+   * Maximum number of output tokens the model may generate.
+   * When omitted, the model's default applies. generateJSON sets 16384
+   * as a default to prevent truncation of structured output.
+   */
+  maxOutputTokens?: number
 }
 
 export interface LLMProvider {

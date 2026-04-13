@@ -45,35 +45,69 @@ export interface AISDKLLMInput {
 export function aiSdkLlmProvider(config: AISDKLLMInput): LLMProvider {
   const { model } = config
 
+  /** Internal helper — calls doGenerate and returns both text and normalized finishReason. */
+  async function doGenerateRaw(
+    prompt: string,
+    systemPrompt?: string,
+    options?: LLMGenerateOptions,
+  ): Promise<{ text: string; finishReason: string }> {
+    const messages: Array<
+      | { role: 'system'; content: string }
+      | { role: 'user'; content: Array<{ type: 'text'; text: string }> }
+    > = []
+
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt })
+    }
+    messages.push({ role: 'user', content: [{ type: 'text', text: prompt }] })
+
+    const result = await model.doGenerate({
+      prompt: messages,
+      ...(options?.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+      ...(options?.providerOptions ? { providerOptions: options.providerOptions } : {}),
+    })
+
+    const text = result.content
+      .filter((c): c is { type: 'text'; text: string } => c.type === 'text' && typeof c.text === 'string')
+      .map(c => c.text)
+      .join('')
+
+    const finishReason = typeof result.finishReason === 'string'
+      ? result.finishReason
+      : result.finishReason?.unified ?? 'unknown'
+
+    return { text, finishReason }
+  }
+
   const provider: LLMProvider = {
     async generateText(prompt: string, systemPrompt?: string, options?: LLMGenerateOptions): Promise<string> {
-      const messages: Array<
-        | { role: 'system'; content: string }
-        | { role: 'user'; content: Array<{ type: 'text'; text: string }> }
-      > = []
-
-      if (systemPrompt) {
-        messages.push({ role: 'system', content: systemPrompt })
-      }
-      messages.push({ role: 'user', content: [{ type: 'text', text: prompt }] })
-
-      const result = await model.doGenerate({
-        prompt: messages,
-        ...(options?.providerOptions ? { providerOptions: options.providerOptions } : {}),
-      })
-      return result.content
-        .filter((c): c is { type: 'text'; text: string } => c.type === 'text' && typeof c.text === 'string')
-        .map(c => c.text)
-        .join('')
+      const { text } = await doGenerateRaw(prompt, systemPrompt, options)
+      return text
     },
 
     async generateJSON<T = unknown>(prompt: string, systemPrompt?: string, options?: LLMGenerateOptions): Promise<T> {
-      const text = await provider.generateText(
+      const jsonOptions: LLMGenerateOptions = {
+        ...options,
+        maxOutputTokens: options?.maxOutputTokens ?? 16384,
+      }
+
+      const { text, finishReason } = await doGenerateRaw(
         prompt + '\n\nRespond with valid JSON only, no markdown fences.',
         systemPrompt,
-        options,
+        jsonOptions,
       )
-      const cleaned = text.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim()
+
+      if (finishReason === 'length') {
+        throw new Error(
+          'LLM output truncated (finishReason: length) — increase maxOutputTokens or reduce prompt size'
+        )
+      }
+
+      // Strip markdown fences
+      let cleaned = text.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim()
+      // Strip control characters illegal in JSON (U+0000–U+001F except \t \n \r)
+      cleaned = cleaned.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+
       return JSON.parse(cleaned) as T
     },
   }

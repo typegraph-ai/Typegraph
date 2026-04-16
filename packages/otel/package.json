@@ -1,6 +1,6 @@
 {
   "name": "@typegraph-ai/otel",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "OpenTelemetry integration for typegraph — maps typegraph events to OTel spans",
   "type": "module",
   "main": "dist/index.js",
@@ -15,7 +15,7 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@typegraph-ai/core": "workspace:*"
+    "@typegraph-ai/sdk": "workspace:*"
   },
   "peerDependencies": {
     "@opentelemetry/api": "^1.0.0"

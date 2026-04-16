@@ -1,4 +1,4 @@
-import type { HashStoreAdapter, HashRecord } from '@typegraph-ai/core'
+import type { HashStoreAdapter, HashRecord } from '@typegraph-ai/sdk'
 import type Database from 'better-sqlite3'
 
 function mapRow(row: Record<string, unknown>): HashRecord {
@@ -29,6 +29,19 @@ export class SqliteHashStore implements HashStoreAdapter {
     ).get(key) as Record<string, unknown> | undefined
     if (!row) return null
     return mapRow(row)
+  }
+
+  async getMany(keys: string[]): Promise<Map<string, HashRecord>> {
+    if (keys.length === 0) return new Map()
+    const placeholders = keys.map(() => '?').join(', ')
+    const rows = this.db.prepare(
+      `SELECT * FROM ${this.tableName} WHERE store_key IN (${placeholders})`
+    ).all(...keys) as Record<string, unknown>[]
+    const map = new Map<string, HashRecord>()
+    for (const row of rows) {
+      map.set(row.store_key as string, mapRow(row))
+    }
+    return map
   }
 
   async set(key: string, record: HashRecord): Promise<void> {

@@ -1,6 +1,6 @@
 {
   "name": "@typegraph-ai/vercel-ai-provider",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Vercel AI SDK integration - memory tools and middleware for auto-context injection",
   "type": "module",
   "main": "./dist/index.js",
@@ -19,7 +19,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@typegraph-ai/memory": "workspace:*"
+    "@typegraph-ai/sdk": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

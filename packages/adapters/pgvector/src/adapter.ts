@@ -1,8 +1,8 @@
-import type { VectorStoreAdapter, SearchOpts, ScoredChunkWithDocument, UndeployResult } from '@typegraph-ai/core'
-import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '@typegraph-ai/core'
-import type { typegraphDocument, DocumentFilter, DocumentStatus, UpsertDocumentInput } from '@typegraph-ai/core'
-import type { Bucket } from '@typegraph-ai/core'
-import { generateId, DEFAULT_BUCKET_ID } from '@typegraph-ai/core'
+import type { VectorStoreAdapter, SearchOpts, ScoredChunkWithDocument, UndeployResult } from '@typegraph-ai/sdk'
+import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '@typegraph-ai/sdk'
+import type { typegraphDocument, DocumentFilter, DocumentStatus, UpsertDocumentInput } from '@typegraph-ai/sdk'
+import type { Bucket } from '@typegraph-ai/sdk'
+import { generateId, DEFAULT_BUCKET_ID } from '@typegraph-ai/sdk'
 import {
   REGISTRY_SQL, MODEL_TABLE_SQL, HASH_TABLE_SQL, DOCUMENTS_TABLE_SQL,
   BUCKETS_TABLE_SQL, EVENTS_TABLE_SQL, POLICIES_TABLE_SQL,
@@ -183,16 +183,29 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     this.modelTables.set(key, tableName)
   }
 
-  private getTable(model: string): string {
+  private async getTable(model: string): Promise<string> {
     const key = sanitizeModelKey(model)
-    const table = this.modelTables.get(key)
-    if (!table) throw new Error(`No table registered for model "${model}". Call ensureModel() first.`)
-    return table
+    const cached = this.modelTables.get(key)
+    if (cached) return cached
+
+    // Cache miss: one idempotent heal attempt from registry
+    const rows = await this.sql(
+      `SELECT table_name FROM ${this.registryTable} WHERE model_key = $1`,
+      [key]
+    )
+    if (rows.length > 0) {
+      const table = rows[0]!.table_name as string
+      this.modelTables.set(key, table)
+      console.warn(`[typegraph] Healed model cache miss for "${model}"`)
+      return table
+    }
+
+    throw new Error(`No table registered for model "${model}". Call ensureModel() first.`)
   }
 
   async upsertDocument(model: string, chunks: EmbeddedChunk[]): Promise<void> {
     if (chunks.length === 0) return
-    const table = this.getTable(model)
+    const table = await this.getTable(model)
 
     const params = this.buildUpsertParams(chunks)
 
@@ -205,7 +218,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
         this.modelTables.delete(key)
         const dimensions = chunks[0]!.embedding.length
         await this.ensureModel(model, dimensions)
-        const retryTable = this.getTable(model)
+        const retryTable = await this.getTable(model)
         await this.executeChunkUpsert(retryTable, params)
         console.warn(`[typegraph] Schema recovery: recreated table for model ${model}`)
         return
@@ -281,14 +294,14 @@ export class PgVectorAdapter implements VectorStoreAdapter {
   }
 
   async delete(model: string, filter: ChunkFilter): Promise<void> {
-    const table = this.getTable(model)
+    const table = await this.getTable(model)
     const { where, params } = buildWhere(filter)
     if (!where) throw new Error('delete() requires at least one filter field')
     await this.sql(`DELETE FROM ${table} WHERE ${where}`, params)
   }
 
   async search(model: string, embedding: number[], opts: SearchOpts): Promise<ScoredChunk[]> {
-    const table = this.getTable(model)
+    const table = await this.getTable(model)
     const vectorStr = `[${embedding.join(',')}]`
     const { where, params } = buildWhere(opts.filter)
     // Add temporal filtering if requested
@@ -330,7 +343,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     query: string,
     opts: SearchOpts
   ): Promise<ScoredChunk[]> {
-    const table = this.getTable(model)
+    const table = await this.getTable(model)
     const vectorStr = `[${embedding.join(',')}]`
     const count = opts.count
     const { where: filterWhere, params: filterParams } = buildWhere(opts.filter)
@@ -419,7 +432,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
   }
 
   async countChunks(model: string, filter: ChunkFilter): Promise<number> {
-    const table = this.getTable(model)
+    const table = await this.getTable(model)
     const { where, params } = buildWhere(filter)
     const filterClause = where ? `WHERE ${where}` : ''
     const rows = await this.sql(
@@ -439,7 +452,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     return this.documentStore.get(id)
   }
 
-  async listDocuments(filter: DocumentFilter, pagination?: import('@typegraph-ai/core').PaginationOpts): Promise<typegraphDocument[] | import('@typegraph-ai/core').PaginatedResult<typegraphDocument>> {
+  async listDocuments(filter: DocumentFilter, pagination?: import('@typegraph-ai/sdk').PaginationOpts): Promise<typegraphDocument[] | import('@typegraph-ai/sdk').PaginatedResult<typegraphDocument>> {
     return this.documentStore.list(filter, pagination)
   }
 
@@ -492,7 +505,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     query: string,
     opts: SearchOpts & { documentFilter?: DocumentFilter | undefined }
   ): Promise<ScoredChunkWithDocument[]> {
-    const table = this.getTable(model)
+    const table = await this.getTable(model)
     const vectorStr = `[${embedding.join(',')}]`
     const count = opts.count
     const { where: chunkFilterWhere, params: chunkFilterParams } = buildWhere(opts.filter)
@@ -584,6 +597,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
                d.group_id AS doc_group_id, d.user_id AS doc_user_id,
                d.agent_id AS doc_agent_id, d.conversation_id AS doc_conversation_id,
                d.document_type AS doc_document_type, d.source_type AS doc_source_type,
+               d.graph_extracted AS doc_graph_extracted,
                d.indexed_at AS doc_indexed_at, d.created_at AS doc_created_at,
                d.updated_at AS doc_updated_at, d.metadata AS doc_metadata
         FROM final_chunks fc
@@ -616,7 +630,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     fromIndex: number,
     toIndex: number
   ): Promise<ScoredChunk[]> {
-    const table = this.getTable(model)
+    const table = await this.getTable(model)
     const rows = await this.sql(
       `SELECT * FROM ${table}
        WHERE document_id = $1 AND chunk_index >= $2 AND chunk_index <= $3
@@ -660,7 +674,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     return rows.length > 0 ? mapRowToBucket(rows[0]!) : null
   }
 
-  async listBuckets(filter?: import('@typegraph-ai/core').BucketListFilter, pagination?: import('@typegraph-ai/core').PaginationOpts): Promise<Bucket[] | import('@typegraph-ai/core').PaginatedResult<Bucket>> {
+  async listBuckets(filter?: import('@typegraph-ai/sdk').BucketListFilter, pagination?: import('@typegraph-ai/sdk').PaginationOpts): Promise<Bucket[] | import('@typegraph-ai/sdk').PaginatedResult<Bucket>> {
     const conditions: string[] = []
     const params: unknown[] = []
     if (filter?.tenantId) { params.push(filter.tenantId); conditions.push(`tenant_id = $${params.length}`) }
@@ -814,6 +828,7 @@ function mapRowToDocument(row: Record<string, unknown>): typegraphDocument {
     visibility: (row.doc_visibility as typegraphDocument['visibility']) ?? undefined,
     documentType: (row.doc_document_type as string) ?? undefined,
     sourceType: (row.doc_source_type as string) ?? undefined,
+    graphExtracted: (row.doc_graph_extracted as boolean) ?? false,
     indexedAt: new Date(row.doc_indexed_at as string),
     createdAt: new Date(row.doc_created_at as string),
     updatedAt: new Date(row.doc_updated_at as string),

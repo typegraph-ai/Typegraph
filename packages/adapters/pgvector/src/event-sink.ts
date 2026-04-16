@@ -1,4 +1,4 @@
-import type { typegraphEvent, typegraphEventSink } from '@typegraph-ai/core'
+import type { typegraphEvent, typegraphEventSink } from '@typegraph-ai/sdk'
 
 export interface PgEventSinkConfig {
   /** Postgres query function (same pool as the adapter). */

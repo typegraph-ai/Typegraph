@@ -1,7 +1,7 @@
-import type { VectorStoreAdapter, SearchOpts, UndeployResult } from '@typegraph-ai/core'
-import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '@typegraph-ai/core'
-import type { Bucket, BucketListFilter } from '@typegraph-ai/core'
-import { generateId } from '@typegraph-ai/core'
+import type { VectorStoreAdapter, SearchOpts, UndeployResult } from '@typegraph-ai/sdk'
+import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '@typegraph-ai/sdk'
+import type { Bucket, BucketListFilter } from '@typegraph-ai/sdk'
+import { generateId } from '@typegraph-ai/sdk'
 import Database from 'better-sqlite3'
 import * as sqliteVec from 'sqlite-vec'
 import { SqliteHashStore } from './hash-store.js'
@@ -32,6 +32,11 @@ export interface SqliteVecAdapterConfig {
  * - No document management (list, update, delete documents)
  * - No context passages (searchWithDocuments)
  * - No policy enforcement
+ * - No graph/memory storage (no sqlite memory adapter — `QuerySignals.graph` and
+ *   `QuerySignals.memory` require the pgvector adapter)
+ *
+ * Identity isolation (`tenantId`, `groupId`, `userId`, `agentId`,
+ * `conversationId`, `visibility`) IS enforced — filter pushdown matches pgvector.
  *
  * Use PostgreSQL (PgVectorAdapter) for production deployments.
  */
@@ -185,11 +190,17 @@ export class SqliteVecAdapter implements VectorStoreAdapter {
 
     const upsertChunk = this.db.prepare(
       `INSERT INTO ${chunksTable}
-        (id, bucket_id, tenant_id, document_id, idempotency_key, content,
+        (id, bucket_id, tenant_id, group_id, user_id, agent_id, conversation_id,
+         document_id, idempotency_key, content,
          embedding_model, chunk_index, total_chunks, metadata, indexed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (idempotency_key, chunk_index, bucket_id) DO UPDATE SET
         id              = excluded.id,
+        tenant_id       = excluded.tenant_id,
+        group_id        = excluded.group_id,
+        user_id         = excluded.user_id,
+        agent_id        = excluded.agent_id,
+        conversation_id = excluded.conversation_id,
         content         = excluded.content,
         embedding_model = excluded.embedding_model,
         total_chunks    = excluded.total_chunks,
@@ -216,6 +227,10 @@ export class SqliteVecAdapter implements VectorStoreAdapter {
           id,
           chunk.bucketId,
           chunk.tenantId ?? null,
+          chunk.groupId ?? null,
+          chunk.userId ?? null,
+          chunk.agentId ?? null,
+          chunk.conversationId ?? null,
           chunk.documentId,
           chunk.idempotencyKey,
           chunk.content,
@@ -319,14 +334,36 @@ export class SqliteVecAdapter implements VectorStoreAdapter {
 
   async upsertBucket(bucket: Bucket): Promise<Bucket> {
     this.db.prepare(
-      `INSERT INTO ${this.bucketsTable} (id, name, description, status, tenant_id, embedding_model, query_embedding_model, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `INSERT INTO ${this.bucketsTable} (
+         id, name, description, status,
+         tenant_id, group_id, user_id, agent_id, conversation_id,
+         embedding_model, query_embedding_model, updated_at
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT (id) DO UPDATE SET
          name = excluded.name, description = excluded.description,
-         status = excluded.status, tenant_id = excluded.tenant_id,
-         embedding_model = excluded.embedding_model, query_embedding_model = excluded.query_embedding_model,
+         status = excluded.status,
+         tenant_id = excluded.tenant_id,
+         group_id = excluded.group_id,
+         user_id = excluded.user_id,
+         agent_id = excluded.agent_id,
+         conversation_id = excluded.conversation_id,
+         embedding_model = excluded.embedding_model,
+         query_embedding_model = excluded.query_embedding_model,
          updated_at = datetime('now')`
-    ).run(bucket.id, bucket.name, bucket.description ?? null, bucket.status, bucket.tenantId ?? null, bucket.embeddingModel ?? null, bucket.queryEmbeddingModel ?? null)
+    ).run(
+      bucket.id,
+      bucket.name,
+      bucket.description ?? null,
+      bucket.status,
+      bucket.tenantId ?? null,
+      bucket.groupId ?? null,
+      bucket.userId ?? null,
+      bucket.agentId ?? null,
+      bucket.conversationId ?? null,
+      bucket.embeddingModel ?? null,
+      bucket.queryEmbeddingModel ?? null
+    )
     return bucket
   }
 
@@ -349,8 +386,39 @@ export class SqliteVecAdapter implements VectorStoreAdapter {
     return rows.map(r => mapRowToBucket(r))
   }
 
+  /**
+   * Delete a bucket and cascade: all chunks (in every model table), their vec rows,
+   * and all hash entries for this bucket across all tenants.
+   *
+   * SQLite does not support cross-table ON DELETE CASCADE, so we perform this
+   * manually inside a single transaction.
+   */
   async deleteBucket(id: string): Promise<void> {
-    this.db.prepare(`DELETE FROM ${this.bucketsTable} WHERE id = ?`).run(id)
+    const cascade = this.db.transaction(() => {
+      // 1. For each model table, collect chunk rowids, then delete vec rows + chunks.
+      for (const { chunksTable, vecTable } of this.modelTables.values()) {
+        const rows = this.db.prepare(
+          `SELECT chunk_rowid FROM ${chunksTable} WHERE bucket_id = ?`
+        ).all(id) as Array<{ chunk_rowid: number }>
+
+        if (rows.length > 0) {
+          const deleteVec = this.db.prepare(`DELETE FROM ${vecTable} WHERE rowid = ?`)
+          for (const row of rows) {
+            deleteVec.run(BigInt(row.chunk_rowid))
+          }
+          this.db.prepare(`DELETE FROM ${chunksTable} WHERE bucket_id = ?`).run(id)
+        }
+      }
+
+      // 2. Delete hash entries and run-times for this bucket across all tenants.
+      this.db.prepare(`DELETE FROM ${this.hashesTable} WHERE bucket_id = ?`).run(id)
+      this.db.prepare(`DELETE FROM ${this.hashesTable}_run_times WHERE bucket_id = ?`).run(id)
+
+      // 3. Delete the bucket record itself.
+      this.db.prepare(`DELETE FROM ${this.bucketsTable} WHERE id = ?`).run(id)
+    })
+
+    cascade()
   }
 
   async destroy(): Promise<void> {
@@ -371,6 +439,22 @@ function buildWhere(filter?: ChunkFilter): { where: string; params: unknown[] } 
   if (filter.tenantId != null) {
     conditions.push(`tenant_id = ?`)
     params.push(filter.tenantId)
+  }
+  if (filter.groupId != null) {
+    conditions.push(`group_id = ?`)
+    params.push(filter.groupId)
+  }
+  if (filter.userId != null) {
+    conditions.push(`user_id = ?`)
+    params.push(filter.userId)
+  }
+  if (filter.agentId != null) {
+    conditions.push(`agent_id = ?`)
+    params.push(filter.agentId)
+  }
+  if (filter.conversationId != null) {
+    conditions.push(`conversation_id = ?`)
+    params.push(filter.conversationId)
   }
   if (filter.documentId != null) {
     conditions.push(`document_id = ?`)
@@ -394,6 +478,10 @@ function mapRowToBucket(row: Record<string, unknown>): Bucket {
     description: (row.description as string) ?? undefined,
     status: row.status as Bucket['status'],
     tenantId: (row.tenant_id as string) ?? undefined,
+    groupId: (row.group_id as string) ?? undefined,
+    userId: (row.user_id as string) ?? undefined,
+    agentId: (row.agent_id as string) ?? undefined,
+    conversationId: (row.conversation_id as string) ?? undefined,
     embeddingModel: (row.embedding_model as string) ?? undefined,
     queryEmbeddingModel: (row.query_embedding_model as string) ?? undefined,
   }
@@ -409,6 +497,10 @@ function mapRowToScoredChunk(row: Record<string, unknown>): ScoredChunk {
     idempotencyKey: row.idempotency_key as string,
     bucketId: row.bucket_id as string,
     tenantId: (row.tenant_id as string) ?? undefined,
+    groupId: (row.group_id as string) ?? undefined,
+    userId: (row.user_id as string) ?? undefined,
+    agentId: (row.agent_id as string) ?? undefined,
+    conversationId: (row.conversation_id as string) ?? undefined,
     documentId: row.document_id as string,
     content: row.content as string,
     embedding: [], // Don't return the full vector

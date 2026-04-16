@@ -1,0 +1,176 @@
+// Main public API
+export { typegraphInit, typegraphDeploy, resolveEmbeddingProvider, resolveLLMProvider, DEFAULT_BUCKET_ID } from './typegraph.js'
+export type { typegraphConfig, typegraphInstance, BucketsApi, DocumentsApi, JobsApi, GraphApi } from './typegraph.js'
+/** @deprecated Use LLMConfig instead. */
+export type { LLMInput } from './typegraph.js'
+
+// Types
+export type {
+  RawDocument,
+  ChunkOpts,
+  Chunk,
+  Bucket,
+  CreateBucketInput,
+  BucketListFilter,
+  IndexDefaults,
+  EmbeddingConfig,
+  EmbeddedChunk,
+  ChunkFilter,
+  ScoredChunk,
+  SearchOpts,
+  HashRecord,
+  HashStoreAdapter,
+  VectorStoreAdapter,
+  UndeployResult,
+  ScoredChunkWithDocument,
+  QuerySignals,
+  typegraphResult,
+  RawScores,
+  NormalizedScores,
+  QueryOpts,
+  QueryResponse,
+  IngestOptions,
+  IndexProgressEvent,
+  IndexResult,
+  ExtractionFailure,
+  typegraphDocument,
+  DocumentStatus,
+  Visibility,
+  DocumentFilter,
+  UpsertDocumentInput,
+  typegraphHooks,
+  LLMProvider,
+  LLMGenerateOptions,
+  LLMConfig,
+  typegraphIdentity,
+  MemoryBridge,
+  KnowledgeGraphBridge,
+  EntityResult,
+  EntityDetail,
+  EdgeResult,
+  SubgraphOpts,
+  SubgraphResult,
+  GraphStats,
+  ExtractionConfig,
+  typegraphEvent,
+  typegraphEventType,
+  typegraphEventSink,
+  TokenUsage,
+  PolicyType,
+  PolicyAction,
+  PolicyRule,
+  Policy,
+  CreatePolicyInput,
+  UpdatePolicyInput,
+  PolicyEvalContext,
+  PolicyDecision,
+  PolicyViolation,
+  PolicyStoreAdapter,
+  MemoryRecord,
+  ConversationTurnResult,
+  MemoryHealthReport,
+  typegraphLogger,
+  PaginationOpts,
+  PaginatedResult,
+  Job,
+  JobType,
+  JobStatus,
+  JobFilter,
+} from './types/index.js'
+/** @deprecated Use EmbeddingConfig instead. */
+export type { EmbeddingInput } from './types/index.js'
+export { IndexError } from './types/index.js'
+export { TypegraphError, NotFoundError, NotInitializedError, ConfigError } from './types/index.js'
+
+// Embedding
+export type { EmbeddingProvider } from './embedding/index.js'
+export { aiSdkEmbeddingProvider, isAISDKEmbeddingInput, embeddingModelKey, parseEmbeddingModelKey } from './embedding/index.js'
+export type { AISDKEmbeddingInput } from './embedding/index.js'
+
+// LLM
+export { aiSdkLlmProvider, isAISDKLLMInput } from './llm/index.js'
+export type { AISDKLLMInput } from './llm/index.js'
+
+// Governance
+export { PolicyEngine, PolicyViolationError } from './governance/index.js'
+
+// Index engine
+export { IndexEngine, defaultChunker, sha256, stripMarkdown } from './index-engine/index.js'
+
+// Query engine (internal assemble removed from public exports — use opts.format on query())
+export { mergeAndRank, minMaxNormalize, calibrateSemantic, calibrateKeyword } from './query/index.js'
+export { resolveSignals, signalLabel, computeCompositeScore, classifyQuery, type QueryClassification, type QueryType } from './query/index.js'
+export type { NormalizedResult } from './query/index.js'
+
+// Utilities
+export { generateId } from './utils/id.js'
+
+// Cloud mode
+export { createCloudInstance, HttpClient, TypegraphApiError } from './cloud/index.js'
+export type { typegraphCloudInstance, CloudConfig } from './cloud/index.js'
+
+// ── Memory ──
+export type {
+  MemoryCategory,
+  MemoryStatus,
+  TemporalRecord,
+  EpisodicMemory,
+  SemanticEntity,
+  SemanticEdge,
+  SemanticFact,
+  ProceduralMemory,
+  MemoryFilter,
+  MemorySearchOpts,
+  MemoryStoreAdapter,
+} from './memory/types/index.js'
+export { buildScope, scopeKey, scopeMatches, scopeToFilter } from './memory/types/index.js'
+export {
+  isActiveAt,
+  isActiveBetween,
+  invalidateRecord,
+  expireRecord,
+  createTemporal,
+  temporalOverlaps,
+  transitionStatus,
+} from './memory/temporal.js'
+export { WorkingMemory } from './memory/working-memory.js'
+export type { WorkingMemoryItem, WorkingMemoryConfig } from './memory/working-memory.js'
+export { MemoryExtractor, EntityResolver, InvalidationEngine } from './memory/extraction/index.js'
+export type {
+  ConversationMessage,
+  MemoryOperationType,
+  MemoryOperation,
+  CandidateFact,
+  ExtractionResult,
+  EntityResolverConfig,
+  InvalidationConfig,
+  Contradiction,
+} from './memory/extraction/index.js'
+export { PredicateNormalizer } from './memory/extraction/predicate-normalizer.js'
+export { ConsolidationEngine } from './memory/consolidation/engine.js'
+export type {
+  ConsolidationConfig,
+  ConsolidationStrategy,
+  ConsolidationOpts,
+  ConsolidationResult,
+} from './memory/consolidation/engine.js'
+export { decayScore, scoreMemories, findDecayedMemories, DEFAULT_DECAY_CONFIG } from './memory/consolidation/decay.js'
+export type { DecayConfig } from './memory/consolidation/decay.js'
+export { ForgettingEngine } from './memory/consolidation/forgetting.js'
+export type { ForgettingPolicy, ForgettingResult } from './memory/consolidation/forgetting.js'
+export { MemoryCorrector } from './memory/consolidation/correction.js'
+export type { CorrectionResult } from './memory/consolidation/correction.js'
+export { TypegraphMemory } from './memory/typegraph-memory.js'
+export type { typegraphMemoryConfig } from './memory/typegraph-memory.js'
+export { createMemoryBridge } from './memory/memory-bridge.js'
+export type { CreateMemoryBridgeConfig } from './memory/memory-bridge.js'
+
+// ── Knowledge Graph ──
+export { EmbeddedGraph } from './graph/graph/embedded-graph.js'
+export type { GraphNode, GraphPath, Subgraph } from './graph/graph/embedded-graph.js'
+export { personalizedPageRank } from './graph/graph/ppr.js'
+export type { PPRConfig } from './graph/graph/ppr.js'
+export { EntityLinker } from './graph/graph/entity-linker.js'
+export type { EntityLinkerConfig, EntityLinkResult } from './graph/graph/entity-linker.js'
+export { createKnowledgeGraphBridge } from './graph/graph-bridge.js'
+export type { CreateKnowledgeGraphBridgeConfig } from './graph/graph-bridge.js'

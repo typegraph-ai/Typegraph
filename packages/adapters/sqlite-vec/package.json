@@ -1,6 +1,6 @@
 {
   "name": "@typegraph-ai/adapter-sqlite-vec",
-  "version": "0.1.6",
+  "version": "0.1.8",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,15 +12,17 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "vitest run",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@typegraph-ai/core": "workspace:*",
+    "@typegraph-ai/sdk": "workspace:*",
     "better-sqlite3": "^9.0.0",
     "sqlite-vec": "^0.1.0"
   },
   "devDependencies": {
     "typescript": "^5.4.0",
-    "@types/better-sqlite3": "^7.0.0"
+    "@types/better-sqlite3": "^7.0.0",
+    "vitest": "^1.0.0"
   }
 }

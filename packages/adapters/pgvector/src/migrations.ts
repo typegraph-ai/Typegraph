@@ -173,6 +173,7 @@ export const DOCUMENTS_TABLE_SQL = (documentsTable: string) => {
     visibility      TEXT CHECK (visibility IS NULL OR visibility IN ('tenant', 'group', 'user', 'agent', 'conversation')),
     document_type   TEXT,
     source_type     TEXT,
+    graph_extracted BOOLEAN NOT NULL DEFAULT FALSE,
     indexed_at      TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -193,6 +194,9 @@ export const DOCUMENTS_TABLE_SQL = (documentsTable: string) => {
 
   CREATE INDEX IF NOT EXISTS ${idx('type_idx')}
     ON ${documentsTable} (document_type);
+
+  CREATE INDEX IF NOT EXISTS ${idx('graph_extracted_idx')}
+    ON ${documentsTable} (graph_extracted);
 
   CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')}
     ON ${documentsTable} (tenant_id, user_id);

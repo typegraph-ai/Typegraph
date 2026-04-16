@@ -1,4 +1,4 @@
-import type { typegraphEvent, typegraphEventSink } from '@typegraph-ai/core'
+import type { typegraphEvent, typegraphEventSink } from '@typegraph-ai/sdk'
 
 // OTel semantic convention attribute keys
 const ATTR = {

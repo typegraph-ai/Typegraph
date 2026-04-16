@@ -1,4 +1,4 @@
-import type { HashStoreAdapter, HashRecord } from '@typegraph-ai/core'
+import type { HashStoreAdapter, HashRecord } from '@typegraph-ai/sdk'
 import type { SqlExecutor } from './adapter.js'
 
 function mapRow(row: Record<string, unknown>): HashRecord {

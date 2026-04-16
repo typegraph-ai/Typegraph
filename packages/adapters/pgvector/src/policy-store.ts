@@ -1,4 +1,4 @@
-import type { PolicyStoreAdapter, Policy, CreatePolicyInput, UpdatePolicyInput, PolicyType } from '@typegraph-ai/core'
+import type { PolicyStoreAdapter, Policy, CreatePolicyInput, UpdatePolicyInput, PolicyType } from '@typegraph-ai/sdk'
 import type { SqlExecutor } from './adapter.js'
 
 export interface PgPolicyStoreConfig {

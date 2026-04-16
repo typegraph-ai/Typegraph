@@ -1,4 +1,4 @@
-import type { typegraphDocument, DocumentFilter, DocumentStatus, UpsertDocumentInput, PaginationOpts, PaginatedResult } from '@typegraph-ai/core'
+import type { typegraphDocument, DocumentFilter, DocumentStatus, UpsertDocumentInput, PaginationOpts, PaginatedResult } from '@typegraph-ai/sdk'
 import type { SqlExecutor } from './adapter.js'
 
 function mapDocRow(row: Record<string, unknown>): typegraphDocument {
@@ -18,6 +18,7 @@ function mapDocRow(row: Record<string, unknown>): typegraphDocument {
     visibility: (row.visibility as typegraphDocument['visibility']) ?? undefined,
     documentType: (row.document_type as string) ?? undefined,
     sourceType: (row.source_type as string) ?? undefined,
+    graphExtracted: (row.graph_extracted as boolean) ?? false,
     indexedAt: new Date(row.indexed_at as string),
     createdAt: new Date(row.created_at as string),
     updatedAt: new Date(row.updated_at as string),
@@ -36,8 +37,8 @@ export class PgDocumentStore {
       `INSERT INTO ${this.tableName}
         (id, bucket_id, tenant_id, group_id, user_id, agent_id, conversation_id,
          title, url, content_hash, chunk_count, status,
-         visibility, document_type, source_type, metadata, indexed_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW())
+         visibility, document_type, source_type, graph_extracted, metadata, indexed_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), NOW())
        ON CONFLICT (bucket_id, COALESCE(tenant_id, ''), content_hash)
          DO UPDATE SET
            title = EXCLUDED.title,
@@ -51,6 +52,7 @@ export class PgDocumentStore {
            conversation_id = EXCLUDED.conversation_id,
            document_type = EXCLUDED.document_type,
            source_type = EXCLUDED.source_type,
+           graph_extracted = EXCLUDED.graph_extracted,
            metadata = EXCLUDED.metadata,
            indexed_at = NOW(),
            updated_at = NOW()
@@ -71,6 +73,7 @@ export class PgDocumentStore {
         input.visibility ?? null,
         input.documentType ?? null,
         input.sourceType ?? null,
+        input.graphExtracted ?? false,
         JSON.stringify(input.metadata ?? {}),
       ]
     )
@@ -225,6 +228,10 @@ function buildDocWhere(filter: DocumentFilter): { where: string; params: unknown
   if (filter.documentIds != null && filter.documentIds.length > 0) {
     params.push(filter.documentIds)
     conditions.push(`id = ANY($${params.length}::text[])`)
+  }
+  if (filter.graphExtracted != null) {
+    params.push(filter.graphExtracted)
+    conditions.push(`graph_extracted = $${params.length}`)
   }
 
   return {

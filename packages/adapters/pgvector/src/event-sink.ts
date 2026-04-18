@@ -56,7 +56,9 @@ export class PgEventSink implements typegraphEventSink {
   async flush(): Promise<void> {
     if (this.buffer.length === 0) return
 
-    const batch = this.buffer.splice(0)
+    // Snapshot the buffer without draining it; only drain after the INSERT succeeds
+    // so a transient DB failure doesn't silently swallow events.
+    const batch = this.buffer.slice()
 
     try {
       // Use unnest-based batch insert for efficiency
@@ -106,9 +108,21 @@ export class PgEventSink implements typegraphEventSink {
           targetIds, targetTypes, payloads, durationMs, traceIds, spanIds, createdAts,
         ],
       )
+
+      // Insert succeeded — drain the events we just persisted from the buffer.
+      // (Other emits may have arrived during the await; splice by count, not clear.)
+      this.buffer.splice(0, batch.length)
     } catch (err) {
-      // Fire-and-forget: log but don't throw
-      console.error('[typegraph] Failed to flush events:', (err as Error).message)
+      // Retain events for a retry on the next flush tick. Cap total buffer to
+      // 10× bufferSize to prevent unbounded growth if the DB stays unreachable.
+      const maxRetained = this.bufferSize * 10
+      if (this.buffer.length > maxRetained) {
+        const overflow = this.buffer.length - maxRetained
+        this.buffer.splice(0, overflow)
+        console.error(`[typegraph] Event buffer overflow: dropped ${overflow} events.`)
+      }
+      console.error('[typegraph] Failed to flush events (will retry):', (err as Error).message)
+      throw err
     }
   }
 
@@ -118,6 +132,8 @@ export class PgEventSink implements typegraphEventSink {
       clearInterval(this.timer)
       this.timer = null
     }
-    await this.flush()
+    await this.flush().catch((err) => {
+      console.error('[typegraph] Final event flush failed:', err instanceof Error ? err.message : err)
+    })
   }
 }

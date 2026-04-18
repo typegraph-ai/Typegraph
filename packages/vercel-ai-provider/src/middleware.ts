@@ -5,18 +5,24 @@ import type { TypegraphMemory } from '@typegraph-ai/sdk'
 // No imports from `ai` or `@ai-sdk/*`.
 
 export interface MemoryMiddlewareOpts {
-  /** Include working memory in context. Default: true */
-  includeWorking?: boolean | undefined
   /** Include semantic facts. Default: true */
   includeFacts?: boolean | undefined
   /** Include episodic memories. Default: false */
   includeEpisodes?: boolean | undefined
   /** Include procedural memories. Default: false */
   includeProcedures?: boolean | undefined
-  /** Maximum tokens for memory context. Default: 2000 */
-  maxMemoryTokens?: number | undefined
+  /** Maximum number of memories to recall. Default: 10 */
+  limit?: number | undefined
   /** Output format. Default: 'xml' */
   format?: 'xml' | 'markdown' | 'plain' | undefined
+}
+
+function typesFor(opts: MemoryMiddlewareOpts): ('semantic' | 'episodic' | 'procedural')[] {
+  const types: ('semantic' | 'episodic' | 'procedural')[] = []
+  if (opts.includeFacts !== false) types.push('semantic')
+  if (opts.includeEpisodes) types.push('episodic')
+  if (opts.includeProcedures) types.push('procedural')
+  return types
 }
 
 /**
@@ -32,37 +38,21 @@ export interface MemoryMiddlewareOpts {
  * ```
  */
 export function typegraphMemoryMiddleware(memory: TypegraphMemory, opts: MemoryMiddlewareOpts = {}) {
-  return {
-    /**
-     * Enrich a prompt with memory context.
-     */
-    async enrichPrompt(prompt: string): Promise<string> {
-      const context = await memory.assembleContext(prompt, {
-        includeWorking: opts.includeWorking,
-        includeFacts: opts.includeFacts,
-        includeEpisodes: opts.includeEpisodes,
-        includeProcedures: opts.includeProcedures,
-        maxMemoryTokens: opts.maxMemoryTokens,
-        format: opts.format,
-      })
+  const types = typesFor(opts)
+  const format = opts.format ?? 'xml'
+  const limit = opts.limit ?? 10
 
+  return {
+    async enrichPrompt(prompt: string): Promise<string> {
+      if (types.length === 0) return prompt
+      const context = await memory.recall(prompt, { types, limit, format })
       if (!context) return prompt
       return `${context}\n\n${prompt}`
     },
 
-    /**
-     * Enrich a system prompt with memory context.
-     */
     async enrichSystem(systemPrompt: string, userQuery: string): Promise<string> {
-      const context = await memory.assembleContext(userQuery, {
-        includeWorking: opts.includeWorking,
-        includeFacts: opts.includeFacts,
-        includeEpisodes: opts.includeEpisodes,
-        includeProcedures: opts.includeProcedures,
-        maxMemoryTokens: opts.maxMemoryTokens,
-        format: opts.format,
-      })
-
+      if (types.length === 0) return systemPrompt
+      const context = await memory.recall(userQuery, { types, limit, format })
       if (!context) return systemPrompt
       return `${systemPrompt}\n\n${context}`
     },

@@ -160,6 +160,96 @@ describe('integration', () => {
     expect(customResponse.context).toMatch(/Count: \d+/)
   })
 
+  describe('visibility scope isolation', () => {
+    const tenantId = 'tenant-x'
+
+    it.each([
+      ['user',         { userId: 'u1' },          { userId: 'u2' }],
+      ['agent',        { agentId: 'a1' },         { agentId: 'a2' }],
+      ['conversation', { conversationId: 'c1' },  { conversationId: 'c2' }],
+      ['group',        { groupId: 'g1' },         { groupId: 'g2' }],
+    ] as const)('visibility=%s ignores unscoped + wrong-identity queries, returns only matching', async (vis, match, wrong) => {
+      const adapter = createMockAdapter()
+      const embedding = createMockEmbedding()
+      const instance = await typegraphInit({ vectorStore: adapter, embedding })
+
+      const docs = createTestDocuments(1, 'PrivateDoc')
+      const { bucket, ingestOptions } = createMockBucket({ documents: docs })
+      registerTestBucket(instance, bucket, embedding)
+
+      await instance.ingest(docs, {
+        ...ingestOptions,
+        bucketId: bucket.id,
+        tenantId,
+        visibility: vis,
+        ...match,
+      })
+
+      const unscoped = await instance.query('PrivateDoc', { tenantId })
+      expect(unscoped.results).toHaveLength(0)
+
+      const wrongIdentity = await instance.query('PrivateDoc', { tenantId, ...wrong })
+      expect(wrongIdentity.results).toHaveLength(0)
+
+      const matchingIdentity = await instance.query('PrivateDoc', { tenantId, ...match })
+      expect(matchingIdentity.results.length).toBeGreaterThan(0)
+    })
+
+    it('visibility=tenant returns rows on tenant-only queries (no identity narrowing)', async () => {
+      const adapter = createMockAdapter()
+      const embedding = createMockEmbedding()
+      const instance = await typegraphInit({ vectorStore: adapter, embedding })
+
+      const docs = createTestDocuments(1, 'TenantDoc')
+      const { bucket, ingestOptions } = createMockBucket({ documents: docs })
+      registerTestBucket(instance, bucket, embedding)
+
+      // Tenant-visible rows intentionally carry no userId so any tenant-level
+      // caller sees them regardless of their own userId.
+      await instance.ingest(docs, {
+        ...ingestOptions,
+        bucketId: bucket.id,
+        tenantId,
+        visibility: 'tenant',
+      })
+
+      const unscoped = await instance.query('TenantDoc', { tenantId })
+      expect(unscoped.results.length).toBeGreaterThan(0)
+    })
+
+    it('cascading visibility tighten (tenant → user) hides rows from unscoped queries', async () => {
+      const adapter = createMockAdapter()
+      const embedding = createMockEmbedding()
+      const instance = await typegraphInit({ vectorStore: adapter, embedding })
+
+      const docs = createTestDocuments(1, 'MigratingDoc')
+      const { bucket, ingestOptions } = createMockBucket({ documents: docs })
+      registerTestBucket(instance, bucket, embedding)
+
+      await instance.ingest(docs, {
+        ...ingestOptions,
+        bucketId: bucket.id,
+        tenantId,
+        visibility: 'tenant',
+        userId: 'u1',
+      })
+
+      const before = await instance.query('MigratingDoc', { tenantId })
+      expect(before.results.length).toBeGreaterThan(0)
+
+      // Simulate the chunk-level cascade PgVectorAdapter.updateDocument() applies.
+      for (const chunks of adapter._chunks.values()) {
+        for (const c of chunks) c.visibility = 'user'
+      }
+
+      const afterUnscoped = await instance.query('MigratingDoc', { tenantId })
+      expect(afterUnscoped.results).toHaveLength(0)
+
+      const afterScoped = await instance.query('MigratingDoc', { tenantId, userId: 'u1' })
+      expect(afterScoped.results.length).toBeGreaterThan(0)
+    })
+  })
+
   it('hooks observability (full lifecycle)', async () => {
     const onIndexStart = vi.fn()
     const onIndexComplete = vi.fn()

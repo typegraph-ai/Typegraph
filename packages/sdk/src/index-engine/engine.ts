@@ -103,6 +103,7 @@ export class IndexEngine {
         embeddingModel: modelId,
         chunkIndex: chunk.chunkIndex,
         totalChunks: chunks.length,
+        visibility,
         metadata: { ...propagated, ...chunk.metadata },
         indexedAt: new Date(),
       }))
@@ -374,6 +375,7 @@ export class IndexEngine {
         embeddingModel: modelId,
         chunkIndex: chunk.chunkIndex,
         totalChunks: chunks.length,
+        visibility,
         metadata: { ...propagated, ...chunk.metadata },
         indexedAt: new Date(),
       }))
@@ -549,6 +551,18 @@ export class IndexEngine {
       spanId,
       timestamp: new Date(),
     })
+
+    // Ensure index events (including this index.complete) are durably written
+    // before the ingest call resolves. Short-lived workers (e.g. Inngest steps)
+    // otherwise recycle before the buffered flush fires.
+    if (this.eventSink?.flush) {
+      try {
+        await this.eventSink.flush()
+      } catch (err) {
+        // Flush failures are logged inside the sink; don't fail the ingest.
+        console.error('[typegraph] Post-ingest event flush failed:', err instanceof Error ? err.message : err)
+      }
+    }
 
     return result
   }

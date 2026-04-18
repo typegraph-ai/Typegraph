@@ -59,7 +59,20 @@ export interface IngestOptions {
   // Batch behavior (runtime only)
   removeDeleted?: boolean | undefined
   dryRun?: boolean | undefined
-  /** Max concurrent documents to process. Default: 1 (sequential). Higher values speed up LLM-heavy pipelines like neural. */
+  /**
+   * Controls inter-document parallelism inside a single `ingest()` call.
+   * A semaphore bounds how many documents run their storage + per-document
+   * extraction phase concurrently.
+   *
+   * Does NOT affect:
+   * - Embedding batching. All chunks in the batch are sent to `embedBatch`
+   *   in a single call regardless of this value.
+   * - Intra-document chunk processing. Chunks are always sequential within
+   *   a single document so cross-chunk entity context can accumulate.
+   *
+   * Default: 1 (sequential). Raise it to speed up LLM-heavy extraction
+   * (graph, memory) at the cost of provider rate-limit pressure.
+   */
   concurrency?: number | undefined
   onProgress?: ((event: IndexProgressEvent) => void) | undefined
 

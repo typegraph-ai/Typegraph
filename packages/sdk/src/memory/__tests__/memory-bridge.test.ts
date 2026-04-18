@@ -69,7 +69,7 @@ describe('createMemoryBridge', () => {
       llm: mockLLM(),
     })
 
-    const result = await bridge.remember('test memory', testScope)
+    const result = await bridge.remember('test memory', { ...testScope })
     expect(result).toBeDefined()
     expect(store.upsert).toHaveBeenCalled()
   })
@@ -82,7 +82,7 @@ describe('createMemoryBridge', () => {
       llm: mockLLM(),
     })
 
-    await bridge.forget('some-id', testScope)
+    await bridge.forget('some-id', { ...testScope })
     expect(store.invalidate).toHaveBeenCalledWith('some-id')
   })
 
@@ -94,7 +94,7 @@ describe('createMemoryBridge', () => {
       llm: mockLLM(),
     })
 
-    const results = await bridge.recall('query', testScope)
+    const results = await bridge.recall('query', { ...testScope })
     expect(Array.isArray(results)).toBe(true)
     expect(store.search).toHaveBeenCalled()
   })

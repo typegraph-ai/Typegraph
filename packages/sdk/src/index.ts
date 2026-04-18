@@ -44,6 +44,12 @@ export type {
   LLMConfig,
   typegraphIdentity,
   MemoryBridge,
+  RememberOpts,
+  ForgetOpts,
+  CorrectOpts,
+  RecallOpts,
+  AddConversationTurnOpts,
+  HealthCheckOpts,
   KnowledgeGraphBridge,
   EntityResult,
   EntityDetail,
@@ -133,8 +139,6 @@ export {
   temporalOverlaps,
   transitionStatus,
 } from './memory/temporal.js'
-export { WorkingMemory } from './memory/working-memory.js'
-export type { WorkingMemoryItem, WorkingMemoryConfig } from './memory/working-memory.js'
 export { MemoryExtractor, EntityResolver, InvalidationEngine } from './memory/extraction/index.js'
 export type {
   ConversationMessage,

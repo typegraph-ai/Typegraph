@@ -39,10 +39,9 @@ export function typegraphMemoryTools(memory: TypegraphMemory): Record<string, To
         required: ['content'],
       },
       execute: async (args) => {
-        return memory.remember(
-          args['content'] as string,
-          (args['category'] as 'semantic') ?? 'semantic',
-        )
+        return memory.remember(args['content'] as string, {
+          category: (args['category'] as 'semantic' | 'episodic' | 'procedural' | undefined) ?? 'semantic',
+        })
       },
     },
 

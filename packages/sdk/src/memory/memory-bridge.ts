@@ -1,16 +1,38 @@
 import type { EmbeddingProvider } from '../embedding/provider.js'
 import type { typegraphIdentity } from '../types/identity.js'
 import type { LLMProvider, LLMConfig } from '../types/llm-provider.js'
-import type { typegraphEventSink, TelemetryOpts } from '../types/events.js'
+import type { typegraphEventSink } from '../types/events.js'
 import type { ConversationTurnResult, MemoryHealthReport } from '../types/memory.js'
 import type { MemoryRecord } from './types/memory.js'
 import type { EmbeddingConfig } from '../types/bucket.js'
-import type { MemoryBridge } from '../types/graph-bridge.js'
+import type {
+  MemoryBridge,
+  RememberOpts,
+  ForgetOpts,
+  CorrectOpts,
+  AddConversationTurnOpts,
+  RecallOpts,
+  HealthCheckOpts,
+} from '../types/graph-bridge.js'
 import { resolveEmbeddingProvider, resolveLLMProvider } from '../typegraph.js'
 import type { MemoryStoreAdapter } from './types/adapter.js'
 import type { ConversationMessage } from './extraction/extractor.js'
 import { TypegraphMemory } from './typegraph-memory.js'
 import { scopeKey } from './types/scope.js'
+
+/** Extract typegraphIdentity fields from an opts bag. */
+function identityFrom(opts: typegraphIdentity): typegraphIdentity {
+  return {
+    tenantId: opts.tenantId,
+    groupId: opts.groupId,
+    userId: opts.userId,
+    agentId: opts.agentId,
+    conversationId: opts.conversationId,
+    agentName: opts.agentName,
+    agentDescription: opts.agentDescription,
+    agentVersion: opts.agentVersion,
+  }
+}
 
 // ── Config ──
 
@@ -50,84 +72,78 @@ export function createMemoryBridge(config: CreateMemoryBridgeConfig): MemoryBrid
     return mem
   }
 
-  async function remember(content: string, identity: typegraphIdentity, category?: string, opts?: {
-    importance?: number
-    metadata?: Record<string, unknown>
-  } & TelemetryOpts): Promise<MemoryRecord> {
-    const mem = getMemory(identity)
-    return mem.remember(content, (category as 'episodic' | 'semantic' | 'procedural') ?? 'semantic', opts) as unknown as Promise<MemoryRecord>
+  async function remember(content: string, opts: RememberOpts): Promise<MemoryRecord> {
+    const mem = getMemory(identityFrom(opts))
+    return mem.remember(content, {
+      category: (opts.category as 'episodic' | 'semantic' | 'procedural' | undefined) ?? 'semantic',
+      importance: opts.importance,
+      metadata: opts.metadata,
+      traceId: opts.traceId,
+      spanId: opts.spanId,
+    }) as unknown as Promise<MemoryRecord>
   }
 
-  async function forget(id: string, _identity: typegraphIdentity, opts?: TelemetryOpts): Promise<void> {
+  async function forget(id: string, opts: ForgetOpts): Promise<void> {
     await memoryStore.invalidate(id)
     // Note: MemoryBridge.forget goes direct to store so no TypegraphMemory.emit fires here.
     // The telemetry arg is accepted for future symmetry / external event sinks.
     void opts
   }
 
-  async function correct(correction: string, identity: typegraphIdentity, opts?: TelemetryOpts) {
-    const mem = getMemory(identity)
-    return mem.correct(correction, opts)
+  async function correct(correction: string, opts: CorrectOpts) {
+    const mem = getMemory(identityFrom(opts))
+    return mem.correct(correction, { traceId: opts.traceId, spanId: opts.spanId })
   }
 
   async function addConversationTurn(
     messages: Array<{ role: string; content: string; timestamp?: Date }>,
-    identity: typegraphIdentity,
-    conversationId?: string,
-    opts?: TelemetryOpts,
+    opts: AddConversationTurnOpts,
   ): Promise<ConversationTurnResult> {
-    const mem = getMemory(identity)
-    return mem.addConversationTurn(messages as ConversationMessage[], conversationId, opts) as unknown as Promise<ConversationTurnResult>
+    const mem = getMemory(identityFrom(opts))
+    return mem.addConversationTurn(messages as ConversationMessage[], opts.conversationId, {
+      traceId: opts.traceId,
+      spanId: opts.spanId,
+    }) as unknown as Promise<ConversationTurnResult>
   }
 
-  async function recall(query: string, identity: typegraphIdentity, opts?: {
-    limit?: number
-    types?: string[]
-    temporalAt?: Date
-    includeInvalidated?: boolean
-  } & TelemetryOpts): Promise<MemoryRecord[]> {
-    const mem = getMemory(identity)
-    const results = await mem.recall(query, {
-      limit: opts?.limit,
-      types: opts?.types as ('episodic' | 'semantic' | 'procedural')[] | undefined,
-      asOf: opts?.temporalAt,
-      traceId: opts?.traceId,
-      spanId: opts?.spanId,
-    })
-    return results as unknown as MemoryRecord[]
+  function recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
+  function recall(query: string, opts: RecallOpts): Promise<MemoryRecord[]>
+  function recall(query: string, opts: RecallOpts): Promise<MemoryRecord[] | string> {
+    const mem = getMemory(identityFrom(opts))
+    const internalOpts = {
+      limit: opts.limit,
+      types: opts.types as ('episodic' | 'semantic' | 'procedural')[] | undefined,
+      asOf: opts.temporalAt,
+      includeInvalidated: opts.includeInvalidated,
+      format: opts.format,
+      traceId: opts.traceId,
+      spanId: opts.spanId,
+    }
+    return opts.format
+      ? mem.recall(query, internalOpts as typeof internalOpts & { format: 'xml' | 'markdown' | 'plain' })
+      : mem.recall(query, internalOpts) as unknown as Promise<MemoryRecord[]>
   }
 
-  async function recallHybrid(query: string, identity: typegraphIdentity, opts?: {
-    limit?: number
-    types?: string[]
-    temporalAt?: Date
-    includeInvalidated?: boolean
-  } & TelemetryOpts): Promise<MemoryRecord[]> {
-    const mem = getMemory(identity)
-    const results = await mem.recallHybrid(query, {
-      limit: opts?.limit,
-      types: opts?.types as ('episodic' | 'semantic' | 'procedural')[] | undefined,
-      asOf: opts?.temporalAt,
-      traceId: opts?.traceId,
-      spanId: opts?.spanId,
-    })
-    return results as unknown as MemoryRecord[]
+  function recallHybrid(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
+  function recallHybrid(query: string, opts: RecallOpts): Promise<MemoryRecord[]>
+  function recallHybrid(query: string, opts: RecallOpts): Promise<MemoryRecord[] | string> {
+    const mem = getMemory(identityFrom(opts))
+    const internalOpts = {
+      limit: opts.limit,
+      types: opts.types as ('episodic' | 'semantic' | 'procedural')[] | undefined,
+      asOf: opts.temporalAt,
+      includeInvalidated: opts.includeInvalidated,
+      format: opts.format,
+      traceId: opts.traceId,
+      spanId: opts.spanId,
+    }
+    return opts.format
+      ? mem.recallHybrid(query, internalOpts as typeof internalOpts & { format: 'xml' | 'markdown' | 'plain' })
+      : mem.recallHybrid(query, internalOpts) as unknown as Promise<MemoryRecord[]>
   }
 
-  async function buildMemoryContext(query: string, identity: typegraphIdentity, opts?: {
-    includeWorking?: boolean
-    includeFacts?: boolean
-    includeEpisodes?: boolean
-    includeProcedures?: boolean
-    maxMemoryTokens?: number
-    format?: 'xml' | 'markdown' | 'plain'
-  } & TelemetryOpts): Promise<string> {
-    const mem = getMemory(identity)
-    return mem.assembleContext(query, opts)
-  }
-
-  async function healthCheck(identity: typegraphIdentity, _opts?: TelemetryOpts): Promise<MemoryHealthReport> {
-    const mem = getMemory(identity)
+  async function healthCheck(opts?: HealthCheckOpts): Promise<MemoryHealthReport> {
+    const mem = getMemory(opts ? identityFrom(opts) : {})
     return mem.healthCheck() as unknown as Promise<MemoryHealthReport>
   }
 
@@ -159,7 +175,6 @@ export function createMemoryBridge(config: CreateMemoryBridgeConfig): MemoryBrid
     addConversationTurn,
     recall,
     recallHybrid,
-    buildMemoryContext,
     healthCheck,
     hasMemories,
   }

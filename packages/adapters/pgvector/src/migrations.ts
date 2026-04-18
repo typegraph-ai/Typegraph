@@ -68,12 +68,18 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
     embedding_model TEXT NOT NULL,
     chunk_index     INTEGER NOT NULL,
     total_chunks    INTEGER NOT NULL,
+    visibility      TEXT NOT NULL DEFAULT 'tenant'
+                    CHECK (visibility IN ('tenant', 'group', 'user', 'agent', 'conversation')),
     metadata        JSONB NOT NULL DEFAULT '{}',
     indexed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     search_vector   TSVECTOR GENERATED ALWAYS AS (
       to_tsvector('english', content)
     ) STORED
   );
+
+  ALTER TABLE ${chunksTable}
+    ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'tenant'
+      CHECK (visibility IN ('tenant', 'group', 'user', 'agent', 'conversation'));
 
   CREATE INDEX IF NOT EXISTS ${idx('embedding_idx')}
     ON ${chunksTable} USING hnsw (embedding vector_cosine_ops);
@@ -113,8 +119,28 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
 
   CREATE INDEX IF NOT EXISTS ${idx('conversation_idx')}
     ON ${chunksTable} (conversation_id);
+
+  CREATE INDEX IF NOT EXISTS ${idx('visibility_idx')}
+    ON ${chunksTable} (visibility);
+
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_visibility_idx')}
+    ON ${chunksTable} (tenant_id, visibility);
 `
 }
+
+/**
+ * Backfill chunks.visibility from the parent document's visibility.
+ * Idempotent: only updates rows still at the 'tenant' default that came from
+ * a document with a non-null visibility. Safe to re-run.
+ */
+export const CHUNKS_VISIBILITY_BACKFILL_SQL = (chunksTable: string, documentsTable: string) => `
+  UPDATE ${chunksTable} c
+  SET visibility = d.visibility
+  FROM ${documentsTable} d
+  WHERE c.document_id = d.id
+    AND d.visibility IS NOT NULL
+    AND c.visibility = 'tenant';
+`
 
 /**
  * DDL for the shared hash store table (dimension-agnostic).

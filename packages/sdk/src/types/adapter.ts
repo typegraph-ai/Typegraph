@@ -106,6 +106,8 @@ export interface VectorStoreAdapter {
   upsertBucket?(bucket: Bucket): Promise<Bucket>
   /** Get a bucket by ID. */
   getBucket?(id: string): Promise<Bucket | null>
+  /** Get multiple buckets by ID in a single round-trip. Missing ids are simply absent from the result. */
+  getBuckets?(ids: string[]): Promise<Bucket[]>
   /** List buckets, optionally filtered by identity fields. Supports optional pagination. */
   listBuckets?(filter?: BucketListFilter, pagination?: PaginationOpts): Promise<Bucket[] | PaginatedResult<Bucket>>
   /** Delete a bucket by ID. */

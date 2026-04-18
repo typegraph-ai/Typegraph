@@ -29,14 +29,15 @@ export class MemoryRunner {
     // Use hybrid search when keyword signal is active and bridge supports it
     const useHybrid = opts?.useKeyword && this.memory.recallHybrid
     const recallOpts = {
+      ...identity,
       limit: count,
       ...(opts?.temporalAt ? { temporalAt: opts.temporalAt } : {}),
       ...(opts?.includeInvalidated != null ? { includeInvalidated: opts.includeInvalidated } : {}),
     }
 
     const memories = useHybrid
-      ? await this.memory.recallHybrid!(text, identity, recallOpts)
-      : await this.memory.recall(text, identity, recallOpts)
+      ? await this.memory.recallHybrid!(text, recallOpts)
+      : await this.memory.recall(text, recallOpts)
 
     return memories.map((m, i) => {
       const similarity = (m.metadata?._similarity as number | undefined) ?? 0

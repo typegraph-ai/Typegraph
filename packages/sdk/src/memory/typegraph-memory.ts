@@ -1,4 +1,3 @@
-import { z } from 'zod'
 import type { EmbeddingProvider } from '../embedding/provider.js'
 import type { typegraphEventSink, typegraphEventType, TelemetryOpts } from '../types/events.js'
 import type { MemoryStoreAdapter } from './types/adapter.js'
@@ -14,19 +13,24 @@ import type { LLMProvider } from './extraction/llm-provider.js'
 import type { ExtractionResult, ConversationMessage } from './extraction/extractor.js'
 import { MemoryExtractor } from './extraction/extractor.js'
 import { InvalidationEngine } from './extraction/invalidation.js'
-import { WorkingMemory, type WorkingMemoryConfig } from './working-memory.js'
 import { createTemporal } from './temporal.js'
 import { generateId } from '../utils/id.js'
 
-// ── Zod schema for structured output ──
+// ── Recall option shapes ──
 
-const correctionSchema = z.object({
-  targetContent: z.string().optional(),
-  newContent: z.string().optional(),
-  subject: z.string().optional(),
-  predicate: z.string().optional(),
-  object: z.string().optional(),
-})
+type RecallFormat = 'xml' | 'markdown' | 'plain'
+
+interface RecallOptsInternal extends TelemetryOpts {
+  types?: MemoryCategory[] | undefined
+  limit?: number | undefined
+  asOf?: Date | undefined
+  /** Include invalidated/expired memories. Default: false. */
+  includeInvalidated?: boolean | undefined
+  /** Return a formatted string instead of `MemoryRecord[]`. */
+  format?: RecallFormat | undefined
+}
+
+type RecallOptsWithFormat = RecallOptsInternal & { format: RecallFormat }
 
 // ── Memory Health Report ──
 
@@ -51,7 +55,6 @@ export interface typegraphMemoryConfig {
   embedding: EmbeddingProvider
   llm: LLMProvider
   scope: typegraphIdentity
-  workingMemory?: WorkingMemoryConfig | undefined
   eventSink?: typegraphEventSink | undefined
 }
 
@@ -61,7 +64,6 @@ export interface typegraphMemoryConfig {
 // Same engines used by job system for automation.
 
 export class TypegraphMemory {
-  readonly working: WorkingMemory
   readonly identity: typegraphIdentity
 
   private readonly store: MemoryStoreAdapter
@@ -79,7 +81,6 @@ export class TypegraphMemory {
     this.scope = config.scope
     this.identity = config.scope
     this.eventSink = config.eventSink
-    this.working = new WorkingMemory(config.workingMemory)
 
     this.extractor = new MemoryExtractor({
       llm: config.llm,
@@ -119,13 +120,15 @@ export class TypegraphMemory {
   // ── Store ──
 
   /**
-   * Store a memory. If content is a plain string, creates a semantic fact
-   * with LLM extraction. For full control, use addConversationTurn().
+   * Store a memory. Creates a record in the given category (default: `semantic`).
+   * For LLM extraction of structured facts from a conversation, use `addConversationTurn()`.
    */
-  async remember(content: string, category: MemoryCategory = 'semantic', opts?: {
-    importance?: number
-    metadata?: Record<string, unknown>
+  async remember(content: string, opts?: {
+    category?: MemoryCategory | undefined
+    importance?: number | undefined
+    metadata?: Record<string, unknown> | undefined
   } & TelemetryOpts): Promise<MemoryRecord> {
+    const category = opts?.category ?? 'semantic'
     const embedding = await this.embedding.embed(content)
     const temporal = createTemporal()
 
@@ -159,90 +162,82 @@ export class TypegraphMemory {
   /**
    * Apply a natural language correction to memories.
    * Example: "Actually, John works at Acme Corp, not Beta Inc"
+   *
+   * Runs the correction through the same extraction + contradiction
+   * machinery as `addConversationTurn`, so prior facts get invalidated
+   * by the LLM contradiction judge rather than a brittle substring match.
    */
   async correct(naturalLanguageCorrection: string, telemetry?: TelemetryOpts): Promise<{
     invalidated: number
     created: number
     summary: string
   }> {
-    // Lazy import to avoid circular deps with consolidation
-    const parsed = await this.llm.generateJSON<{
-      targetContent?: string
-      newContent?: string
-      subject?: string
-      predicate?: string
-      object?: string
-    }>(
-      `Parse this memory correction: "${naturalLanguageCorrection}"
-Respond with JSON: {"targetContent": "...", "newContent": "...", "subject": "...", "predicate": "...", "object": "..."}`,
-      undefined,
-      { schema: correctionSchema },
-    )
+    const messages: ConversationMessage[] = [
+      { role: 'user', content: naturalLanguageCorrection },
+    ]
 
-    if (!parsed.newContent) {
+    const candidates = await this.extractor.extractFacts(messages)
+    if (candidates.length === 0) {
+      this.emit('memory.correct', undefined, {
+        correction: naturalLanguageCorrection.slice(0, 100),
+        invalidated: 0,
+        created: 0,
+      }, undefined, telemetry)
       return { invalidated: 0, created: 0, summary: 'Could not parse correction' }
     }
 
-    // Find and invalidate matching facts
-    const existing = await this.store.list({ scope: this.scope, category: 'semantic' }, 50)
-    const semanticFacts = existing.filter((r): r is SemanticFact => r.category === 'semantic')
-
     let invalidated = 0
-    if (parsed.targetContent) {
-      const target = parsed.targetContent.toLowerCase()
-      for (const fact of semanticFacts) {
-        if (fact.content.toLowerCase().includes(target) || target.includes(fact.content.toLowerCase())) {
-          await this.store.invalidate(fact.id)
-          invalidated++
-        }
+    let created = 0
+    const syntheticEpisodeId = generateId('mem')
+
+    for (const candidate of candidates) {
+      const fact = this.extractor.candidateToFact(candidate, syntheticEpisodeId)
+      fact.metadata = { ...fact.metadata, correctionText: naturalLanguageCorrection }
+      fact.embedding = await this.embedding.embed(fact.content)
+
+      const contradictions = await this.invalidation.checkContradictions(fact, this.scope)
+      if (contradictions.length > 0) {
+        invalidated += contradictions.length
+        this.emit('extraction.contradiction', undefined, {
+          factContent: fact.content.slice(0, 100),
+          contradictionCount: contradictions.length,
+          source: 'correct',
+        }, undefined, telemetry)
+        await this.invalidation.resolveContradictions(contradictions)
       }
+
+      await this.store.upsert(fact)
+      created++
     }
 
-    // Create corrected fact
-    const embedding = await this.embedding.embed(parsed.newContent)
-    const newFact: SemanticFact = {
-      id: generateId('fact'),
-      category: 'semantic',
-      status: 'active',
-      content: parsed.newContent,
-      subject: parsed.subject ?? '',
-      predicate: parsed.predicate ?? '',
-      object: parsed.object ?? '',
-      confidence: 0.95,
-      sourceMemoryIds: [],
-      importance: 0.7,
-      accessCount: 0,
-      lastAccessedAt: new Date(),
-      metadata: { correctionText: naturalLanguageCorrection },
-      scope: this.scope,
-      embedding,
-      ...createTemporal(),
-    }
-
-    await this.store.upsert(newFact)
-
-    const summary = `Invalidated ${invalidated} fact(s), created 1 corrected fact`
-    this.emit('memory.correct', undefined, { correction: naturalLanguageCorrection.slice(0, 100) }, undefined, telemetry)
-    return { invalidated, created: 1, summary }
+    const summary = `Invalidated ${invalidated} fact(s), created ${created} corrected fact(s)`
+    this.emit('memory.correct', undefined, {
+      correction: naturalLanguageCorrection.slice(0, 100),
+      invalidated,
+      created,
+    }, undefined, telemetry)
+    return { invalidated, created, summary }
   }
 
   // ── Retrieve ──
 
   /**
    * Unified recall across all memory types.
+   * When `opts.format` is set, returns a formatted string grouped by category
+   * suitable for dropping into an LLM prompt.
    */
-  async recall(query: string, opts?: {
-    types?: MemoryCategory[] | undefined
-    limit?: number | undefined
-    asOf?: Date | undefined
-  } & TelemetryOpts): Promise<MemoryRecord[]> {
+  async recall(query: string, opts: RecallOptsWithFormat): Promise<string>
+  async recall(query: string, opts?: RecallOptsInternal): Promise<MemoryRecord[]>
+  async recall(query: string, opts?: RecallOptsInternal): Promise<MemoryRecord[] | string> {
     const embedding = await this.embedding.embed(query)
     const results = await this.store.search(embedding, {
       count: opts?.limit ?? 10,
       filter: {
         scope: this.scope,
         category: opts?.types,
+        ...(opts?.includeInvalidated ? {} : { status: 'active' as const }),
       },
+      includeExpired: opts?.includeInvalidated,
       temporalAt: opts?.asOf,
     })
 
@@ -258,21 +253,23 @@ Respond with JSON: {"targetContent": "...", "newContent": "...", "subject": "...
       resultCount: results.length,
       types: opts?.types,
     }, undefined, opts)
+
+    if (opts?.format) return formatRecords(results, opts.format)
     return results
   }
 
-  async recallHybrid(query: string, opts?: {
-    types?: MemoryCategory[] | undefined
-    limit?: number | undefined
-    asOf?: Date | undefined
-  } & TelemetryOpts): Promise<MemoryRecord[]> {
+  async recallHybrid(query: string, opts: RecallOptsWithFormat): Promise<string>
+  async recallHybrid(query: string, opts?: RecallOptsInternal): Promise<MemoryRecord[]>
+  async recallHybrid(query: string, opts?: RecallOptsInternal): Promise<MemoryRecord[] | string> {
     const embedding = await this.embedding.embed(query)
     const searchOpts = {
       count: opts?.limit ?? 10,
       filter: {
         scope: this.scope,
         category: opts?.types,
+        ...(opts?.includeInvalidated ? {} : { status: 'active' as const }),
       } as import('./types/adapter.js').MemoryFilter,
+      includeExpired: opts?.includeInvalidated,
       temporalAt: opts?.asOf,
     }
 
@@ -294,6 +291,8 @@ Respond with JSON: {"targetContent": "...", "newContent": "...", "subject": "...
       types: opts?.types,
       hybrid: true,
     }, undefined, opts)
+
+    if (opts?.format) return formatRecords(results, opts.format)
     return results
   }
 
@@ -395,83 +394,6 @@ Respond with JSON: {"targetContent": "...", "newContent": "...", "subject": "...
     return result
   }
 
-  // ── Context Assembly ──
-
-  /**
-   * Build LLM-ready context string from memory.
-   */
-  async assembleContext(query: string, opts?: {
-    includeWorking?: boolean | undefined
-    includeFacts?: boolean | undefined
-    includeEpisodes?: boolean | undefined
-    includeProcedures?: boolean | undefined
-    maxMemoryTokens?: number | undefined
-    format?: 'xml' | 'markdown' | 'plain' | undefined
-  } & TelemetryOpts): Promise<string> {
-    const sections: string[] = []
-    const format = opts?.format ?? 'xml'
-
-    // Working memory
-    if (opts?.includeWorking !== false && this.working.size > 0) {
-      const workingContext = this.working.toContext()
-      if (format === 'xml') {
-        sections.push(`<working_memory>\n${workingContext}\n</working_memory>`)
-      } else {
-        sections.push(`## Working Memory\n${workingContext}`)
-      }
-    }
-
-    const tele: TelemetryOpts | undefined = opts?.traceId || opts?.spanId ? { traceId: opts.traceId, spanId: opts.spanId } : undefined
-
-    // Semantic facts
-    if (opts?.includeFacts !== false) {
-      const facts = await this.recallFacts(query, 10, tele)
-      if (facts.length > 0) {
-        const factLines = facts.map(f => `- ${f.content}`).join('\n')
-        if (format === 'xml') {
-          sections.push(`<semantic_memory>\n${factLines}\n</semantic_memory>`)
-        } else {
-          sections.push(`## Known Facts\n${factLines}`)
-        }
-      }
-    }
-
-    // Episodic memories
-    if (opts?.includeEpisodes) {
-      const episodes = await this.recallEpisodes(query, 5, tele)
-      if (episodes.length > 0) {
-        const epLines = episodes.map(e => `- ${e.content}`).join('\n')
-        if (format === 'xml') {
-          sections.push(`<episodic_memory>\n${epLines}\n</episodic_memory>`)
-        } else {
-          sections.push(`## Recent Episodes\n${epLines}`)
-        }
-      }
-    }
-
-    // Procedural memories
-    if (opts?.includeProcedures) {
-      const procedures = await this.recallProcedures(query, 3, tele)
-      if (procedures.length > 0) {
-        const procLines = procedures.map(p =>
-          `- When: ${p.trigger}\n  Steps: ${p.steps.join(' → ')}`
-        ).join('\n')
-        if (format === 'xml') {
-          sections.push(`<procedural_memory>\n${procLines}\n</procedural_memory>`)
-        } else {
-          sections.push(`## Procedures\n${procLines}`)
-        }
-      }
-    }
-
-    if (sections.length === 0) return ''
-
-    if (format === 'xml') {
-      return `<memory>\n${sections.join('\n')}\n</memory>`
-    }
-    return sections.join('\n\n')
-  }
-
   // ── Health ──
 
   /**
@@ -539,4 +461,54 @@ Respond with JSON: {"targetContent": "...", "newContent": "...", "subject": "...
       stalenessIndex,
     }
   }
+}
+
+// ── Formatter ──
+
+const SECTION_LABELS: Record<MemoryCategory, { xml: string; md: string; plain: string }> = {
+  semantic: { xml: 'semantic_memory', md: '## Known Facts', plain: 'Known facts:' },
+  episodic: { xml: 'episodic_memory', md: '## Recent Episodes', plain: 'Recent episodes:' },
+  procedural: { xml: 'procedural_memory', md: '## Procedures', plain: 'Procedures:' },
+}
+
+function renderRecord(record: MemoryRecord): string {
+  if (record.category === 'procedural') {
+    const proc = record as ProceduralMemory
+    return `- When: ${proc.trigger}\n  Steps: ${proc.steps.join(' → ')}`
+  }
+  return `- ${record.content}`
+}
+
+/**
+ * Group records by category and emit a single formatted string.
+ * Categories with no records are omitted.
+ */
+function formatRecords(records: MemoryRecord[], format: RecallFormat): string {
+  if (records.length === 0) return ''
+
+  const grouped: Record<MemoryCategory, MemoryRecord[]> = {
+    semantic: [],
+    episodic: [],
+    procedural: [],
+  }
+  for (const record of records) grouped[record.category].push(record)
+
+  const sections: string[] = []
+  for (const category of ['semantic', 'episodic', 'procedural'] as const) {
+    const group = grouped[category]
+    if (group.length === 0) continue
+    const body = group.map(renderRecord).join('\n')
+    const labels = SECTION_LABELS[category]
+    if (format === 'xml') {
+      sections.push(`<${labels.xml}>\n${body}\n</${labels.xml}>`)
+    } else if (format === 'markdown') {
+      sections.push(`${labels.md}\n${body}`)
+    } else {
+      sections.push(`${labels.plain}\n${body}`)
+    }
+  }
+
+  if (sections.length === 0) return ''
+  if (format === 'xml') return `<memory>\n${sections.join('\n')}\n</memory>`
+  return sections.join('\n\n')
 }

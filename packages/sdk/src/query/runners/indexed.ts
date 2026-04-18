@@ -42,7 +42,7 @@ export class IndexedRunner {
         userId: identity?.userId,
         agentId: identity?.agentId,
         conversationId: identity?.conversationId,
-        bucketId: group.bucketIds.length === 1 ? group.bucketIds[0] : undefined,
+        bucketIds: group.bucketIds,
       }
 
       // Prefer searchWithDocuments if available and documentFilter is set
@@ -55,10 +55,6 @@ export class IndexedRunner {
         })
 
         for (const chunk of chunks) {
-          if (group.bucketIds.length > 1 && !group.bucketIds.includes(chunk.bucketId)) {
-            continue
-          }
-
           allResults.push({
             content: chunk.content,
             bucketId: chunk.bucketId,
@@ -98,10 +94,6 @@ export class IndexedRunner {
           : await this.adapter.search(modelId, queryEmbedding, { count: fetchCount, filter, temporalAt })
 
         for (const chunk of chunks) {
-          if (group.bucketIds.length > 1 && !group.bucketIds.includes(chunk.bucketId)) {
-            continue
-          }
-
           allResults.push({
             content: chunk.content,
             bucketId: chunk.bucketId,

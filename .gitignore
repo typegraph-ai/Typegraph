@@ -11,6 +11,7 @@ dist/
 local_cache/
 coverage/
 CLAUDE.local.md
+CLAUDE.md
 .claude/*
 .claude/
 docs/

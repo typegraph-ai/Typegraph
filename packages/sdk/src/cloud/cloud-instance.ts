@@ -12,7 +12,7 @@ import type { PaginationOpts, PaginatedResult } from '../types/pagination.js'
 import type { ConversationTurnResult, MemoryHealthReport } from '../types/memory.js'
 import type { MemoryRecord } from '../memory/types/memory.js'
 import type { Job, JobFilter } from '../types/job.js'
-import type { EntityResult, EntityDetail, EdgeResult, SubgraphOpts, SubgraphResult, GraphStats } from '../types/graph-bridge.js'
+import type { EntityResult, EntityDetail, EdgeResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts } from '../types/graph-bridge.js'
 import { DEFAULT_BUCKET_ID } from '../typegraph.js'
 import { HttpClient } from './http-client.js'
 import type { CloudConfig } from './http-client.js'
@@ -125,6 +125,17 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     },
   }
 
+  function recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
+  function recall(query: string, opts: RecallOpts): Promise<MemoryRecord[]>
+  function recall(query: string, opts: RecallOpts): Promise<string | MemoryRecord[]> {
+    const { tenantId, groupId, userId, agentId, conversationId, ...rest } = opts
+    const identity = { tenantId, groupId, userId, agentId, conversationId }
+    if (opts.format) {
+      return client.post<string>('/v1/memory/recall', { query, identity, ...rest })
+    }
+    return client.post<MemoryRecord[]>('/v1/memory/recall', { query, identity, ...rest })
+  }
+
   const instance: typegraphCloudInstance = {
     async deploy(_config: typegraphConfig): Promise<typegraphCloudInstance> {
       return instance
@@ -206,20 +217,7 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
       return client.post('/v1/memory/correct', { correction, identity })
     },
 
-    async recall(query: string, identity: typegraphIdentity, opts?: { limit?: number; types?: string[] }): Promise<MemoryRecord[]> {
-      return client.post<MemoryRecord[]>('/v1/memory/recall', { query, identity, ...opts })
-    },
-
-    async buildMemoryContext(query: string, identity: typegraphIdentity, opts?: {
-      includeWorking?: boolean
-      includeFacts?: boolean
-      includeEpisodes?: boolean
-      includeProcedures?: boolean
-      maxMemoryTokens?: number
-      format?: 'xml' | 'markdown' | 'plain'
-    }): Promise<string> {
-      return client.post<string>('/v1/memory/context', { query, identity, ...opts })
-    },
+    recall: recall as typegraphInstance['recall'],
 
     async healthCheck(identity: typegraphIdentity): Promise<MemoryHealthReport> {
       return client.post<MemoryHealthReport>('/v1/memory/health', { identity })

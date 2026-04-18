@@ -69,6 +69,12 @@ export type {
   SubgraphOpts,
   SubgraphResult,
   GraphStats,
+  RememberOpts,
+  ForgetOpts,
+  CorrectOpts,
+  RecallOpts,
+  AddConversationTurnOpts,
+  HealthCheckOpts,
 } from './graph-bridge.js'
 
 export type { ExtractionConfig } from './extraction-config.js'

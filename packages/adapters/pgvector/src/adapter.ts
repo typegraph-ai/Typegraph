@@ -6,6 +6,7 @@ import { generateId, DEFAULT_BUCKET_ID } from '@typegraph-ai/sdk'
 import {
   REGISTRY_SQL, MODEL_TABLE_SQL, HASH_TABLE_SQL, DOCUMENTS_TABLE_SQL,
   BUCKETS_TABLE_SQL, EVENTS_TABLE_SQL, POLICIES_TABLE_SQL,
+  CHUNKS_VISIBILITY_BACKFILL_SQL,
   sanitizeModelKey,
 } from './migrations.js'
 import { PgHashStore } from './hash-store.js'
@@ -98,6 +99,19 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     await this.execStatements(EVENTS_TABLE_SQL(this.eventsTable))
     await this.execStatements(POLICIES_TABLE_SQL(this.policiesTable))
     await this.hashStore.initialize()
+
+    // Ensure any pre-existing model tables have the new visibility column +
+    // indexes, and backfill from documents. The MODEL_TABLE_SQL ALTER TABLE
+    // is idempotent on fresh tables — safe to re-run at deploy time.
+    const registryRows = await this.sql(
+      `SELECT table_name, dimensions FROM ${this.registryTable}`
+    )
+    for (const row of registryRows) {
+      const tableName = row.table_name as string
+      const dimensions = row.dimensions as number
+      await this.execStatements(MODEL_TABLE_SQL(tableName, dimensions))
+      await this.execStatements(CHUNKS_VISIBILITY_BACKFILL_SQL(tableName, this.documentsTable))
+    }
   }
 
   async connect(): Promise<void> {
@@ -174,6 +188,9 @@ export class PgVectorAdapter implements VectorStoreAdapter {
 
     const tableName = `${this.tablePrefix}_${key}`
     await this.execStatements(MODEL_TABLE_SQL(tableName, dimensions))
+    // Backfill visibility from parent documents for pre-existing rows that
+    // defaulted to 'tenant' after the column was added. Idempotent.
+    await this.execStatements(CHUNKS_VISIBILITY_BACKFILL_SQL(tableName, this.documentsTable))
     await this.sql(
       `INSERT INTO ${this.registryTable} (model_key, model_id, table_name, dimensions)
        VALUES ($1, $2, $3, $4)
@@ -242,6 +259,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     const embeddingModels: string[] = []
     const chunkIndices: number[] = []
     const totalChunks: number[] = []
+    const visibilities: string[] = []
     const metadatas: string[] = []
     const indexedAts: string[] = []
 
@@ -260,6 +278,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
       embeddingModels.push(chunk.embeddingModel)
       chunkIndices.push(chunk.chunkIndex)
       totalChunks.push(chunk.totalChunks)
+      visibilities.push(chunk.visibility ?? 'tenant')
       metadatas.push(JSON.stringify(chunk.metadata))
       indexedAts.push(chunk.indexedAt.toISOString())
     }
@@ -267,7 +286,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     return [
       chunkIds, sourceIds, tenantIds, groupIds, userIds, agentIds, conversationIds,
       documentIds, idempotencyKeys, contents, embeddings,
-      embeddingModels, chunkIndices, totalChunks, metadatas, indexedAts,
+      embeddingModels, chunkIndices, totalChunks, visibilities, metadatas, indexedAts,
     ]
   }
 
@@ -276,17 +295,18 @@ export class PgVectorAdapter implements VectorStoreAdapter {
       `INSERT INTO ${table}
         (id, bucket_id, tenant_id, group_id, user_id, agent_id, conversation_id,
          document_id, idempotency_key, content, embedding,
-         embedding_model, chunk_index, total_chunks, metadata, indexed_at)
+         embedding_model, chunk_index, total_chunks, visibility, metadata, indexed_at)
        SELECT * FROM unnest(
         $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[],
         $8::text[], $9::text[], $10::text[], $11::vector[],
-        $12::text[], $13::int[], $14::int[], $15::jsonb[], $16::timestamptz[]
+        $12::text[], $13::int[], $14::int[], $15::text[], $16::jsonb[], $17::timestamptz[]
        )
        ON CONFLICT (idempotency_key, chunk_index, bucket_id) DO UPDATE SET
         content         = EXCLUDED.content,
         embedding       = EXCLUDED.embedding,
         embedding_model = EXCLUDED.embedding_model,
         total_chunks    = EXCLUDED.total_chunks,
+        visibility      = EXCLUDED.visibility,
         metadata        = EXCLUDED.metadata,
         indexed_at      = EXCLUDED.indexed_at`,
       params
@@ -295,8 +315,18 @@ export class PgVectorAdapter implements VectorStoreAdapter {
 
   async delete(model: string, filter: ChunkFilter): Promise<void> {
     const table = await this.getTable(model)
+    const hasExplicitFilter =
+      filter.bucketId != null ||
+      (filter.bucketIds != null && filter.bucketIds.length > 0) ||
+      filter.tenantId != null ||
+      filter.groupId != null ||
+      filter.userId != null ||
+      filter.agentId != null ||
+      filter.conversationId != null ||
+      filter.documentId != null ||
+      filter.idempotencyKey != null
+    if (!hasExplicitFilter) throw new Error('delete() requires at least one filter field')
     const { where, params } = buildWhere(filter)
-    if (!where) throw new Error('delete() requires at least one filter field')
     await this.sql(`DELETE FROM ${table} WHERE ${where}`, params)
   }
 
@@ -490,6 +520,17 @@ export class PgVectorAdapter implements VectorStoreAdapter {
   async updateDocument(id: string, input: Partial<Pick<typegraphDocument, 'title' | 'url' | 'visibility' | 'documentType' | 'sourceType' | 'metadata'>>): Promise<typegraphDocument> {
     const doc = await this.documentStore.update(id, input)
     if (!doc) throw new Error(`Document not found: ${id}`)
+    // Cascade visibility changes onto all chunk rows for this document. Chunks
+    // are the security-sensitive target — a stale chunk visibility would let
+    // a tightened document keep leaking through unscoped queries.
+    if (input.visibility !== undefined) {
+      for (const table of this.modelTables.values()) {
+        await this.sql(
+          `UPDATE ${table} SET visibility = $1 WHERE document_id = $2`,
+          [input.visibility, id]
+        )
+      }
+    }
     return doc
   }
 
@@ -674,6 +715,15 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     return rows.length > 0 ? mapRowToBucket(rows[0]!) : null
   }
 
+  async getBuckets(ids: string[]): Promise<Bucket[]> {
+    if (ids.length === 0) return []
+    const rows = await this.sql(
+      `SELECT * FROM ${this.bucketsTable} WHERE id = ANY($1::text[])`,
+      [ids]
+    )
+    return rows.map(mapRowToBucket)
+  }
+
   async listBuckets(filter?: import('@typegraph-ai/sdk').BucketListFilter, pagination?: import('@typegraph-ai/sdk').PaginationOpts): Promise<Bucket[] | import('@typegraph-ai/sdk').PaginatedResult<Bucket>> {
     const conditions: string[] = []
     const params: unknown[] = []
@@ -718,43 +768,65 @@ export class PgVectorAdapter implements VectorStoreAdapter {
 }
 
 function buildWhere(filter?: ChunkFilter): { where: string; params: unknown[] } {
-  if (!filter) return { where: '', params: [] }
-
   const conditions: string[] = []
   const params: unknown[] = []
 
-  if (filter.bucketId != null) {
+  let groupParam: string | null = null
+  let userParam: string | null = null
+  let agentParam: string | null = null
+  let convParam: string | null = null
+
+  if (filter?.bucketId != null) {
     params.push(filter.bucketId)
     conditions.push(`bucket_id = $${params.length}`)
   }
-  if (filter.tenantId != null) {
+  if (filter?.bucketIds != null && filter.bucketIds.length > 0) {
+    params.push(filter.bucketIds)
+    conditions.push(`bucket_id = ANY($${params.length}::text[])`)
+  }
+  if (filter?.tenantId != null) {
     params.push(filter.tenantId)
     conditions.push(`tenant_id = $${params.length}`)
   }
-  if (filter.groupId != null) {
+  if (filter?.groupId != null) {
     params.push(filter.groupId)
-    conditions.push(`group_id = $${params.length}`)
+    groupParam = `$${params.length}`
+    conditions.push(`group_id = ${groupParam}`)
   }
-  if (filter.userId != null) {
+  if (filter?.userId != null) {
     params.push(filter.userId)
-    conditions.push(`user_id = $${params.length}`)
+    userParam = `$${params.length}`
+    conditions.push(`user_id = ${userParam}`)
   }
-  if (filter.agentId != null) {
+  if (filter?.agentId != null) {
     params.push(filter.agentId)
-    conditions.push(`agent_id = $${params.length}`)
+    agentParam = `$${params.length}`
+    conditions.push(`agent_id = ${agentParam}`)
   }
-  if (filter.conversationId != null) {
+  if (filter?.conversationId != null) {
     params.push(filter.conversationId)
-    conditions.push(`conversation_id = $${params.length}`)
+    convParam = `$${params.length}`
+    conditions.push(`conversation_id = ${convParam}`)
   }
-  if (filter.documentId != null) {
+  if (filter?.documentId != null) {
     params.push(filter.documentId)
     conditions.push(`document_id = $${params.length}`)
   }
-  if (filter.idempotencyKey != null) {
+  if (filter?.idempotencyKey != null) {
     params.push(filter.idempotencyKey)
     conditions.push(`idempotency_key = $${params.length}`)
   }
+
+  // Visibility gate — denormalized onto chunks so unscoped queries cannot
+  // leak narrowly-visible rows even when identity fields are omitted.
+  // A row matches only when visibility is 'tenant' OR the caller provided
+  // a matching identity. Missing identity → that branch is absent.
+  const visBranches: string[] = [`visibility = 'tenant'`]
+  if (groupParam) visBranches.push(`(visibility = 'group' AND group_id = ${groupParam})`)
+  if (userParam) visBranches.push(`(visibility = 'user' AND user_id = ${userParam})`)
+  if (agentParam) visBranches.push(`(visibility = 'agent' AND agent_id = ${agentParam})`)
+  if (convParam) visBranches.push(`(visibility = 'conversation' AND conversation_id = ${convParam})`)
+  conditions.push(`(${visBranches.join(' OR ')})`)
 
   return {
     where: conditions.join(' AND '),

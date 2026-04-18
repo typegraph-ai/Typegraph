@@ -15,12 +15,21 @@ export interface EmbeddedChunk {
   chunkIndex: number
   totalChunks: number
 
+  /**
+   * Denormalized from the parent document. Chunks are the query target, so the
+   * visibility gate has to live here or unscoped queries leak narrowly-visible
+   * rows. Defaults to 'tenant' when omitted.
+   */
+  visibility?: import('./typegraph-document.js').Visibility | undefined
+
   metadata: Record<string, unknown>
   indexedAt: Date
 }
 
 export interface ChunkFilter {
   bucketId?: string | undefined
+  /** Filter to any of several buckets. Preferred over `bucketId` when searching multiple. */
+  bucketIds?: string[] | undefined
   tenantId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined

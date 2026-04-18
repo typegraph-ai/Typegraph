@@ -4,6 +4,37 @@ import type { MemoryRecord } from '../memory/types/memory.js'
 import type { PaginationOpts } from './pagination.js'
 import type { TelemetryOpts } from './events.js'
 
+// ── Memory method opts ──
+// All memory ops take a unified (payload, opts) shape. `opts` extends
+// `typegraphIdentity` so identity fields are top-level alongside per-method knobs.
+
+export interface RememberOpts extends typegraphIdentity, TelemetryOpts {
+  category?: string | undefined
+  importance?: number | undefined
+  metadata?: Record<string, unknown> | undefined
+}
+
+export type ForgetOpts = typegraphIdentity & TelemetryOpts
+
+export type CorrectOpts = typegraphIdentity & TelemetryOpts
+
+export interface AddConversationTurnOpts extends typegraphIdentity, TelemetryOpts {
+  conversationId?: string | undefined
+}
+
+export interface RecallOpts extends typegraphIdentity, TelemetryOpts {
+  limit?: number | undefined
+  types?: string[] | undefined
+  /** Only return memories valid at this timestamp. */
+  temporalAt?: Date | undefined
+  /** Include invalidated/expired memories. Default: false. */
+  includeInvalidated?: boolean | undefined
+  /** Format results as a string instead of an array. When set, `recall` returns `Promise<string>`. */
+  format?: 'xml' | 'markdown' | 'plain' | undefined
+}
+
+export type HealthCheckOpts = typegraphIdentity & TelemetryOpts
+
 /**
  * Memory bridge — conversational memory operations (remember, recall, forget, correct).
  * Independent of the knowledge graph. Use this when you only need memory without entity graphs.
@@ -13,57 +44,32 @@ export interface MemoryBridge {
   deploy?(): Promise<void>
 
   /** Store a memory. LLM extracts triples → memory record. */
-  remember(content: string, identity: typegraphIdentity, category?: string, opts?: {
-    importance?: number
-    metadata?: Record<string, unknown>
-  } & TelemetryOpts): Promise<MemoryRecord>
+  remember(content: string, opts: RememberOpts): Promise<MemoryRecord>
 
   /** Invalidate a memory. Caller must prove ownership via identity. */
-  forget(id: string, identity: typegraphIdentity, opts?: TelemetryOpts): Promise<void>
+  forget(id: string, opts: ForgetOpts): Promise<void>
 
   /** Apply a natural language correction (e.g., "Actually, Alice works at Beta Inc now"). */
-  correct(correction: string, identity: typegraphIdentity, opts?: TelemetryOpts): Promise<{ invalidated: number; created: number; summary: string }>
+  correct(correction: string, opts: CorrectOpts): Promise<{ invalidated: number; created: number; summary: string }>
 
   /** Ingest a conversation turn with extraction. */
   addConversationTurn(
     messages: Array<{ role: string; content: string; timestamp?: Date }>,
-    identity: typegraphIdentity,
-    conversationId?: string,
-    opts?: TelemetryOpts,
+    opts: AddConversationTurnOpts,
   ): Promise<ConversationTurnResult>
 
-  /** Recall memories by semantic similarity. */
-  recall(query: string, identity: typegraphIdentity, opts?: {
-    limit?: number
-    types?: string[]
-    /** Only return memories valid at this timestamp. */
-    temporalAt?: Date
-    /** Include invalidated/expired memories. Default: false. */
-    includeInvalidated?: boolean
-  } & TelemetryOpts): Promise<MemoryRecord[]>
+  /** Recall memories by semantic similarity. Returns a formatted string when `format` is set. */
+  recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
+  recall(query: string, opts: RecallOpts): Promise<MemoryRecord[]>
 
   /** Recall memories using hybrid search (vector + BM25 keyword).
    *  When the memory store supports it, uses RRF to fuse vector and keyword results.
    *  Falls back to vector-only recall if not implemented. */
-  recallHybrid?(query: string, identity: typegraphIdentity, opts?: {
-    limit?: number
-    types?: string[]
-    temporalAt?: Date
-    includeInvalidated?: boolean
-  } & TelemetryOpts): Promise<MemoryRecord[]>
-
-  /** Build an LLM-ready context string from memories. */
-  buildMemoryContext?(query: string, identity: typegraphIdentity, opts?: {
-    includeWorking?: boolean
-    includeFacts?: boolean
-    includeEpisodes?: boolean
-    includeProcedures?: boolean
-    maxMemoryTokens?: number
-    format?: 'xml' | 'markdown' | 'plain'
-  } & TelemetryOpts): Promise<string>
+  recallHybrid?(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
+  recallHybrid?(query: string, opts: RecallOpts): Promise<MemoryRecord[]>
 
   /** Get memory system health statistics. */
-  healthCheck?(identity: typegraphIdentity, opts?: TelemetryOpts): Promise<MemoryHealthReport>
+  healthCheck?(opts?: HealthCheckOpts): Promise<MemoryHealthReport>
 
   /** Check if the memory store has any active memories. Used to skip memory runner when empty. */
   hasMemories?(): Promise<boolean>

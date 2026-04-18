@@ -34,11 +34,6 @@ export {
   transitionStatus,
 } from './temporal.js'
 
-// ── Working memory ──
-
-export { WorkingMemory } from './working-memory.js'
-export type { WorkingMemoryItem, WorkingMemoryConfig } from './working-memory.js'
-
 // ── Events ──
 
 export type { typegraphEvent, typegraphEventType, typegraphEventSink } from '../types/events.js'

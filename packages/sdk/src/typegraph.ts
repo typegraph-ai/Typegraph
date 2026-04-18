@@ -12,6 +12,8 @@ import type {
   MemoryBridge, KnowledgeGraphBridge,
   EntityResult, EntityDetail, EdgeResult,
   SubgraphOpts, SubgraphResult, GraphStats,
+  RememberOpts, ForgetOpts, CorrectOpts, AddConversationTurnOpts,
+  RecallOpts, HealthCheckOpts,
 } from './types/graph-bridge.js'
 import type { ExtractionConfig } from './types/extraction-config.js'
 import type { typegraphIdentity } from './types/identity.js'
@@ -200,33 +202,20 @@ export interface typegraphInstance {
   // ── Memory operations (require graph bridge) ──
 
   /** Store a memory. LLM extracts triples → entity graph + memory record. */
-  remember(content: string, identity: typegraphIdentity, category?: string, opts?: {
-    importance?: number
-    metadata?: Record<string, unknown>
-  } & TelemetryOpts): Promise<MemoryRecord>
+  remember(content: string, opts: RememberOpts): Promise<MemoryRecord>
   /** Invalidate a memory and its associated graph edges. Identity must match the memory owner. */
-  forget(id: string, identity: typegraphIdentity, opts?: TelemetryOpts): Promise<void>
+  forget(id: string, opts: ForgetOpts): Promise<void>
   /** Apply a natural language correction. */
-  correct(correction: string, identity: typegraphIdentity, opts?: TelemetryOpts): Promise<{ invalidated: number; created: number; summary: string }>
-  /** Search memories by semantic similarity. */
-  recall(query: string, identity: typegraphIdentity, opts?: { limit?: number; types?: string[] } & TelemetryOpts): Promise<MemoryRecord[]>
-  /** Build a formatted memory context block for LLM system prompts. */
-  buildMemoryContext(query: string, identity: typegraphIdentity, opts?: {
-    includeWorking?: boolean
-    includeFacts?: boolean
-    includeEpisodes?: boolean
-    includeProcedures?: boolean
-    maxMemoryTokens?: number
-    format?: 'xml' | 'markdown' | 'plain'
-  } & TelemetryOpts): Promise<string>
+  correct(correction: string, opts: CorrectOpts): Promise<{ invalidated: number; created: number; summary: string }>
+  /** Search memories by semantic similarity. When `opts.format` is set, returns a formatted string ready for an LLM prompt. */
+  recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
+  recall(query: string, opts: RecallOpts): Promise<MemoryRecord[]>
   /** Check memory system health — returns stats about stored memories, entities, and edges. */
-  healthCheck(identity: typegraphIdentity, opts?: TelemetryOpts): Promise<MemoryHealthReport>
+  healthCheck(opts?: HealthCheckOpts): Promise<MemoryHealthReport>
   /** Ingest a conversation turn with extraction. */
   addConversationTurn(
     messages: Array<{ role: string; content: string; timestamp?: Date }>,
-    identity: typegraphIdentity,
-    conversationId?: string,
-    opts?: TelemetryOpts,
+    opts: AddConversationTurnOpts,
   ): Promise<ConversationTurnResult>
 
   // ── Policy operations (require policyStore) ──
@@ -302,6 +291,10 @@ class TypegraphImpl implements typegraphInstance {
         queryEmbeddingModel,
         indexDefaults: input.indexDefaults,
         tenantId: input.tenantId ?? this.config.tenantId,
+        groupId: input.groupId,
+        userId: input.userId,
+        agentId: input.agentId,
+        conversationId: input.conversationId,
       }
       if (this.adapter.upsertBucket) {
         const persisted = await this.adapter.upsertBucket(bucket)
@@ -791,6 +784,20 @@ class TypegraphImpl implements typegraphInstance {
     await this.ensureInitialized()
     await this.ensureBucketsLoaded()
     await this.enforcePolicy('query', { tenantId: opts?.tenantId ?? this.config.tenantId })
+
+    // Batched lazy-load: if the caller names buckets we haven't seen, fetch them in one round-trip.
+    // Avoids per-id gets in the hot path without forcing eager load at init.
+    if (opts?.buckets?.length && this.adapter.getBuckets) {
+      const missing = opts.buckets.filter(id => !this._buckets.has(id))
+      if (missing.length > 0) {
+        const fetched = await this.adapter.getBuckets(missing)
+        for (const b of fetched) {
+          this._buckets.set(b.id, b)
+          this.resolveBucketEmbeddings(b)
+        }
+      }
+    }
+
     const { QueryPlanner } = await import('./query/planner.js')
     const planner = new QueryPlanner(
       this.adapter,
@@ -848,54 +855,41 @@ class TypegraphImpl implements typegraphInstance {
     return bridge
   }
 
-  async remember(content: string, identity: typegraphIdentity, category?: string, opts?: {
-    importance?: number
-    metadata?: Record<string, unknown>
-  } & TelemetryOpts): Promise<MemoryRecord> {
-    await this.enforcePolicy('memory.write', identity)
-    return this.requireMemory().remember(content, identity, category, opts)
+  async remember(content: string, opts: RememberOpts): Promise<MemoryRecord> {
+    await this.enforcePolicy('memory.write', opts)
+    return this.requireMemory().remember(content, opts)
   }
 
-  async forget(id: string, identity: typegraphIdentity, opts?: TelemetryOpts): Promise<void> {
-    await this.enforcePolicy('memory.delete', identity, id)
-    return this.requireMemory().forget(id, identity, opts)
+  async forget(id: string, opts: ForgetOpts): Promise<void> {
+    await this.enforcePolicy('memory.delete', opts, id)
+    return this.requireMemory().forget(id, opts)
   }
 
-  async correct(correction: string, identity: typegraphIdentity, opts?: TelemetryOpts): Promise<{ invalidated: number; created: number; summary: string }> {
-    return this.requireMemory().correct(correction, identity, opts)
+  async correct(correction: string, opts: CorrectOpts): Promise<{ invalidated: number; created: number; summary: string }> {
+    return this.requireMemory().correct(correction, opts)
   }
 
-  async recall(query: string, identity: typegraphIdentity, opts?: { limit?: number; types?: string[] } & TelemetryOpts): Promise<MemoryRecord[]> {
-    await this.enforcePolicy('memory.read', identity)
-    return this.requireMemory().recall(query, identity, opts)
+  async recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
+  async recall(query: string, opts: RecallOpts): Promise<MemoryRecord[]>
+  async recall(query: string, opts: RecallOpts): Promise<MemoryRecord[] | string> {
+    await this.enforcePolicy('memory.read', opts)
+    if (opts.format) {
+      return this.requireMemory().recall(query, opts as RecallOpts & { format: 'xml' | 'markdown' | 'plain' })
+    }
+    return this.requireMemory().recall(query, opts)
   }
 
-  async buildMemoryContext(query: string, identity: typegraphIdentity, opts?: {
-    includeWorking?: boolean
-    includeFacts?: boolean
-    includeEpisodes?: boolean
-    includeProcedures?: boolean
-    maxMemoryTokens?: number
-    format?: 'xml' | 'markdown' | 'plain'
-  } & TelemetryOpts): Promise<string> {
-    const mem = this.requireMemory()
-    if (!mem.buildMemoryContext) throw new ConfigError('buildMemoryContext not supported by this memory bridge.')
-    return mem.buildMemoryContext(query, identity, opts)
-  }
-
-  async healthCheck(identity: typegraphIdentity, opts?: TelemetryOpts): Promise<MemoryHealthReport> {
+  async healthCheck(opts?: HealthCheckOpts): Promise<MemoryHealthReport> {
     const mem = this.requireMemory()
     if (!mem.healthCheck) throw new ConfigError('healthCheck not supported by this memory bridge.')
-    return mem.healthCheck(identity, opts)
+    return mem.healthCheck(opts)
   }
 
   async addConversationTurn(
     messages: Array<{ role: string; content: string; timestamp?: Date }>,
-    identity: typegraphIdentity,
-    conversationId?: string,
-    opts?: TelemetryOpts,
+    opts: AddConversationTurnOpts,
   ): Promise<ConversationTurnResult> {
-    const result = await this.requireMemory().addConversationTurn(messages, identity, conversationId, opts)
+    const result = await this.requireMemory().addConversationTurn(messages, opts)
 
     // The bridge returns the underlying ExtractionResult cast to ConversationTurnResult;
     // read the real shape here for hook dispatch (Fix 10).

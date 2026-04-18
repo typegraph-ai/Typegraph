@@ -18,7 +18,12 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 function matchesFilter(chunk: EmbeddedChunk, filter: ChunkFilter): boolean {
   if (filter.bucketId && chunk.bucketId !== filter.bucketId) return false
+  if (filter.bucketIds && filter.bucketIds.length > 0 && !filter.bucketIds.includes(chunk.bucketId)) return false
   if (filter.tenantId && chunk.tenantId !== filter.tenantId) return false
+  if (filter.groupId && chunk.groupId !== filter.groupId) return false
+  if (filter.userId && chunk.userId !== filter.userId) return false
+  if (filter.agentId && chunk.agentId !== filter.agentId) return false
+  if (filter.conversationId && chunk.conversationId !== filter.conversationId) return false
   if (filter.documentId && chunk.documentId !== filter.documentId) return false
   if (filter.idempotencyKey && chunk.idempotencyKey !== filter.idempotencyKey) return false
   if (filter.metadata) {
@@ -26,7 +31,16 @@ function matchesFilter(chunk: EmbeddedChunk, filter: ChunkFilter): boolean {
       if (chunk.metadata[k] !== v) return false
     }
   }
-  return true
+
+  // Visibility gate — must mirror PgVectorAdapter.buildWhere() behavior.
+  // 'tenant' always visible; narrower visibilities require matching identity.
+  const vis = chunk.visibility ?? 'tenant'
+  if (vis === 'tenant') return true
+  if (vis === 'group') return filter.groupId != null && chunk.groupId === filter.groupId
+  if (vis === 'user') return filter.userId != null && chunk.userId === filter.userId
+  if (vis === 'agent') return filter.agentId != null && chunk.agentId === filter.agentId
+  if (vis === 'conversation') return filter.conversationId != null && chunk.conversationId === filter.conversationId
+  return false
 }
 
 export function createMockHashStore(): HashStoreAdapter & {

@@ -455,5 +455,26 @@ describe('createKnowledgeGraphBridge', () => {
       const chunks = await bridge.getChunksForEntities!(['a'], 10)
       expect(chunks).toEqual([])
     })
+
+    it('passes the dimension-qualified embedding model key to resolveChunksTable', async () => {
+      const edges: SemanticEdge[] = []
+      const mentions: MockMention[] = [
+        { entityId: 'a', documentId: 'doc-1', chunkIndex: 0, bucketId: 'bucket-1', mentionType: 'subject' },
+      ]
+      const chunkContent = new Map<string, MockChunk>([
+        ['doc-1:0', { entityId: 'a', documentId: 'doc-1', chunkIndex: 0, bucketId: 'bucket-1', content: 'x' }],
+      ])
+      const store = mockStore(new Map(), edges, mentions, chunkContent)
+      const resolveChunksTable = vi.fn().mockReturnValue('typegraph_chunks_mock')
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+        resolveChunksTable,
+      })
+
+      await bridge.getChunksForEntities!(['a'], 10)
+      expect(resolveChunksTable).toHaveBeenCalledWith('mock-embed:10')
+    })
   })
 })

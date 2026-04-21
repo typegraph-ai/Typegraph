@@ -1,4 +1,5 @@
 import type { EmbeddingProvider } from '../embedding/provider.js'
+import { embeddingModelKey } from '../embedding/provider.js'
 import type { typegraphIdentity } from '../types/identity.js'
 import type { EmbeddingConfig } from '../types/bucket.js'
 import type { KnowledgeGraphBridge, EntityDetail, EdgeResult, SubgraphOpts, SubgraphResult, GraphStats } from '../types/graph-bridge.js'
@@ -278,7 +279,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       entityDegree.set(edge.targetEntityId, (entityDegree.get(edge.targetEntityId) ?? 0) + 1)
     }
 
-    const chunksTable = await config.resolveChunksTable(embedding.model)
+    const chunksTable = await config.resolveChunksTable(embeddingModelKey(embedding))
     const opts: {
       chunksTable: string
       bucketIds?: string[] | undefined

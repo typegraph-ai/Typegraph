@@ -19,7 +19,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined>
   ])
 }
 
-const TRIPLE_EXTRACTION_TIMEOUT_MS = 120_000 // 2 minutes per chunk
+const TRIPLE_EXTRACTION_TIMEOUT_MS = 360_000 // 6 minutes per chunk
 
 export class IndexEngine {
   tripleExtractor?: TripleExtractor
@@ -265,6 +265,9 @@ export class IndexEngine {
       pruned: 0,
       durationMs: 0,
     }
+    // Tracks documents whose whole processItem rejected in the concurrent path
+    // (upsertDocument throw, hashStore failure, etc.). Surfaced in index.complete.
+    let processingFailed = 0
 
     // Phase 1: Prepare all docs and collect all texts for a single embedBatch call
     const prepared: Array<{
@@ -506,6 +509,7 @@ export class IndexEngine {
       // promises continue running after one fails.
       const safeProcessItem = (item: typeof prepared[number]) =>
         processItem(item).catch((err) => {
+          processingFailed++
           this.logger?.error?.('[typegraph] Document processing failed:', { documentId: item.documentId, idempotencyKey: item.ikey, error: err instanceof Error ? err.message : String(err) })
           this.eventSink?.emit({
             id: crypto.randomUUID(),
@@ -540,7 +544,8 @@ export class IndexEngine {
         bucketId,
         documentsProcessed: result.inserted,
         documentsSkipped: result.skipped,
-        documentsFailed: 0,
+        documentsFailed: processingFailed,
+        ...(result.extraction ? { extraction: result.extraction } : {}),
       },
       durationMs: result.durationMs,
       traceId,

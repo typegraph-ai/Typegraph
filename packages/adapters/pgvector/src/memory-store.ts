@@ -331,7 +331,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
 
   async upsert(record: MemoryRecord): Promise<MemoryRecord> {
     const embeddingStr = record.embedding ? `[${record.embedding.join(',')}]` : null
-    const rows = await this.sql(
+    const rows = await this.sqlWithRetry(
       `INSERT INTO ${this.memoriesTable}
         (id, category, status, content, embedding, importance, access_count,
          last_accessed_at, metadata, scope,
@@ -404,7 +404,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   }
 
   async get(id: string): Promise<MemoryRecord | null> {
-    const rows = await this.sql(`SELECT * FROM ${this.memoriesTable} WHERE id = $1`, [id])
+    const rows = await this.sqlWithRetry(`SELECT * FROM ${this.memoriesTable} WHERE id = $1`, [id])
     return rows.length > 0 ? mapRowToMemory(rows[0]!) : null
   }
 
@@ -412,7 +412,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const { where, params } = buildMemoryWhere(filter)
     const whereClause = where ? `WHERE ${where}` : ''
     params.push(limit ?? 100)
-    const rows = await this.sql(
+    const rows = await this.sqlWithRetry(
       `SELECT * FROM ${this.memoriesTable} ${whereClause}
        ORDER BY last_accessed_at DESC LIMIT $${params.length}`,
       params
@@ -421,13 +421,13 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   }
 
   async delete(id: string): Promise<void> {
-    await this.sql(`DELETE FROM ${this.memoriesTable} WHERE id = $1`, [id])
+    await this.sqlWithRetry(`DELETE FROM ${this.memoriesTable} WHERE id = $1`, [id])
   }
 
   // ── Temporal Operations ──
 
   async invalidate(id: string, invalidAt?: Date): Promise<void> {
-    await this.sql(
+    await this.sqlWithRetry(
       `UPDATE ${this.memoriesTable}
        SET status = 'invalidated', invalid_at = $2, updated_at = NOW()
        WHERE id = $1`,
@@ -436,7 +436,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   }
 
   async expire(id: string): Promise<void> {
-    await this.sql(
+    await this.sqlWithRetry(
       `UPDATE ${this.memoriesTable}
        SET status = 'expired', expired_at = NOW(), updated_at = NOW()
        WHERE id = $1`,
@@ -478,7 +478,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     params.push(vectorStr)
     params.push(opts.count)
 
-    const rows = await this.sql(
+    const rows = await this.sqlWithRetry(
       `SELECT *, 1 - (embedding <=> $${params.length - 1}::vector) AS similarity
        FROM ${this.memoriesTable}
        ${whereClause}
@@ -549,7 +549,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       LIMIT $${limitParamIdx}
     `
 
-    const rows = await this.sql(sql, params)
+    const rows = await this.sqlWithRetry(sql, params)
     return rows.map(row => {
       const mem = mapRowToMemory(row)
       // Stash keyword score for memory runner composite scoring
@@ -563,7 +563,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   // ── Access Tracking ──
 
   async recordAccess(id: string): Promise<void> {
-    await this.sql(
+    await this.sqlWithRetry(
       `UPDATE ${this.memoriesTable}
        SET access_count = access_count + 1, last_accessed_at = NOW(), updated_at = NOW()
        WHERE id = $1`,
@@ -580,7 +580,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     // score stashed by mapRowToEntity from searchEntities results, not a stored property
     const { _similarity, ...cleanProps } = entity.properties
     const tbl = unqualified(this.entitiesTable)
-    const rows = await this.sql(
+    const rows = await this.sqlWithRetry(
       `INSERT INTO ${this.entitiesTable}
         (id, name, entity_type, aliases, properties, embedding, description_embedding, scope,
          tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
@@ -622,7 +622,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   }
 
   async getEntity(id: string): Promise<SemanticEntity | null> {
-    const rows = await this.sql(
+    const rows = await this.sqlWithRetry(
       `SELECT id, name, entity_type, aliases, properties, scope,
               tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
               valid_at, invalid_at, created_at, updated_at
@@ -634,7 +634,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
 
   async getEntitiesBatch(ids: string[]): Promise<SemanticEntity[]> {
     if (ids.length === 0) return []
-    const rows = await this.sql(
+    const rows = await this.sqlWithRetry(
       `SELECT id, name, entity_type, aliases, properties, scope,
               tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
               valid_at, invalid_at, created_at, updated_at
@@ -652,7 +652,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     params.push(limit ?? 20)
     const limitParam = `$${baseIdx + 2}`
     const scopeClause = where ? ` AND ${where}` : ''
-    const rows = await this.sql(
+    const rows = await this.sqlWithRetry(
       `SELECT id, name, entity_type, aliases, properties, scope,
               tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
               valid_at, invalid_at, created_at, updated_at
@@ -673,7 +673,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const scopeClause = where ? ` AND ${where}` : ''
     params.push(limit ?? 20)
     const limitParam = `$${1 + params.length}`
-    const rows = await this.sql(
+    const rows = await this.sqlWithRetry(
       `SELECT *, 1 - (embedding <=> $1::vector) AS similarity
        FROM ${this.entitiesTable}
        WHERE embedding IS NOT NULL
@@ -761,7 +761,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       params.push(relation)
       conditions.push(`relation = $${params.length}`)
     }
-    const rows = await this.sql(
+    const rows = await this.sqlWithRetry(
       `SELECT * FROM ${this.edgesTable} WHERE ${conditions.join(' AND ')}`,
       params
     )
@@ -769,7 +769,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   }
 
   async invalidateEdge(id: string, invalidAt?: Date): Promise<void> {
-    await this.sql(
+    await this.sqlWithRetry(
       `UPDATE ${this.edgesTable} SET invalid_at = $2, updated_at = NOW() WHERE id = $1`,
       [id, (invalidAt ?? new Date()).toISOString()]
     )
@@ -876,7 +876,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   async countMemories(filter?: MemoryFilter): Promise<number> {
     const { where, params } = filter ? buildMemoryWhere(filter) : { where: '', params: [] }
     const whereClause = where ? `WHERE ${where}` : ''
-    const rows = await this.sql(
+    const rows = await this.sqlWithRetry(
       `SELECT COUNT(*)::integer AS n FROM ${this.memoriesTable} ${whereClause}`,
       params
     )
@@ -884,7 +884,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   }
 
   async countEntities(): Promise<number> {
-    const rows = await this.sql(
+    const rows = await this.sqlWithRetry(
       `SELECT COUNT(*)::integer AS n FROM ${this.entitiesTable} WHERE invalid_at IS NULL`
     )
     return (rows[0]?.['n'] as number) ?? 0

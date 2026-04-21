@@ -1,7 +1,8 @@
 import type { LanguageModelV3 } from '@ai-sdk/provider'
+import type { AISDKLLMInput } from '../llm/ai-sdk-adapter.js'
 
-/** Union type: pass a native LLMProvider, a bare AI SDK model, or { model } wrapper. */
-export type LLMConfig = LLMProvider | LanguageModelV3 | { model: LanguageModelV3 }
+/** Union type: pass a native LLMProvider, a bare AI SDK model, or an AISDKLLMInput ({ model, providerOptions? }). */
+export type LLMConfig = LLMProvider | LanguageModelV3 | AISDKLLMInput
 
 /**
  * Structural type for an LLM provider.

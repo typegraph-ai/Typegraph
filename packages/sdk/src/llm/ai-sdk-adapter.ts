@@ -13,9 +13,39 @@ import type { LLMProvider, LLMGenerateOptions } from '../types/llm-provider.js'
  *   model: gateway('openai/gpt-5.4-mini'),
  * })
  * ```
+ *
+ * @example Provider-specific options (gateway fallbacks, reasoning, thinking):
+ * ```ts
+ * const llm = aiSdkLlmProvider({
+ *   model: gateway('openai/gpt-5.4-mini'),
+ *   providerOptions: {
+ *     gateway: { models: ['google/gemini-3-flash', 'openai/gpt-5.4-mini'] },
+ *     openai:  { reasoningEffort: 'medium', reasoningSummary: 'concise' },
+ *     google:  { thinkingConfig: { thinkingLevel: 'medium', includeThoughts: false } },
+ *     xai:     { reasoningEffort: 'low' },
+ *   },
+ * })
+ * ```
  */
 export interface AISDKLLMInput {
   model: LanguageModelV3
+  /**
+   * Provider-specific options applied to every generateText / generateJSON call.
+   * Merged per-namespace with any options passed at call time (call-level wins).
+   */
+  providerOptions?: Record<string, Record<string, unknown>>
+}
+
+function mergeProviderOptions(
+  defaults?: Record<string, Record<string, unknown>>,
+  call?: Record<string, Record<string, unknown>>,
+): Record<string, Record<string, unknown>> | undefined {
+  if (!defaults && !call) return undefined
+  const out: Record<string, Record<string, unknown>> = { ...(defaults ?? {}) }
+  for (const [provider, opts] of Object.entries(call ?? {})) {
+    out[provider] = { ...(out[provider] ?? {}), ...opts }
+  }
+  return out
 }
 
 /**
@@ -23,22 +53,24 @@ export interface AISDKLLMInput {
  * Uses the AI SDK's `generateText` and `Output` for structured output.
  */
 export function aiSdkLlmProvider(config: AISDKLLMInput): LLMProvider {
-  const { model } = config
+  const { model, providerOptions: defaultProviderOptions } = config
 
   const provider: LLMProvider = {
     async generateText(prompt: string, systemPrompt?: string, options?: LLMGenerateOptions): Promise<string> {
+      const merged = mergeProviderOptions(defaultProviderOptions, options?.providerOptions)
       const result = await generateText({
         model,
         prompt,
         ...(systemPrompt ? { system: systemPrompt } : {}),
         ...(options?.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
-        ...(options?.providerOptions ? { providerOptions: options.providerOptions as any } : {}),
+        ...(merged ? { providerOptions: merged as any } : {}),
       })
 
       return result.text
     },
 
     async generateJSON<T = unknown>(prompt: string, systemPrompt?: string, options?: LLMGenerateOptions): Promise<T> {
+      const merged = mergeProviderOptions(defaultProviderOptions, options?.providerOptions)
       const result = await generateText({
         model,
         output: options?.schema
@@ -47,7 +79,7 @@ export function aiSdkLlmProvider(config: AISDKLLMInput): LLMProvider {
         prompt: prompt + '\n\nRespond with valid JSON only, no markdown fences.',
         ...(systemPrompt ? { system: systemPrompt } : {}),
         maxOutputTokens: options?.maxOutputTokens ?? 16384,
-        ...(options?.providerOptions ? { providerOptions: options.providerOptions as any } : {}),
+        ...(merged ? { providerOptions: merged as any } : {}),
       })
 
       return result.output as T

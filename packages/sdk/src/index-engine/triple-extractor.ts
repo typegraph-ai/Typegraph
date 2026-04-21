@@ -79,11 +79,13 @@ function buildSinglePassPrompt(content: string, entityContext?: EntityContext[],
     ? `\nPreviously identified entities in this document:\n${entityContext.map(e => `- ${e.name} (${e.type})`).join('\n')}\n\nUse these names when the text refers to these entities by pronoun, abbreviation, or epithet.\n`
     : ''
   const titleSection = documentTitle
-    ? `\nThis text is from a document titled: "${documentTitle}". Entities referenced in the title should be extracted as primary entities using their full formal names.\n`
+    ? `\nThe text string is from a document titled: "${documentTitle}". Entities referenced in the title should be extracted as primary entities using their full formal names.\n`
     : ''
 
-  return `Extract all named entities and relationships from the following text.
+  return `Your task is to extract all named entities, and relationships between them, from a text string.
+
 ${contextSection}${titleSection}
+
 ## Step 1: Entity Extraction
 
 For each entity, provide:
@@ -110,15 +112,15 @@ For each entity, provide:
   - Shortened generic forms — "Finals" is NOT an alias of "NBA Finals"; "MVP" is NOT an alias of any specific MVP award; "Olympics" is NOT an alias of "2024 Summer Olympics"
 
 Entity rules:
-- Extract a MAXIMUM of 15 entities. When the text contains more potential entities, prioritize:
+- Extract a MAXIMUM of 12 entities. When the text contains more potential entities, prioritize:
   1. Primary subjects — entities the text is primarily ABOUT, not merely mentioned
   2. Entities with explicit relationships — entities that have stated connections to other entities in the text
   3. Specific over generic — prefer "2006 FIBA World Championship" over "basketball"
   4. Actors over settings — prefer entities that DO things over entities that are merely locations or backdrops
-  Omit entities that appear only in lists, parenthetical asides, or as minor supporting context with no described relationships.
+- Omit entities that appear only in lists, parenthetical asides, or as minor supporting context with no described relationships.
 - Only extract specific named entities — NOT dates, dollar amounts, percentages, or generic descriptions
 - If an entity is referred to by multiple names (e.g., "OpenAI" and "the company"), list the proper name variants as aliases — NOT the generic reference
-- Include entities even if they only appear once
+- Include important entities even if they only appear once
 - For events, awards, seasons, software versions, product generations, or any time/version-specific entities, ALWAYS include the year, version, or edition in the name. Each distinct occurrence is a SEPARATE entity — e.g., "2023 NBA Finals" and "2024 NBA Finals" are different, "Python 2" and "Python 3" are different, "iPhone 15" and "iPhone 16" are different, "HTTP/1.1" and "HTTP/2" are different, "Michelin Guide 2024" and "Michelin Guide 2025" are different.
 - Different awards are ALWAYS separate entities even when they share words — "NBA Finals MVP" and "NBA MVP" are SEPARATE; "Academy Award for Best Picture" and "Academy Award for Best Director" are SEPARATE; "Nobel Peace Prize" and "Nobel Prize in Physics" are SEPARATE
 - Entities with opposing directional or categorical qualifiers are ALWAYS separate — "Western Conference" and "Eastern Conference" are SEPARATE; "North Atlantic Treaty Organization" and "South Asian Association" are SEPARATE; "Upper Egypt" and "Lower Egypt" are SEPARATE
@@ -142,7 +144,7 @@ ${getPredicatesForPrompt()}
 Relationship rules:
 - Subject and object MUST be entities from Step 1 — do not introduce new entities
 - ALWAYS prefer a predicate from the vocabulary above. Only invent a new predicate if NONE fit.
-- Never create compound predicates (e.g., "MENTIONED_COOKING_IN" — use DESCRIBED instead)
+- Never create compound predicates (e.g., "MENTIONED_COOKING_IN")
 - Use the most specific predicate that accurately captures the relationship
 - Extract relationships that are explicitly stated or strongly implied in the text
 
@@ -187,51 +189,61 @@ ${content}`
 
 function buildEntityExtractionPrompt(content: string, entityContext?: EntityContext[], documentTitle?: string): string {
   const contextSection = entityContext?.length
-    ? `\nPreviously identified entities in this document:\n${entityContext.map(e => `- ${e.name} (${e.type})`).join('\n')}\n\nUse these names when the text refers to these entities by pronoun, abbreviation, or epithet.\n`
+    ? `\nPreviously identified entities in the text string:\n${entityContext.map(e => `- ${e.name} (${e.type})`).join('\n')}\n\nUse these names when the text refers to these entities by pronoun, abbreviation, or epithet.\n`
     : ''
   const titleSection = documentTitle
-    ? `\nThis text is from a document titled: "${documentTitle}". Entities referenced in the title should be extracted as primary entities using their full formal names.\n`
+    ? `\nThe text string is from a document titled: "${documentTitle}". Entities referenced in the title should be extracted as primary entities using their full formal names.\n`
     : ''
 
-  return `Extract all named entities from the following text.
-${contextSection}${titleSection}
+  return `Your task is to extract all named entities from a text string.
+
+<TASK_INSTRUCTIONS>
+
 For each entity, provide:
-- "name": The most complete, formal name of the entity. Always use full proper names — NOT surnames, nicknames, shortened forms, or abbreviations alone. Examples across domains:
-  People: "Stephen Curry" not "Curry"; "Barack Obama" not "Obama"; "Marie Curie" not "Curie"; "Ada Lovelace" not "Lovelace"
-  Organizations: "Goldman Sachs Group" not "Goldman"; "European Central Bank" not "ECB"; "Massachusetts Institute of Technology" not "MIT"; "World Health Organization" not "WHO"
-  Technology: "Amazon Web Services" not "AWS"; "React Native" not "React"; "PostgreSQL" not "Postgres"; "Large Language Model" not "LLM" (when first introduced)
-  Locations: "San Francisco Bay Area" not "Bay Area"; "United Kingdom" not "UK"; "Silicon Valley" not "the Valley"; "Cape Town" not "the Cape"
-  Events: "2024 United States presidential election" not "the election"; "1984 Summer Olympics" not "1984 games"; "CES 2025" not "CES"; "World War II" not "the war"
-  Legal/Science: "General Data Protection Regulation" not "GDPR"; "Clean Air Act of 1970" not "Clean Air Act"; "Hubble Space Telescope" not "Hubble"; "CRISPR-Cas9" not "CRISPR"
-  Products: "iPhone 16 Pro Max" not "iPhone"; "Tesla Model 3" not "Model 3"; "GPT-4" not "GPT"
-  Culture: "Naismith Memorial Basketball Hall of Fame" not "Hall of Fame"; "Academy Award for Best Picture" not "Best Picture"; "The Great Gatsby" not "Gatsby"
+
+- "name": The most complete, formal and canonical name of the entity. Always use full proper names — NOT surnames, nicknames, shortened forms, or abbreviations alone. Examples across domains:
+-- People: "Stephen Curry" not "Curry"; "Barack Obama" not "Obama"; "Marie Curie" not "Curie"; "Ada Lovelace" not "Lovelace"
+-- Organizations: "Goldman Sachs Group" not "Goldman"; "European Central Bank" not "ECB"; "Massachusetts Institute of Technology" not "MIT"; "World Health Organization" not "WHO"; "Apple Inc." not "Apple"
+-- Technology: "Amazon Web Services" not "AWS"; "React Native" not "React"; "PostgreSQL" not "Postgres"; "Large Language Model" not "LLM" (when first introduced)
+-- Locations: "San Francisco Bay Area" not "Bay Area"; "United Kingdom" not "UK"; "Silicon Valley" not "the Valley"; "Cape Town, South Africa" not "the Cape"
+-- Events: "2024 United States presidential election" not "the election"; "1984 Summer Olympics" not "1984 games"; "CES 2025" not "CES"; "World War II" not "the war"
+-- Legal/Science: "General Data Protection Regulation" not "GDPR"; "Clean Air Act of 1970" not "Clean Air Act"; "Hubble Space Telescope" not "Hubble"; "CRISPR-Cas9" not "CRISPR"
+-- Products: "iPhone 16 Pro Max" not "iPhone"; "Tesla Model 3" not "Model 3"; "GPT-4" not "GPT"
+-- Culture: "Naismith Memorial Basketball Hall of Fame" not "Hall of Fame"; "Academy Award for Best Picture" not "Best Picture"; "The Great Gatsby" not "Gatsby"
 - "type": One of: ${ENTITY_TYPES_LIST}
 - "description": A one-sentence description of what this entity IS — its defining attributes, NOT its relationships to other entities
 - "aliases": Other proper names, abbreviations, or widely-recognized nicknames for THIS SAME entity in the text (array of strings).
-  Valid aliases: "NYC" for "New York City", "WHO" for "World Health Organization", "The Iron Lady" for "Margaret Thatcher", "Python" for "Python programming language"
-  NEVER include as aliases:
-  - Pronouns or pronoun phrases (he, she, it, they, them, we, his, her, its)
-  - Generic references (the team, the roster, the company, the city, the league, the organization, the event, the protocol, the framework, the ingredient)
-  - Surnames or first names alone (Curry, Obama, Kevin, Marie) — these are ambiguous, not aliases
-  - Names of DIFFERENT entities — "FIBA Hall of Fame" and "Naismith Hall of Fame" are SEPARATE entities; "React" and "React Native" are SEPARATE; "Python 2" and "Python 3" are SEPARATE
-  - Descriptive phrases (the American team, the defending champions, the former president, the lead researcher, the main ingredient)
-  - Country/city names for their teams — "France" is NOT an alias of "France men's national basketball team"; "Brazil" is NOT an alias of "Brazil national football team"
-  - Shortened generic forms — "Finals" is NOT an alias of "NBA Finals"; "MVP" is NOT an alias of any specific MVP award; "Olympics" is NOT an alias of "2024 Summer Olympics"
+-- Valid aliases: "NYC" for "New York City", "WHO" for "World Health Organization", "The Iron Lady" for "Margaret Thatcher", "Python" for "Python programming language"
+-- NEVER include as aliases:
+--- Pronouns or pronoun phrases (he, she, it, they, them, we, his, her, its)
+--- Generic references (the team, the roster, the company, the city, the league, the organization, the event, the protocol, the framework, the ingredient)
+--- Surnames or first names alone (Curry, Obama, Kevin, Marie) — these are ambiguous, not aliases
+--- Names of DIFFERENT entities — "FIBA Hall of Fame" and "Naismith Hall of Fame" are SEPARATE entities; "React" and "React Native" are SEPARATE; "Python 2" and "Python 3" are SEPARATE
+--- Descriptive phrases (the American team, the defending champions, the former president, the lead researcher, the main ingredient)
+--- Country/city names for their teams — "France" is NOT an alias of "France men's national basketball team"; "Brazil" is NOT an alias of "Brazil national football team"
+--- Shortened generic forms — "Finals" is NOT an alias of "NBA Finals"; "MVP" is NOT an alias of any specific MVP award; "Olympics" is NOT an alias of "2024 Summer Olympics"
 
-Rules:
-- Extract a MAXIMUM of 15 entities. When the text contains more potential entities, prioritize:
-  1. Primary subjects — entities the text is primarily ABOUT, not merely mentioned
-  2. Entities with explicit relationships — entities that have stated connections to other entities in the text
-  3. Specific over generic — prefer "2006 FIBA World Championship" over "basketball"
-  4. Actors over settings — prefer entities that DO things over entities that are merely locations or backdrops
-  Omit entities that appear only in lists, parenthetical asides, or as minor supporting context with no described relationships.
+</TASK_INSTRUCTIONS>
+
+<TASK_RULES>
+
+- Extract a MAXIMUM of 12 entities. When the text contains more potential entities, prioritize:
+-- 1. Primary subjects — entities the text is primarily ABOUT, not merely mentioned
+-- 2. Entities with explicit relationships — entities that have stated connections to other entities in the text
+-- 3. Specific over generic — prefer "2006 FIBA World Championship" over "basketball"
+-- 4. Actors over settings — prefer entities that DO things over entities that are merely locations or backdrops
+-- Omit entities that appear only in lists, parenthetical asides, or as minor supporting context with no described relationships.
 - Only extract specific named entities — NOT dates, dollar amounts, percentages, or generic descriptions
 - If an entity is referred to by multiple names (e.g., "OpenAI" and "the company"), list the proper name variants as aliases — NOT the generic reference
-- Include entities even if they only appear once
+- Include important entities even if they only appear once
 - Return an empty array if no named entities exist
 - For events, awards, seasons, software versions, product generations, or any time/version-specific entities, ALWAYS include the year, version, or edition in the name. Each distinct occurrence is a SEPARATE entity — e.g., "2023 NBA Finals" and "2024 NBA Finals" are different, "Python 2" and "Python 3" are different, "iPhone 15" and "iPhone 16" are different, "HTTP/1.1" and "HTTP/2" are different, "Michelin Guide 2024" and "Michelin Guide 2025" are different.
 - Different awards are ALWAYS separate entities even when they share words — "NBA Finals MVP" and "NBA MVP" are SEPARATE; "Academy Award for Best Picture" and "Academy Award for Best Director" are SEPARATE; "Nobel Peace Prize" and "Nobel Prize in Physics" are SEPARATE
 - Entities with opposing directional or categorical qualifiers are ALWAYS separate — "Western Conference" and "Eastern Conference" are SEPARATE; "North Atlantic Treaty Organization" and "South Asian Association" are SEPARATE; "Upper Egypt" and "Lower Egypt" are SEPARATE
+
+</TASK_RULES>
+
+<CRITICAL_RULES>
 
 CRITICAL — Aliases vs. Relationships:
 - An ALIAS is a different name for THE SAME entity (e.g., "NYC" is an alias for "New York City")
@@ -239,78 +251,156 @@ CRITICAL — Aliases vs. Relationships:
 - NEVER list a related entity as an alias. If "Kevin Durant" appears in text about "Brooklyn Nets", they are SEPARATE entities connected by a relationship
 - Test: Could you replace one name with the other in any sentence and preserve meaning? If yes → alias. If no → separate entities with a relationship
 
-## Example
+</CRITICAL_RULES>
 
-Text: "Margaret Ashworth had lived in Oxford since her marriage to Edmund, who served as president of The Geographical Society. It was through Edmund's influence that she first traveled to Cairo, where she met the renowned cartographer Helena Voss. The two women corresponded for years, and Helena's bold methods deeply influenced Margaret's own work. Margaret eventually wrote Principles of Navigation, which many regarded as a challenge to Edmund's more traditional views on the subject. Helena, who had once taught at Oxford before the Society forced her departure, remained Margaret's closest intellectual ally."
+<EXAMPLE_TASK>
 
-Output:
-[{"name": "Margaret Ashworth", "type": "person", "description": "Author of Principles of Navigation, influenced by Helena Voss", "aliases": []},
-{"name": "Edmund Ashworth", "type": "person", "description": "President of The Geographical Society, married to Margaret", "aliases": ["Edmund"]},
-{"name": "The Geographical Society", "type": "organization", "description": "Academic society led by Edmund Ashworth", "aliases": ["the Society"]},
-{"name": "Cairo", "type": "location", "description": "City where Margaret met Helena Voss", "aliases": []},
-{"name": "Oxford", "type": "location", "description": "City where Margaret lived and Helena once taught", "aliases": []},
-{"name": "Helena Voss", "type": "person", "description": "Renowned cartographer and Margaret's intellectual ally", "aliases": ["Helena"]},
-{"name": "Principles of Navigation", "type": "work_of_art", "description": "Book written by Margaret Ashworth", "aliases": []}]
+  This is an example, purely for illustrative purposes, to help you understand the task.
 
-## Self-review
+  <EXAMPLE_TEXT_STRING>
 
-After your initial extraction, review: did you miss any entities that are explicitly stated or strongly implied? Include them.
+  "Margaret Ashworth had lived in Oxford since her marriage to Edmund, who served as president of The Geographical Society. It was through Edmund's influence that she first traveled to Cairo, where she met the renowned cartographer Helena Voss. The two women corresponded for years, and Helena's bold methods deeply influenced Margaret's own work. Margaret eventually wrote Principles of Navigation, which many regarded as a challenge to Edmund's more traditional views on the subject. Helena, who had once taught at Oxford before the Society forced her departure, remained Margaret's closest intellectual ally."
 
-Return a JSON array: [{"name": "...", "type": "...", "description": "...", "aliases": ["..."]}, ...]
+  </EXAMPLE_TEXT_STRING>
 
-Text:
-${content}`
+  <EXAMPLE_OUTPUT>
+
+  [{"name": "Margaret Ashworth", "type": "person", "description": "Author of Principles of Navigation, influenced by Helena Voss", "aliases": []},
+  {"name": "Edmund Ashworth", "type": "person", "description": "President of The Geographical Society, married to Margaret", "aliases": ["Edmund"]},
+  {"name": "The Geographical Society", "type": "organization", "description": "Academic society led by Edmund Ashworth", "aliases": ["the Society"]},
+  {"name": "Cairo", "type": "location", "description": "City where Margaret met Helena Voss", "aliases": []},
+  {"name": "Oxford", "type": "location", "description": "City where Margaret lived and Helena once taught", "aliases": []},
+  {"name": "Helena Voss", "type": "person", "description": "Renowned cartographer and Margaret's intellectual ally", "aliases": ["Helena"]},
+  {"name": "Principles of Navigation", "type": "work_of_art", "description": "Book written by Margaret Ashworth", "aliases": []}]
+
+  </EXAMPLE_OUTPUT>
+
+</EXAMPLE_TASK>
+
+Now, below we are getting into the meat of the current task you are performing.
+
+<PREVIOUSLY_IDENTIFIED_ENTITIES>
+
+  ${contextSection}
+
+</PREVIOUSLY_IDENTIFIED_ENTITIES>
+
+<DOCUMENT_TITLE>
+
+  ${titleSection}
+
+</DOCUMENT_TITLE>
+
+<ENTITY_TYPE_LIST>
+
+  ${ENTITY_TYPES_LIST}
+
+</ENTITY_TYPE_LIST>
+
+<TASK_OUTPUT_REQUIREMENTS>
+
+- Return a JSON array: [{"name": "...", "type": "...", "description": "...", "aliases": ["..."]}, ...]
+- Return an empty array if no named entities exist
+
+</TASK_OUTPUT_REQUIREMENTS>
+
+Extract all named entities from the following text string:
+
+<THE_TEXT_STRING>
+
+  ${content}
+
+</THE_TEXT_STRING>`
 }
 
 function buildRelationshipPrompt(entitiesJson: string, content: string): string {
-  return `Given the following text and a list of known entities, extract all relationships between these entities.
+  return `Your task is to extract all relationships between the entities listed below and the entities in the text string.
 
-Entities found in this text:
-${entitiesJson}
+<TASK_INSTRUCTIONS>
 
 For each relationship, provide:
-- "subject": Must be one of the entity names listed above
-- "predicate": A canonical relationship verb from the vocabulary below
-- "object": Must be one of the entity names listed above
+- "subject": Must be one of the entity names listed below
+- "predicate": A canonical relationship verb from the vocabulary listed below
+- "object": Must be one of the entity names listed below
 - "confidence": How confident you are this relationship is stated or strongly implied (0.0 to 1.0)
 
-${getPredicatesForPrompt()}
+</TASK_INSTRUCTIONS>
 
-Rules:
-- Subject and object MUST be from the entity list above — do not introduce new entities
-- ALWAYS prefer a predicate from the vocabulary above. Only invent a new predicate if NONE fit.
-- Never create compound predicates (e.g., "MENTIONED_COOKING_IN" — use DESCRIBED instead)
+<TASK_RULES>
+
+- Subject and object MUST be from the entity list listed below — do not introduce new entities
+- ALWAYS prefer a predicate from the vocabulary listed below. Only invent a new predicate if NONE fit.
+- Never create compound predicates (e.g., "MENTIONED_COOKING_IN")
 - Use the most specific predicate that accurately captures the relationship
 - Extract relationships that are explicitly stated or strongly implied in the text
-- Return an empty array if no clear relationships exist between the listed entities
+- Return an empty array if no clear relationships exist between the entities listed below
 
-## Example
+</TASK_RULES>
 
-Entities: [{"name": "Margaret Ashworth", "type": "person"}, {"name": "Edmund Ashworth", "type": "person"}, {"name": "The Geographical Society", "type": "organization"}, {"name": "Cairo", "type": "location"}, {"name": "Oxford", "type": "location"}, {"name": "Helena Voss", "type": "person"}, {"name": "Principles of Navigation", "type": "work_of_art"}]
+<EXAMPLE_TASK>
 
-Text: "Margaret Ashworth had lived in Oxford since her marriage to Edmund, who served as president of The Geographical Society. It was through Edmund's influence that she first traveled to Cairo, where she met the renowned cartographer Helena Voss. The two women corresponded for years, and Helena's bold methods deeply influenced Margaret's own work. Margaret eventually wrote Principles of Navigation, which many regarded as a challenge to Edmund's more traditional views on the subject. Helena, who had once taught at Oxford before the Society forced her departure, remained Margaret's closest intellectual ally."
+  This is an example, purely for illustrative purposes, to help you understand the task:
 
-Relationships:
-[{"subject": "Margaret Ashworth", "predicate": "LIVED_IN", "object": "Oxford", "confidence": 0.95},
-{"subject": "Margaret Ashworth", "predicate": "MARRIED", "object": "Edmund Ashworth", "confidence": 0.95},
-{"subject": "Edmund Ashworth", "predicate": "LEADS", "object": "The Geographical Society", "confidence": 0.9},
-{"subject": "Margaret Ashworth", "predicate": "TRAVELED_TO", "object": "Cairo", "confidence": 0.9},
-{"subject": "Edmund Ashworth", "predicate": "INFLUENCED", "object": "Margaret Ashworth", "confidence": 0.85},
-{"subject": "Helena Voss", "predicate": "CORRESPONDS_WITH", "object": "Margaret Ashworth", "confidence": 0.9},
-{"subject": "Helena Voss", "predicate": "INFLUENCED", "object": "Margaret Ashworth", "confidence": 0.9},
-{"subject": "Margaret Ashworth", "predicate": "WROTE", "object": "Principles of Navigation", "confidence": 0.95},
-{"subject": "Margaret Ashworth", "predicate": "OPPOSED", "object": "Edmund Ashworth", "confidence": 0.75},
-{"subject": "Helena Voss", "predicate": "TAUGHT", "object": "Oxford", "confidence": 0.85},
-{"subject": "Helena Voss", "predicate": "COLLABORATED_WITH", "object": "Margaret Ashworth", "confidence": 0.9}]
+  <EXAMPLE_ENTITIES_FOUND_IN_THE_EXAMPLE_TEXT_STRING>
 
-## Self-review
+    Entities: [{"name": "Margaret Ashworth", "type": "person"}, {"name": "Edmund Ashworth", "type": "person"}, {"name": "The Geographical Society", "type": "organization"}, {"name": "Cairo, Egypt", "type": "location"}, {"name": "Oxford, United Kingdom", "type": "location"}, {"name": "Helena Voss", "type": "person"}, {"name": "Principles of Navigation", "type": "work_of_art"}]
 
-After your initial extraction, review: did you miss any relationships that are explicitly stated or strongly implied? Include them.
+  </EXAMPLE_ENTITIES_FOUND_IN_THE_EXAMPLE_TEXT_STRING>
 
-Return a JSON array: [{"subject": "...", "predicate": "...", "object": "...", "confidence": 0.9}, ...]
+  <EXAMPLE_TEXT_STRING>
 
-Text:
-${content}`
+    "Margaret Ashworth had lived in Oxford since her marriage to Edmund, who served as president of The Geographical Society. It was through Edmund's influence that she first traveled to Cairo, where she met the renowned cartographer Helena Voss. The two women corresponded for years, and Helena's bold methods deeply influenced Margaret's own work. Margaret eventually wrote Principles of Navigation, which many regarded as a challenge to Edmund's more traditional views on the subject. Helena, who had once taught at Oxford before the Society forced her departure, remained Margaret's closest intellectual ally."
+
+  </EXAMPLE_TEXT_STRING>
+
+  <EXAMPLE_OUTPUT>
+
+    [{"subject": "Margaret Ashworth", "predicate": "LIVED_IN", "object": "Oxford, United Kingdom", "confidence": 0.95},
+    {"subject": "Margaret Ashworth", "predicate": "MARRIED", "object": "Edmund Ashworth", "confidence": 0.95},
+    {"subject": "Edmund Ashworth", "predicate": "LEADS", "object": "The Geographical Society", "confidence": 0.9},
+    {"subject": "Margaret Ashworth", "predicate": "TRAVELED_TO", "object": "Cairo, Egypt", "confidence": 0.9},
+    {"subject": "Edmund Ashworth", "predicate": "INFLUENCED", "object": "Margaret Ashworth", "confidence": 0.85},
+    {"subject": "Helena Voss", "predicate": "CORRESPONDS_WITH", "object": "Margaret Ashworth", "confidence": 0.9},
+    {"subject": "Helena Voss", "predicate": "INFLUENCED", "object": "Margaret Ashworth", "confidence": 0.9},
+    {"subject": "Margaret Ashworth", "predicate": "WROTE", "object": "Principles of Navigation", "confidence": 0.95},
+    {"subject": "Margaret Ashworth", "predicate": "OPPOSED", "object": "Edmund Ashworth", "confidence": 0.75},
+    {"subject": "Helena Voss", "predicate": "TAUGHT", "object": "Oxford, United Kingdom", "confidence": 0.85},
+    {"subject": "Helena Voss", "predicate": "COLLABORATED_WITH", "object": "Margaret Ashworth", "confidence": 0.9}]
+
+  </EXAMPLE_OUTPUT>
+
+</EXAMPLE_TASK>
+
+Now, below we are getting into the meat of the current task you are performing.
+
+<TASK_OUTPUT_REQUIREMENTS>
+
+- Return a JSON array: [{"subject": "...", "predicate": "...", "object": "...", "confidence": 0.9}, ...]
+- Return an empty array if no relationships exist between the listed entities
+
+</TASK_OUTPUT_REQUIREMENTS>
+
+<PREDICATE_VOCABULARY_TO_USE_FOR_THIS_TASK>
+
+  ${getPredicatesForPrompt()}
+
+</PREDICATE_VOCABULARY_TO_USE_FOR_THIS_TASK>
+
+Below, is a list of entities found in the text string:
+
+<ENTITIES_FOUND_IN_THE_TEXT_STRING>
+
+  ${entitiesJson}
+
+</ENTITIES_FOUND_IN_THE_TEXT_STRING>
+
+Extract all relationships between the entities listed above and the entities in the text string:
+
+<THE_TEXT_STRING>
+
+  ${content}
+
+</THE_TEXT_STRING>`
 }
 
 // ── Extractor ──

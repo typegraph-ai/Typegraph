@@ -1,6 +1,6 @@
 {
   "name": "@typegraph-ai/sdk",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "TypeScript SDK for retrieval, knowledge graph, and cognitive memory for AI agents",
   "type": "module",
   "main": "./dist/index.js",

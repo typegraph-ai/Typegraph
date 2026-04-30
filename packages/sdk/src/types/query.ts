@@ -1,4 +1,4 @@
-import type { EntityResult, FactResult, GraphSearchOpts } from './graph-bridge.js'
+import type { EntityResult, FactResult, GraphSearchOpts, GraphSearchTrace } from './graph-bridge.js'
 import type { MemoryRecord } from '../memory/types/memory.js'
 
 export type QueryGraphOptions = GraphSearchOpts
@@ -115,6 +115,7 @@ export interface QueryResults {
   facts: FactResult[]
   entities: EntityResult[]
   memories: QueryMemoryResult[]
+  graphTrace?: GraphSearchTrace | undefined
 }
 
 export interface QueryOpts {

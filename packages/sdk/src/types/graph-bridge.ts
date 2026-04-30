@@ -275,26 +275,40 @@ export interface GraphExploreOptions {
 
 export type GraphExploreOpts = GraphExploreOptions & typegraphIdentity & TelemetryOpts
 
-export interface GraphExploreIntentPredicate {
+export interface GraphQueryIntentPredicate {
   name: string
   confidence: number
+  symmetric?: boolean | undefined
 }
 
-export interface GraphExploreIntent {
+export interface GraphQueryIntent {
   rawQuery: string
-  anchorText: string
-  mode: 'attribute' | 'relationship'
-  predicates: GraphExploreIntentPredicate[]
-  targetEntityTypes: string[]
+  sourceEntityQueries: string[]
+  targetEntityQueries: string[]
+  predicates: GraphQueryIntentPredicate[]
+  answerSide: 'source' | 'target' | 'either' | 'none'
+  subqueries: string[]
+  mode: 'fact' | 'relationship' | 'summary' | 'creative'
+}
+
+export type GraphExploreIntentPredicate = GraphQueryIntentPredicate
+export type GraphExploreIntent = GraphQueryIntent
+
+export interface ParsedGraphQueryIntent {
+  parser: 'llm' | 'none'
+  fallbackUsed: false
+  intent: GraphQueryIntent
 }
 
 export interface GraphExploreTrace {
-  parser: 'llm' | 'fallback'
-  fallbackUsed: boolean
-  mode: 'attribute' | 'relationship'
-  anchorSide: 'source' | 'target' | 'either'
+  parser: 'llm' | 'none'
+  fallbackUsed: false
+  mode: GraphQueryIntent['mode']
+  answerSide: GraphQueryIntent['answerSide']
   selectedPredicates: string[]
-  targetEntityTypes: string[]
+  sourceEntityQueries: string[]
+  targetEntityQueries: string[]
+  subqueries: string[]
   anchorCandidates: EntityResult[]
   selectedAnchorIds: string[]
   matchedEdgeIds: string[]
@@ -359,6 +373,8 @@ export interface FactChainResult {
 export type GraphExplainOpts = GraphSearchOpts & typegraphIdentity
 
 export interface GraphSearchTrace {
+  intent?: GraphQueryIntent | undefined
+  parser?: 'llm' | 'none' | undefined
   entitySeedCount: number
   factSeedCount: number
   passageSeedCount: number

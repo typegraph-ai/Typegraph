@@ -4,18 +4,18 @@ import { embeddingModelKey } from '../embedding/provider.js'
 import type { typegraphIdentity } from '../types/identity.js'
 import type { EmbeddingConfig } from '../types/bucket.js'
 import type { LLMConfig, LLMProvider } from '../types/llm-provider.js'
-import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, PassageResult, SubgraphOpts, SubgraphResult, GraphStats } from '../types/graph-bridge.js'
+import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, PassageResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent } from '../types/graph-bridge.js'
 import { resolveEmbeddingProvider, resolveLLMProvider } from '../typegraph.js'
 import type { MemoryStoreAdapter, SemanticEdge, SemanticEntity, SemanticEntityMention, SemanticFactRecord, SemanticPassageEntityEdge } from '../memory/types/index.js'
 import { EntityResolver, PredicateNormalizer, createTemporal } from '../memory/index.js'
 import { EmbeddedGraph } from './graph/embedded-graph.js'
-import { parseGraphExploreIntent } from './query-intent.js'
+import { parseGraphQueryIntent } from './query-intent.js'
 import { generateId } from '../utils/id.js'
 import {
   buildFactSearchText,
-  decomposeGraphQuery,
   formatFactEvidence,
 } from './retrieval-primitives.js'
+import { isSymmetricPredicate } from '../memory/extraction/predicate-normalizer.js'
 
 // ── Config ──
 
@@ -312,6 +312,177 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const explore = fact.properties?.exploreScore
     if (typeof explore === 'number' && Number.isFinite(explore)) return explore
     return fact.weight
+  }
+
+  function textMentionsDirectionalContradiction(input: {
+    relation: string
+    sourceName: string
+    targetName: string
+    description?: string | undefined
+    evidenceText?: string | undefined
+  }): boolean {
+    const text = normalizeSurfaceText([input.description, input.evidenceText].filter(Boolean).join(' '))
+    if (!text) return false
+    const source = normalizeSurfaceText(input.sourceName)
+    const target = normalizeSurfaceText(input.targetName)
+    if (!source || !target) return false
+
+    if (input.relation === 'KILLED') {
+      const targetKilledBySource = new RegExp(`\\b${target}\\b.{0,40}\\b(?:killed|murdered|assassinated|stabbed|slain)\\b.{0,20}\\bby\\b.{0,40}\\b${source}\\b`)
+      if (targetKilledBySource.test(text)) return false
+      const targetKilledSource = new RegExp(`\\b${target}\\b.{0,40}\\b(?:killed|murdered|assassinated|stabbed|slew|slain)\\b.{0,40}\\b${source}\\b`)
+      const sourceKilledByTarget = new RegExp(`\\b${source}\\b.{0,40}\\b(?:killed|murdered|assassinated|stabbed|slain)\\b.{0,20}\\bby\\b.{0,40}\\b${target}\\b`)
+      return targetKilledSource.test(text) || sourceKilledByTarget.test(text)
+    }
+
+    if (input.relation === 'PARENT_OF') {
+      const sourceChildOfTarget = new RegExp(`\\b${source}\\b.{0,30}\\b(?:child|son|daughter|born)\\b.{0,20}\\b(?:of|to)\\b.{0,30}\\b${target}\\b`)
+      return sourceChildOfTarget.test(text)
+    }
+
+    if (input.relation === 'CHILD_OF') {
+      const sourceParentOfTarget = new RegExp(`\\b${source}\\b.{0,30}\\b(?:parent|father|mother)\\b.{0,20}\\bof\\b.{0,30}\\b${target}\\b`)
+      return sourceParentOfTarget.test(text)
+    }
+
+    return false
+  }
+
+  function requestedLimit(value: number | undefined): number | undefined {
+    return value === undefined ? undefined : Math.max(0, value)
+  }
+
+  function applyRequestedLimit<T>(items: T[], limit: number | undefined): T[] {
+    return limit === undefined ? items : items.slice(0, limit)
+  }
+
+  function intentPredicateSet(intent: GraphQueryIntent): Set<string> {
+    return new Set(intent.predicates.map(predicate => predicate.name))
+  }
+
+  function intentAnchorQueries(intent: GraphQueryIntent): string[] {
+    return uniqueIds([
+      ...intent.sourceEntityQueries,
+      ...intent.targetEntityQueries,
+    ].map(query => query.trim()).filter(Boolean))
+  }
+
+  function intentSearchText(intent: GraphQueryIntent, fallbackQuery: string): string {
+    return uniqueIds([
+      fallbackQuery,
+      ...intent.subqueries,
+      ...intent.sourceEntityQueries,
+      ...intent.targetEntityQueries,
+      ...intent.predicates.map(predicate => relationToPhrase(predicate.name)),
+    ]).join('\n')
+  }
+
+  function graphIntentIsEmpty(intent: GraphQueryIntent): boolean {
+    return (
+      intent.sourceEntityQueries.length === 0 &&
+      intent.targetEntityQueries.length === 0 &&
+      intent.predicates.length === 0 &&
+      intent.subqueries.length === 0 &&
+      intent.answerSide === 'none'
+    )
+  }
+
+  function uniqueEntityResults(entities: EntityResult[]): EntityResult[] {
+    const byId = new Map<string, EntityResult>()
+    for (const entity of entities) {
+      const existing = byId.get(entity.id)
+      if (!existing || (entity.similarity ?? 0) > (existing.similarity ?? 0)) {
+        byId.set(entity.id, entity)
+      }
+    }
+    return [...byId.values()]
+  }
+
+  async function resolveIntentAnchors(
+    intent: GraphQueryIntent,
+    identity: typegraphIdentity,
+    limit: number,
+  ): Promise<{
+    sourceAnchors: EntityResult[]
+    targetAnchors: EntityResult[]
+    anchors: EntityResult[]
+    sourceAnchorIds: Set<string>
+    targetAnchorIds: Set<string>
+  }> {
+    const [sourceAnchors, targetAnchors] = await Promise.all([
+      collectEntityCandidates(intent.sourceEntityQueries, identity, limit, { stopOnStrongMatch: true }),
+      collectEntityCandidates(intent.targetEntityQueries, identity, limit, { stopOnStrongMatch: true }),
+    ])
+    const anchors = uniqueEntityResults([...sourceAnchors, ...targetAnchors])
+    return {
+      sourceAnchors,
+      targetAnchors,
+      anchors,
+      sourceAnchorIds: new Set(sourceAnchors.map(anchor => anchor.id)),
+      targetAnchorIds: new Set(targetAnchors.map(anchor => anchor.id)),
+    }
+  }
+
+  function edgeMatchesIntent(input: {
+    sourceEntityId: string
+    targetEntityId: string
+    relation: string
+    intent: GraphQueryIntent
+    sourceAnchorIds: Set<string>
+    targetAnchorIds: Set<string>
+  }): { match: boolean; reason?: 'predicate' | 'direction' | undefined } {
+    const selectedPredicates = intentPredicateSet(input.intent)
+    if (selectedPredicates.size > 0 && !selectedPredicates.has(input.relation)) {
+      return { match: false, reason: 'predicate' }
+    }
+
+    const hasSourceAnchors = input.sourceAnchorIds.size > 0
+    const hasTargetAnchors = input.targetAnchorIds.size > 0
+    if (!hasSourceAnchors && !hasTargetAnchors) {
+      return { match: false, reason: 'direction' }
+    }
+
+    const symmetric = isSymmetricPredicate(input.relation)
+    const sourceMatchesSource = input.sourceAnchorIds.has(input.sourceEntityId)
+    const targetMatchesSource = input.sourceAnchorIds.has(input.targetEntityId)
+    const sourceMatchesTarget = input.targetAnchorIds.has(input.sourceEntityId)
+    const targetMatchesTarget = input.targetAnchorIds.has(input.targetEntityId)
+
+    if (hasSourceAnchors && hasTargetAnchors) {
+      if (symmetric) {
+        const direct = sourceMatchesSource && targetMatchesTarget
+        const reverse = targetMatchesSource && sourceMatchesTarget
+        return direct || reverse ? { match: true } : { match: false, reason: 'direction' }
+      }
+      return sourceMatchesSource && targetMatchesTarget
+        ? { match: true }
+        : { match: false, reason: 'direction' }
+    }
+
+    if (hasSourceAnchors) {
+      return symmetric
+        ? (sourceMatchesSource || targetMatchesSource ? { match: true } : { match: false, reason: 'direction' })
+        : (sourceMatchesSource ? { match: true } : { match: false, reason: 'direction' })
+    }
+
+    return symmetric
+      ? (sourceMatchesTarget || targetMatchesTarget ? { match: true } : { match: false, reason: 'direction' })
+      : (targetMatchesTarget ? { match: true } : { match: false, reason: 'direction' })
+  }
+
+  function factMatchesIntent(fact: SemanticFactRecord, input: {
+    intent: GraphQueryIntent
+    sourceAnchorIds: Set<string>
+    targetAnchorIds: Set<string>
+  }): { match: boolean; reason?: 'predicate' | 'direction' | undefined } {
+    return edgeMatchesIntent({
+      sourceEntityId: fact.sourceEntityId,
+      targetEntityId: fact.targetEntityId,
+      relation: fact.relation,
+      intent: input.intent,
+      sourceAnchorIds: input.sourceAnchorIds,
+      targetAnchorIds: input.targetAnchorIds,
+    })
   }
 
   async function hydrateEntityResults(
@@ -633,17 +804,30 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       conversationId: triple.conversationId,
     })
 
-    let relation = triple.predicate
-      .trim()
-      .toUpperCase()
-      .replace(/[\s-]+/g, '_')
-      .replace(/[^A-Z0-9_]/g, '')
+    const normalizedRelation = predicateNormalizer.normalizeWithDirection(triple.predicate)
+    if (!normalizedRelation.valid || GENERIC_PREDICATES.has(normalizedRelation.predicate)) return
 
-    const subjectResult = await resolveAndStoreEntity({
+    let sourceInput = {
       name: triple.subject,
       type: triple.subjectType,
       aliases: triple.subjectAliases,
       description: triple.subjectDescription,
+    }
+    let targetInput = {
+      name: triple.object,
+      type: triple.objectType,
+      aliases: triple.objectAliases,
+      description: triple.objectDescription,
+    }
+    if (normalizedRelation.swapSubjectObject) {
+      ;[sourceInput, targetInput] = [targetInput, sourceInput]
+    }
+
+    let sourceEntity = await resolveAndStoreEntity({
+      name: sourceInput.name,
+      type: sourceInput.type,
+      aliases: sourceInput.aliases,
+      description: sourceInput.description,
       bucketId: triple.bucketId,
       documentId: triple.documentId,
       chunkIndex: triple.chunkIndex,
@@ -656,11 +840,11 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       confidence: triple.confidence,
       mentionType: 'subject',
     })
-    const objectResult = await resolveAndStoreEntity({
-      name: triple.object,
-      type: triple.objectType,
-      aliases: triple.objectAliases,
-      description: triple.objectDescription,
+    let targetEntity = await resolveAndStoreEntity({
+      name: targetInput.name,
+      type: targetInput.type,
+      aliases: targetInput.aliases,
+      description: targetInput.description,
       bucketId: triple.bucketId,
       documentId: triple.documentId,
       chunkIndex: triple.chunkIndex,
@@ -674,26 +858,39 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       mentionType: 'object',
     })
 
-    if (GENERIC_PREDICATES.has(relation)) return
-    relation = await predicateNormalizer.normalize(relation)
-    if (GENERIC_PREDICATES.has(relation)) return
-
     // Dedupe may resolve subject and object to the same canonical entity. A
     // self-edge carries no traversal value and corrupts relation semantics.
-    if (subjectResult.id === objectResult.id) return
+    if (sourceEntity.id === targetEntity.id) return
 
+    const relation = normalizedRelation.predicate
     const weight = triple.confidence ?? 1.0
     const relationshipDescription = cleanOptionalText(triple.relationshipDescription)
     const evidenceText = cleanOptionalText(triple.evidenceText)
     const sourceChunkId = cleanOptionalText(triple.sourceChunkId)
+
+    if (textMentionsDirectionalContradiction({
+      relation,
+      sourceName: sourceEntity.name,
+      targetName: targetEntity.name,
+      description: relationshipDescription,
+      evidenceText,
+    })) return
+
+    if (normalizedRelation.symmetric) {
+      const sourceKey = normalizeSurfaceText(sourceEntity.id || sourceEntity.name)
+      const targetKey = normalizeSurfaceText(targetEntity.id || targetEntity.name)
+      if (sourceKey > targetKey) {
+        ;[sourceEntity, targetEntity] = [targetEntity, sourceEntity]
+      }
+    }
 
     // Edges are deduplicated on (source, target, relation) at storage; chunk text
     // and provenance move to the entity↔chunk junction. Keep triple metadata in
     // properties only if the caller supplied it (not auto-generated content).
     const edge: SemanticEdge = {
       id: generateId('edge'),
-      sourceEntityId: subjectResult.id,
-      targetEntityId: objectResult.id,
+      sourceEntityId: sourceEntity.id,
+      targetEntityId: targetEntity.id,
       relation,
       weight,
       properties: {
@@ -711,7 +908,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const storedEdge = await graph.addEdge(edge)
 
     if (memoryStore.upsertFactRecord) {
-      const factText = factTextFor(subjectResult.name, relation, objectResult.name)
+      const factText = factTextFor(sourceEntity.name, relation, targetEntity.name)
       const factSearchText = buildFactSearchText({
         factText,
         description: relationshipDescription,
@@ -740,10 +937,10 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     }
 
     if (memoryStore.upsertEntity) {
-      await updateProfilesFromFact(subjectResult, objectResult, relation, weight)
+      await updateProfilesFromFact(sourceEntity, targetEntity, relation, weight)
     }
 
-    const pairKey = [subjectResult.id, objectResult.id].sort().join(':')
+    const pairKey = [sourceEntity.id, targetEntity.id].sort().join(':')
     directEdgePairs.add(pairKey)
 
     // CO_OCCURS edges for disconnected entities
@@ -753,7 +950,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       chunkEntities = new Set()
       chunkEntityMap.set(chunkKey, chunkEntities)
     }
-    const newEntityIds = [subjectResult.id, objectResult.id]
+    const newEntityIds = [sourceEntity.id, targetEntity.id]
     for (const newId of newEntityIds) {
       if (chunkEntities.has(newId)) continue
 
@@ -989,13 +1186,12 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       passages: opts.include?.passages ?? false,
     }
     const anchorLimit = Math.max(1, opts.anchorLimit ?? 3)
-    const entityLimit = Math.max(1, opts.entityLimit ?? 20)
-    const factLimit = Math.max(1, opts.factLimit ?? 20)
+    const entityLimit = requestedLimit(opts.entityLimit)
+    const factLimit = requestedLimit(opts.factLimit)
     const passageLimit = Math.max(1, opts.passageLimit ?? 10)
     const depth: 1 | 2 = opts.depth === 2 ? 2 : 1
-    const decomposition = decomposeGraphQuery(query)
 
-    const parsed = await parseGraphExploreIntent({
+    const parsed = await parseGraphQueryIntent({
       query,
       llm: explorationLlm,
     })
@@ -1006,9 +1202,11 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       parser: parsed.parser,
       fallbackUsed: parsed.fallbackUsed,
       mode: parsed.intent.mode,
-      anchorSide: parsed.anchorSide,
+      answerSide: parsed.intent.answerSide,
       selectedPredicates: [...selectedPredicates],
-      targetEntityTypes: parsed.intent.targetEntityTypes,
+      sourceEntityQueries: parsed.intent.sourceEntityQueries,
+      targetEntityQueries: parsed.intent.targetEntityQueries,
+      subqueries: parsed.intent.subqueries,
       anchorCandidates: [],
       selectedAnchorIds: [],
       matchedEdgeIds: [],
@@ -1018,26 +1216,17 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       droppedByType: 0,
     }
 
-    const anchorQuery = parsed.intent.anchorText.trim() || query.trim()
-    const anchorQueries = uniqueIds([
-      anchorQuery,
-      ...decomposition.entityPhrases,
-      ...decomposition.subqueries,
-    ]).slice(0, 6)
-    let anchorCandidates = await collectEntityCandidates(anchorQueries, identity, Math.max(anchorLimit * 3, anchorLimit), {
-      stopOnStrongMatch: true,
-    })
-    trace.anchorCandidates = anchorCandidates
-
-    if (parsed.anchorEntityTypes.length > 0) {
-      const preferredAnchorTypes = new Set(parsed.anchorEntityTypes.map(type => type.toLowerCase()))
-      if (preferredAnchorTypes.size > 0) {
-        const filtered = anchorCandidates.filter(candidate => preferredAnchorTypes.has(candidate.entityType.toLowerCase()))
-        if (filtered.length > 0) anchorCandidates = filtered
-      }
-    }
-
-    const anchors = anchorCandidates.slice(0, anchorLimit)
+    const resolvedAnchors = parsed.parser === 'llm' && !graphIntentIsEmpty(parsed.intent)
+      ? await resolveIntentAnchors(parsed.intent, identity, anchorLimit)
+      : {
+          sourceAnchors: [],
+          targetAnchors: [],
+          anchors: [],
+          sourceAnchorIds: new Set<string>(),
+          targetAnchorIds: new Set<string>(),
+        }
+    const anchors = resolvedAnchors.anchors
+    trace.anchorCandidates = anchors
     trace.selectedAnchorIds = anchors.map(anchor => anchor.id)
 
     const emptyResult: GraphExploreResult = {
@@ -1051,60 +1240,12 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
     if (anchors.length === 0) return emptyResult
 
-    const anchorIds = new Set(anchors.map(anchor => anchor.id))
     const anchorScoreById = new Map(
       anchors.map(anchor => [anchor.id, normalizeSeedScore(anchor.similarity ?? 1)]),
     )
-    const subgraphDepth: 1 | 2 = parsed.intent.mode === 'attribute' ? 1 : depth
-    const subgraph = await graph.getSubgraph(anchors.map(anchor => anchor.id), subgraphDepth, identity)
+    const subgraph = await graph.getSubgraph(anchors.map(anchor => anchor.id), depth, identity)
     const entityById = new Map(subgraph.entities.map(entity => [entity.id, entity]))
     const nameMap = new Map(subgraph.entities.map(entity => [entity.id, entity.name]))
-    const adjacency = new Map<string, string[]>()
-
-    const connect = (from: string, to: string) => {
-      let neighbors = adjacency.get(from)
-      if (!neighbors) {
-        neighbors = []
-        adjacency.set(from, neighbors)
-      }
-      if (!neighbors.includes(to)) neighbors.push(to)
-    }
-
-    for (const edge of subgraph.edges) {
-      connect(edge.sourceEntityId, edge.targetEntityId)
-      connect(edge.targetEntityId, edge.sourceEntityId)
-    }
-
-    const distanceById = new Map<string, number>()
-    const anchorInfluenceById = new Map<string, number>()
-    const queue: string[] = []
-    for (const anchor of anchors) {
-      distanceById.set(anchor.id, 0)
-      anchorInfluenceById.set(anchor.id, anchorScoreById.get(anchor.id) ?? 1)
-      queue.push(anchor.id)
-    }
-
-    while (queue.length > 0) {
-      const currentId = queue.shift()!
-      const currentDistance = distanceById.get(currentId) ?? 0
-      if (currentDistance >= depth) continue
-      const currentInfluence = anchorInfluenceById.get(currentId) ?? 0
-      for (const neighborId of adjacency.get(currentId) ?? []) {
-        const nextDistance = currentDistance + 1
-        const existingDistance = distanceById.get(neighborId)
-        const existingInfluence = anchorInfluenceById.get(neighborId) ?? 0
-        if (existingDistance === undefined || nextDistance < existingDistance) {
-          distanceById.set(neighborId, nextDistance)
-          anchorInfluenceById.set(neighborId, currentInfluence)
-          queue.push(neighborId)
-        } else if (nextDistance === existingDistance && currentInfluence > existingInfluence) {
-          anchorInfluenceById.set(neighborId, currentInfluence)
-        }
-      }
-    }
-
-    const typeMatches = (entityType: string | undefined, allowedTypes: string[]) =>
-      allowedTypes.length === 0 || (!!entityType && allowedTypes.some(type => type.toLowerCase() === entityType.toLowerCase()))
 
     const matchedEdges: Array<{
       edge: SemanticEdge
@@ -1117,77 +1258,32 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       const target = entityById.get(edge.targetEntityId)
       if (!source || !target) continue
 
-      if (selectedPredicates.size > 0 && !selectedPredicates.has(edge.relation)) {
+      const match = edgeMatchesIntent({
+        sourceEntityId: edge.sourceEntityId,
+        targetEntityId: edge.targetEntityId,
+        relation: edge.relation,
+        intent: parsed.intent,
+        sourceAnchorIds: resolvedAnchors.sourceAnchorIds,
+        targetAnchorIds: resolvedAnchors.targetAnchorIds,
+      })
+      if (!match.match && match.reason === 'predicate') {
         trace.droppedByPredicate++
+        continue
+      }
+      if (!match.match) {
+        trace.droppedByDirection++
         continue
       }
 
       const anchorScore = Math.max(
-        anchorInfluenceById.get(edge.sourceEntityId) ?? 0,
-        anchorInfluenceById.get(edge.targetEntityId) ?? 0,
+        anchorScoreById.get(edge.sourceEntityId) ?? 0,
+        anchorScoreById.get(edge.targetEntityId) ?? 0,
+        1,
       )
-      if (anchorScore <= 0) continue
-
-      const sourceIsAnchor = anchorIds.has(edge.sourceEntityId)
-      const targetIsAnchor = anchorIds.has(edge.targetEntityId)
-      const directAnchorTouch = sourceIsAnchor || targetIsAnchor
-
-      if (parsed.intent.mode === 'attribute') {
-        if (!directAnchorTouch) continue
-
-        const resultEntityIds = uniqueIds([
-          ...(sourceIsAnchor && parsed.anchorSide !== 'target' ? [edge.targetEntityId] : []),
-          ...(targetIsAnchor && parsed.anchorSide !== 'source' ? [edge.sourceEntityId] : []),
-        ])
-        if (resultEntityIds.length === 0) {
-          trace.droppedByDirection++
-          continue
-        }
-
-        const filteredResultEntityIds = resultEntityIds.filter(entityId =>
-          typeMatches(entityById.get(entityId)?.entityType, parsed.intent.targetEntityTypes),
-        )
-        if (filteredResultEntityIds.length === 0) {
-          trace.droppedByType++
-          continue
-        }
-
-        matchedEdges.push({
-          edge,
-          score: anchorScore * (predicateConfidenceByName.get(edge.relation) ?? 0.8) * Math.log2(1 + edge.weight),
-          resultEntityIds: filteredResultEntityIds,
-        })
-        continue
-      }
-
-      let resultEntityIds = sourceIsAnchor && !targetIsAnchor
-        ? [edge.targetEntityId]
-        : targetIsAnchor && !sourceIsAnchor
-          ? [edge.sourceEntityId]
-          : [edge.sourceEntityId, edge.targetEntityId]
-
-      if (parsed.anchorSide !== 'either') {
-        const hasAnchorOnRequestedSide = parsed.anchorSide === 'source'
-          ? sourceIsAnchor
-          : targetIsAnchor
-        if (!directAnchorTouch || !hasAnchorOnRequestedSide) {
-          trace.droppedByDirection++
-          continue
-        }
-      }
-
-      resultEntityIds = resultEntityIds.filter(entityId =>
-        typeMatches(entityById.get(entityId)?.entityType, parsed.intent.targetEntityTypes),
-      )
-      if (parsed.intent.targetEntityTypes.length > 0 && resultEntityIds.length === 0) {
-        trace.droppedByType++
-        continue
-      }
-
       matchedEdges.push({
         edge,
         score: anchorScore * (predicateConfidenceByName.get(edge.relation) ?? 1) * Math.log2(1 + edge.weight),
-        resultEntityIds: uniqueIds(resultEntityIds),
+        resultEntityIds: uniqueIds([edge.sourceEntityId, edge.targetEntityId]),
       })
     }
 
@@ -1196,14 +1292,16 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     trace.matchedRelations = [...new Set(matchedEdges.map(item => item.edge.relation))]
 
     const entityScoreById = new Map<string, number>()
+    for (const anchor of anchors) {
+      entityScoreById.set(anchor.id, anchorScoreById.get(anchor.id) ?? 1)
+    }
     for (const match of matchedEdges) {
       for (const entityId of match.resultEntityIds) {
-        if (parsed.intent.mode === 'relationship' && anchorIds.has(entityId)) continue
         entityScoreById.set(entityId, Math.max(entityScoreById.get(entityId) ?? 0, match.score))
       }
     }
 
-    const entityResults = include.entities
+    const hydratedEntityResults = include.entities
       ? (await hydrateEntityResultsById([...entityScoreById.keys()], undefined, identity)).map(entity => ({
           ...entity,
           properties: {
@@ -1212,20 +1310,20 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
           },
         }))
           .sort((a, b) => Number((b.properties ?? {}).exploreScore ?? 0) - Number((a.properties ?? {}).exploreScore ?? 0))
-          .slice(0, entityLimit)
       : []
+    const entityResults = applyRequestedLimit(hydratedEntityResults, entityLimit)
 
     const facts = include.facts
-      ? matchedEdges
-          .slice(0, factLimit)
+      ? applyRequestedLimit(matchedEdges, factLimit)
           .map(match => factResultFromEdge(match.edge, nameMap, match.score))
       : []
 
     let passages: PassageResult[] | undefined
     if (include.passages) {
+      const passageEntityLimit = Math.max(1, Math.min(entityLimit ?? 10, 10))
       const topEntityIds = [...entityScoreById.entries()]
         .sort((a, b) => b[1] - a[1])
-        .slice(0, Math.max(1, Math.min(entityLimit, 10)))
+        .slice(0, passageEntityLimit)
         .map(([entityId]) => entityId)
 
       const passageMap = new Map<string, PassageResult>()
@@ -1318,14 +1416,20 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const entitySeedWeight = opts.entitySeedWeight ?? 1.0
     const factCandidateLimit = opts.factCandidateLimit ?? 200
     const factFilterInputLimit = opts.factFilterInputLimit ?? 8
-    const factSeedLimit = opts.factSeedLimit ?? 5
     const passageSeedLimit = opts.passageSeedLimit ?? 200
     const maxIterations = opts.maxPprIterations ?? 50
     const minPprScore = opts.minPprScore ?? 1e-10
     const maxExpansionEdgesPerEntity = opts.maxExpansionEdgesPerEntity ?? 100
     const factChainLimit = opts.factChainLimit ?? 3
 
+    const parsed = await parseGraphQueryIntent({
+      query,
+      llm: explorationLlm,
+    })
+
     const emptyTrace = (): GraphSearchTrace => ({
+      intent: parsed.intent,
+      parser: parsed.parser,
       entitySeedCount: 0,
       factSeedCount: 0,
       passageSeedCount: 0,
@@ -1348,8 +1452,12 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       return { results: [], facts: [], entities: [], factChains: [], trace: emptyTrace() }
     }
 
-    const decomposition = decomposeGraphQuery(query)
-    const queryEmbedding = await embedding.embed(query)
+    if (parsed.parser !== 'llm' || graphIntentIsEmpty(parsed.intent)) {
+      return { results: [], facts: [], entities: [], factChains: [], trace: emptyTrace() }
+    }
+
+    const querySearchText = intentSearchText(parsed.intent, query)
+    const queryEmbedding = await embedding.embed(querySearchText)
     const chunksTable = await config.resolveChunksTable(embeddingModelKey(embedding))
 
     const factCandidates = memoryStore.searchFacts
@@ -1360,34 +1468,32 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       ? await graph.getEntitiesBatch(candidateEntityIds, identity)
       : []
     const entityNameById = new Map(candidateEntities.map(entity => [entity.id, entity.name]))
-    const rankedFactCandidates = rerankFactRecords(factCandidates, query, entityNameById)
-    let selectedFacts = rankedFactCandidates.slice(0, factSeedLimit)
-    if (opts.factFilter && config.factRelevanceFilter && factCandidates.length > 0) {
-      const filterInput = await hydrateFacts(rankedFactCandidates.slice(0, factFilterInputLimit), identity)
+    const rankedFactCandidates = rerankFactRecords(factCandidates, querySearchText, entityNameById)
+    const resolvedAnchors = await resolveIntentAnchors(parsed.intent, identity, 5)
+    let selectedFacts = rankedFactCandidates.filter(fact => factMatchesIntent(fact, {
+      intent: parsed.intent,
+      sourceAnchorIds: resolvedAnchors.sourceAnchorIds,
+      targetAnchorIds: resolvedAnchors.targetAnchorIds,
+    }).match)
+    if (opts.factFilter && config.factRelevanceFilter && selectedFacts.length > 0) {
+      const filterInput = await hydrateFacts(selectedFacts.slice(0, Math.max(factFilterInputLimit, selectedFacts.length)), identity)
       try {
         const selectedIds = new Set(await config.factRelevanceFilter(query, filterInput))
-        selectedFacts = rankedFactCandidates.filter(f => selectedIds.has(f.id)).slice(0, factSeedLimit)
+        selectedFacts = selectedFacts.filter(f => selectedIds.has(f.id))
       } catch {
-        selectedFacts = rankedFactCandidates.slice(0, factSeedLimit)
+        // Keep the strict graph-intent matches when optional LLM fact filtering fails.
       }
     }
 
     const entitySeeds = new Map<string, number>()
+    for (const anchor of resolvedAnchors.anchors) {
+      const score = normalizeSeedScore(anchor.similarity ?? 1) * entitySeedWeight
+      entitySeeds.set(anchor.id, Math.max(entitySeeds.get(anchor.id) ?? 0, score))
+    }
     for (const fact of selectedFacts) {
       const score = normalizeSeedScore(fact.similarity ?? 0.5) * entitySeedWeight
       entitySeeds.set(fact.sourceEntityId, Math.max(entitySeeds.get(fact.sourceEntityId) ?? 0, score))
       entitySeeds.set(fact.targetEntityId, Math.max(entitySeeds.get(fact.targetEntityId) ?? 0, score))
-    }
-
-    const entityQueries = uniqueIds([
-      query,
-      ...decomposition.entityPhrases,
-      ...decomposition.subqueries,
-    ]).slice(0, 8)
-    const entityMatches = await collectEntityCandidates(entityQueries, identity, 10)
-    for (const entity of entityMatches) {
-      const score = normalizeSeedScore(entity.similarity ?? 0.5) * entitySeedWeight * 0.75
-      entitySeeds.set(entity.id, Math.max(entitySeeds.get(entity.id) ?? 0, score))
     }
 
     const passageSeeds = new Map<string, number>()
@@ -1438,14 +1544,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
           limit: Math.max(100, activeEntityIds.size * maxExpansionEdgesPerEntity),
         })
       : []
-    const entityIdsByPassage = new Map<string, Set<string>>()
     for (const edge of passageEntityEdges) {
-      let passageEntityIds = entityIdsByPassage.get(edge.passageId)
-      if (!passageEntityIds) {
-        passageEntityIds = new Set()
-        entityIdsByPassage.set(edge.passageId, passageEntityIds)
-      }
-      passageEntityIds.add(edge.entityId)
       const weight = Math.log2(1 + edge.weight)
       addWeightedEdge(edge.entityId, edge.passageId, weight)
       addWeightedEdge(edge.passageId, edge.entityId, weight)
@@ -1487,10 +1586,10 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const selectedFactResults = await hydrateFacts(selectedFacts, identity)
     const factChains = buildFactChains(selectedFactResults, factChainLimit)
     const evidenceEntityIds = uniqueIds([
+      ...resolvedAnchors.anchors.map(anchor => anchor.id),
       ...entitySeeds.keys(),
       ...selectedFactResults.flatMap(fact => [fact.sourceEntityId, fact.targetEntityId]),
       ...factChains.flatMap(chain => chain.entityIds),
-      ...passageIds.flatMap(passageId => [...(entityIdsByPassage.get(passageId) ?? [])]),
     ])
     const entityOrder = new Map(evidenceEntityIds.map((id, index) => [id, index]))
     const selectedEntityRows = await graph.getEntitiesBatch(evidenceEntityIds, identity)
@@ -1498,8 +1597,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       .sort((a, b) => (entityOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (entityOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER))
     const passageQueryTokens = queryTokens([
       query,
-      ...decomposition.terms,
-      ...decomposition.entityPhrases,
+      ...parsed.intent.subqueries,
+      ...parsed.intent.sourceEntityQueries,
+      ...parsed.intent.targetEntityQueries,
     ].join(' '))
     const results = passageRows
       .map(row => {
@@ -1527,6 +1627,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       .slice(0, count)
 
     const trace: GraphSearchTrace = {
+      intent: parsed.intent,
+      parser: parsed.parser,
       entitySeedCount: entitySeeds.size,
       factSeedCount: selectedFacts.length,
       passageSeedCount: passageSeeds.size,
@@ -1537,7 +1639,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       candidatesAfterMerge: results.length,
       topGraphScores: results.slice(0, 5).map(result => result.score),
       selectedFactIds: selectedFacts.map(fact => fact.id),
-      selectedEntityIds: [...entitySeeds.keys()],
+      selectedEntityIds: evidenceEntityIds,
       selectedPassageIds: [...passageSeeds.keys()].slice(0, 20),
       finalPassageIds: results.map(result => result.passageId),
       selectedFactTexts: selectedFactResults.map(fact => ({ id: fact.id, content: formatFactEvidence(fact) })),
@@ -1571,19 +1673,31 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const nameMap = new Map(entities.map(entity => [entity.id, entity.name]))
     return facts.map(fact => {
       const properties = (fact as unknown as { properties?: Record<string, unknown> }).properties
+      const sourceEntityName = nameMap.get(fact.sourceEntityId)
+      const targetEntityName = nameMap.get(fact.targetEntityId)
+      const factText = fact.factText || factTextFor(sourceEntityName ?? fact.sourceEntityId, fact.relation, targetEntityName ?? fact.targetEntityId)
+      const description = cleanOptionalText(fact.description)
+        ?? propertyString(properties, 'relationshipDescription')
+        ?? propertyString(properties, 'description')
+      const evidenceText = cleanOptionalText(fact.evidenceText)
+        ?? propertyString(properties, 'evidenceText')
+      const factSearchText = cleanOptionalText(fact.factSearchText)
+        ?? buildFactSearchText({ factText, description, evidenceText })
+      const sourceChunkId = cleanOptionalText(fact.sourceChunkId)
+        ?? propertyString(properties, 'sourceChunkId')
       return {
         id: fact.id,
         edgeId: fact.edgeId,
         sourceEntityId: fact.sourceEntityId,
-        sourceEntityName: nameMap.get(fact.sourceEntityId),
+        sourceEntityName,
         targetEntityId: fact.targetEntityId,
-        targetEntityName: nameMap.get(fact.targetEntityId),
+        targetEntityName,
         relation: fact.relation,
-        factText: fact.factText,
-        description: fact.description,
-        evidenceText: fact.evidenceText,
-        factSearchText: fact.factSearchText,
-        sourceChunkId: fact.sourceChunkId,
+        factText,
+        description,
+        evidenceText,
+        factSearchText,
+        sourceChunkId,
         weight: fact.weight,
         evidenceCount: fact.evidenceCount,
         similarity: fact.similarity,

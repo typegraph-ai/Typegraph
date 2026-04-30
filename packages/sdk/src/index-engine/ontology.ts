@@ -112,7 +112,7 @@ const GENERAL_RELATIONS = [
   'CREATED', 'DESTROYED', 'SUPPORTED', 'OPPOSED',
   'NAMED_AFTER', 'KNOWN_AS', 'SYMBOLIZES',
   'REFERS_TO', 'DESCRIBED', 'COMPARED_WITH',
-  'FOUGHT_IN', 'SIGNED', 'OWNS', 'OWNED_BY',
+  'FOUGHT_IN', 'SIGNED', 'OWNS',
 ] as const
 
 /**
@@ -136,7 +136,7 @@ Event relations: ${EVENT_RELATIONS.join(', ')}
 Technology/Law: ${TECHNICAL_RELATIONS.join(', ')}
 General (any pair): ${GENERAL_RELATIONS.join(', ')}
 
-Only invent a new predicate if NONE of the above fit the relationship.`
+Use ONLY predicates from this vocabulary. Do not invent new predicate names.`
 }
 
 /** All canonical predicates from the ontology (flattened). */

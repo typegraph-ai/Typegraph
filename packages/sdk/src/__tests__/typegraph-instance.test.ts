@@ -175,13 +175,15 @@ describe('typegraphInit', () => {
       const exploreResult: GraphExploreResult = {
         intent: {
           rawQuery: 'plotline employees',
-          anchorText: 'Plotline',
-          mode: 'relationship',
+          sourceEntityQueries: [],
+          targetEntityQueries: ['Plotline'],
           predicates: [{
             name: 'WORKS_FOR',
             confidence: 0.95,
           }],
-          targetEntityTypes: ['person'],
+          answerSide: 'source',
+          subqueries: ['plotline employees'],
+          mode: 'relationship',
         },
         anchors: [{
           id: 'ent_plotline',

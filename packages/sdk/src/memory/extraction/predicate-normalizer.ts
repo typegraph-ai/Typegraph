@@ -1,4 +1,31 @@
 import type { EmbeddingProvider } from '../../embedding/provider.js'
+import { ALL_PREDICATES } from '../../index-engine/ontology.js'
+
+export interface PredicateNormalizationResult {
+  original: string
+  predicate: string
+  valid: boolean
+  swapSubjectObject: boolean
+  symmetric: boolean
+}
+
+const SYMMETRIC_PREDICATES = new Set<string>([
+  'ALLIED_WITH',
+  'BORDERS',
+  'COLLABORATED_WITH',
+  'COMPARED_WITH',
+  'COMPATIBLE_WITH',
+  'COMPETES_WITH',
+  'CONNECTED_TO',
+  'CORRESPONDS_WITH',
+  'EQUIVALENT_TO',
+  'MARRIED',
+  'MERGED_WITH',
+  'NEAR',
+  'PARTNERED_WITH',
+  'RIVALED',
+  'SIBLING_OF',
+])
 
 /**
  * Synonym groups: first element is canonical form, rest map to it.
@@ -10,16 +37,15 @@ import type { EmbeddingProvider } from '../../embedding/provider.js'
  */
 const SYNONYM_GROUPS: readonly string[][] = [
   // ── Person → Person ──
-  ['MARRIED', 'MARRIED_TO', 'WED', 'SPOUSE_OF'],
+  ['MARRIED', 'MARRIED_TO', 'WED', 'SPOUSE_OF', 'HUSBAND_OF', 'WIFE_OF'],
   ['DIVORCED', 'DIVORCED_FROM', 'SEPARATED_FROM'],
   ['CHILD_OF', 'SON_OF', 'DAUGHTER_OF', 'OFFSPRING_OF'],
   ['PARENT_OF', 'FATHER_OF', 'MOTHER_OF'],
   ['SIBLING_OF', 'BROTHER_OF', 'SISTER_OF'],
   ['MENTORED', 'MENTORED_BY', 'TRAINED', 'COACHED'],
-  ['APPRENTICED_UNDER', 'STUDIED_UNDER', 'PUPIL_OF'],
   ['SUCCEEDED', 'SUCCEEDED_BY', 'REPLACED'],
   ['PRECEDED', 'CAME_BEFORE', 'PRIOR_TO'],
-  ['INFLUENCED', 'INFLUENCED_BY', 'INSPIRED', 'INSPIRED_BY'],
+  ['INFLUENCED', 'INSPIRED'],
   ['RIVALED', 'RIVAL_OF', 'COMPETED_AGAINST'],
   ['OPPOSED', 'FOUGHT_AGAINST', 'RESISTED', 'CRITICIZED', 'CHALLENGED'],
   ['ALLIED_WITH', 'ALLIED_TO', 'ALIGNED_WITH'],
@@ -29,15 +55,15 @@ const SYNONYM_GROUPS: readonly string[][] = [
   ['EMPLOYED', 'HIRED', 'HIRED_BY'],
   ['REPORTED_TO', 'SUBORDINATE_OF', 'UNDER'],
   ['SUPERVISED', 'MANAGED'],
-  ['KILLED', 'MURDERED', 'SLAIN_BY', 'ASSASSINATED'],
+  ['KILLED', 'MURDERED', 'ASSASSINATED'],
   ['BETRAYED', 'BETRAYED_BY', 'DECEIVED'],
   ['RESCUED', 'SAVED', 'LIBERATED'],
   ['SERVED', 'SERVED_UNDER', 'IN_SERVICE_OF'],
 
   // ── Person → Organization ──
-  ['WORKS_FOR', 'EMPLOYED_BY', 'EMPLOYED_AT', 'WORKS_AT'],
-  ['WORKED_FOR', 'WORKED_AT', 'WAS_EMPLOYED_BY', 'WAS_EMPLOYED_AT'],
-  ['FOUNDED', 'FOUNDED_BY', 'CO_FOUNDED', 'CO_FOUNDED_BY', 'ESTABLISHED'],
+  ['WORKS_FOR', 'EMPLOYED_AT', 'WORKS_AT'],
+  ['WORKED_FOR', 'WORKED_AT'],
+  ['FOUNDED', 'CO_FOUNDED', 'ESTABLISHED'],
   ['LEADS', 'LEADS_AT', 'HEADS', 'DIRECTS', 'CHAIRS'],
   ['LED', 'LED_AT', 'HEADED', 'CHAIRED'],
   ['ADVISES', 'ADVISES_AT', 'CONSULTS_FOR'],
@@ -67,17 +93,17 @@ const SYNONYM_GROUPS: readonly string[][] = [
   ['ESCAPED_FROM', 'FLED', 'FLED_FROM'],
 
   // ── Person → Work of Art / Product ──
-  ['WROTE', 'AUTHORED', 'WRITTEN_BY', 'COMPOSED', 'PENNED'],
-  ['DIRECTED', 'DIRECTED_BY', 'HELMED'],
-  ['ILLUSTRATED', 'ILLUSTRATED_BY', 'DREW'],
-  ['DESIGNED', 'DESIGNED_BY'],
-  ['INVENTED', 'INVENTED_BY'],
+  ['WROTE', 'AUTHORED', 'COMPOSED', 'PENNED'],
+  ['DIRECTED', 'HELMED'],
+  ['ILLUSTRATED', 'DREW'],
+  ['DESIGNED'],
+  ['INVENTED'],
   ['PERFORMED_IN', 'APPEARED_IN', 'STARRED_IN', 'ACTED_IN'],
-  ['NARRATED', 'NARRATED_BY', 'VOICED'],
-  ['EDITED', 'EDITED_BY', 'REVISED'],
-  ['TRANSLATED', 'TRANSLATED_BY'],
-  ['REVIEWED', 'REVIEWED_BY', 'CRITIQUED'],
-  ['COMMISSIONED', 'COMMISSIONED_BY', 'ORDERED'],
+  ['NARRATED', 'VOICED'],
+  ['EDITED', 'REVISED'],
+  ['TRANSLATED'],
+  ['REVIEWED', 'CRITIQUED'],
+  ['COMMISSIONED', 'ORDERED'],
   ['DEDICATED_TO', 'IN_HONOR_OF'],
 
   // ── Person → Concept / Event ──
@@ -100,7 +126,7 @@ const SYNONYM_GROUPS: readonly string[][] = [
   ['AWARDED', 'RECEIVED', 'HONORED_WITH', 'GRANTED'],
   ['NOMINATED', 'NOMINATED_FOR', 'SHORTLISTED'],
   ['DIAGNOSED', 'DIAGNOSED_WITH', 'AFFLICTED_BY', 'SUFFERED_FROM'],
-  ['TREATED', 'TREATED_BY', 'CURED_BY'],
+  ['TREATED'],
 
   // ── Organization → Organization ──
   ['ACQUIRED', 'BOUGHT', 'PURCHASED'],
@@ -108,12 +134,12 @@ const SYNONYM_GROUPS: readonly string[][] = [
   ['SPUN_OFF', 'SPUN_OFF_FROM', 'DIVESTED'],
   ['PARTNERED_WITH', 'PARTNER_OF', 'IN_PARTNERSHIP_WITH'],
   ['COMPETES_WITH', 'COMPETITOR_OF', 'RIVALS'],
-  ['SUED', 'SUED_BY', 'LITIGATED_AGAINST'],
-  ['REGULATED_BY', 'OVERSEEN_BY', 'SUPERVISED_BY'],
-  ['SANCTIONED', 'SANCTIONED_BY', 'PENALIZED'],
-  ['FUNDED', 'FUNDED_BY', 'FINANCED', 'FINANCED_BY'],
-  ['SUBSIDIZED', 'SUBSIDIZED_BY'],
-  ['SUPPLIED', 'SUPPLIED_BY', 'VENDOR_OF', 'SUPPLIER_TO'],
+  ['SUED', 'LITIGATED_AGAINST'],
+  ['REGULATED_BY', 'OVERSEEN_BY'],
+  ['SANCTIONED', 'PENALIZED'],
+  ['FUNDED', 'FINANCED'],
+  ['SUBSIDIZED'],
+  ['SUPPLIED', 'VENDOR_OF', 'SUPPLIER_TO'],
 
   // ── Organization → Location ──
   ['HEADQUARTERED_IN', 'BASED_IN', 'HQ_IN'],
@@ -125,7 +151,7 @@ const SYNONYM_GROUPS: readonly string[][] = [
 
   // ── Organization → Product ──
   ['PRODUCED', 'MADE', 'MANUFACTURED'],
-  ['PUBLISHED', 'PUBLISHED_BY', 'PUBLISHED_IN', 'RELEASED', 'ISSUED'],
+  ['PUBLISHED', 'PUBLISHED_IN', 'RELEASED', 'ISSUED'],
   ['DISTRIBUTES', 'DISTRIBUTES_BY', 'SELLS'],
   ['LICENSES', 'LICENSED_BY', 'LICENSED_TO'],
   ['LAUNCHED', 'INTRODUCED', 'UNVEILED', 'DEBUTED'],
@@ -155,13 +181,13 @@ const SYNONYM_GROUPS: readonly string[][] = [
   ['FOLLOWED', 'CAME_AFTER'],
 
   // ── Technology / Law ──
-  ['IMPLEMENTS', 'IMPLEMENTS_BY', 'REALIZES'],
+  ['IMPLEMENTS', 'REALIZES'],
   ['REQUIRES', 'DEPENDS_ON', 'NEEDS'],
   ['COMPATIBLE_WITH', 'WORKS_WITH', 'INTEROPERABLE_WITH'],
-  ['REPLACES', 'REPLACED_BY'],
+  ['REPLACES'],
   ['DEPRECATED_BY', 'OBSOLETED_BY'],
   ['GOVERNS', 'CONTROLS', 'OVERSEES'],
-  ['REGULATES', 'REGULATES_BY'],
+  ['REGULATES'],
   ['PROHIBITS', 'BANS', 'FORBIDS'],
   ['PERMITS', 'ALLOWS', 'AUTHORIZES'],
   ['ENFORCED_BY', 'ENFORCED', 'POLICED_BY'],
@@ -178,14 +204,83 @@ const SYNONYM_GROUPS: readonly string[][] = [
   ['DESCRIBED', 'DESCRIBES', 'DEPICTED', 'PORTRAYED', 'CHARACTERIZED'],
   ['COMPARED_WITH', 'COMPARED_TO', 'LIKENED_TO', 'CONTRASTED_WITH'],
   ['FOUGHT_IN', 'SERVED_IN', 'BATTLED_IN'],
-  ['SIGNED', 'SIGNED_BY', 'SIGNED_WITH'],
+  ['SIGNED', 'SIGNED_WITH'],
   ['OWNS', 'OWNER_OF', 'POSSESSED'],
-  ['OWNED_BY', 'ACQUIRED_BY', 'PROPERTY_OF'],
 
   // ── Announcement / Reporting (kept from original) ──
   ['ANNOUNCED', 'DECLARED', 'PROCLAIMED', 'STATED'],
   ['REPORTED', 'DOCUMENTED', 'RECORDED', 'CHRONICLED'],
 ]
+
+const INVERSE_SYNONYMS = new Map<string, string>([
+  ['KILLED_BY', 'KILLED'],
+  ['SLAIN_BY', 'KILLED'],
+  ['MURDERED_BY', 'KILLED'],
+  ['ASSASSINATED_BY', 'KILLED'],
+  ['BETRAYED_BY', 'BETRAYED'],
+  ['SUCCEEDED_BY', 'SUCCEEDED'],
+  ['INFLUENCED_BY', 'INFLUENCED'],
+  ['INSPIRED_BY', 'INSPIRED'],
+  ['MENTORED_BY', 'MENTORED'],
+  ['TRAINED_BY', 'MENTORED'],
+  ['COACHED_BY', 'MENTORED'],
+  ['HIRED_BY', 'EMPLOYED'],
+  ['SUPERVISED_BY', 'SUPERVISED'],
+  ['MANAGED_BY', 'SUPERVISED'],
+  ['EMPLOYED_BY', 'WORKS_FOR'],
+  ['WAS_EMPLOYED_BY', 'WORKED_FOR'],
+  ['FOUNDED_BY', 'FOUNDED'],
+  ['CO_FOUNDED_BY', 'CO_FOUNDED'],
+  ['WRITTEN_BY', 'WROTE'],
+  ['AUTHORED_BY', 'AUTHORED'],
+  ['COMPOSED_BY', 'COMPOSED'],
+  ['DIRECTED_BY', 'DIRECTED'],
+  ['ILLUSTRATED_BY', 'ILLUSTRATED'],
+  ['DESIGNED_BY', 'DESIGNED'],
+  ['INVENTED_BY', 'INVENTED'],
+  ['NARRATED_BY', 'NARRATED'],
+  ['EDITED_BY', 'EDITED'],
+  ['TRANSLATED_BY', 'TRANSLATED'],
+  ['REVIEWED_BY', 'REVIEWED'],
+  ['COMMISSIONED_BY', 'COMMISSIONED'],
+  ['TREATED_BY', 'TREATED'],
+  ['CURED_BY', 'TREATED'],
+  ['SUED_BY', 'SUED'],
+  ['SANCTIONED_BY', 'SANCTIONED'],
+  ['FUNDED_BY', 'FUNDED'],
+  ['FINANCED_BY', 'FUNDED'],
+  ['SUBSIDIZED_BY', 'SUBSIDIZED'],
+  ['SUPPLIED_BY', 'SUPPLIED'],
+  ['PUBLISHED_BY', 'PUBLISHED'],
+  ['DISTRIBUTES_BY', 'DISTRIBUTES'],
+  ['DISTRIBUTED_BY', 'DISTRIBUTES'],
+  ['LICENSED_BY', 'LICENSES'],
+  ['LICENSED_TO', 'LICENSES'],
+  ['IMPLEMENTS_BY', 'IMPLEMENTS'],
+  ['REPLACED_BY', 'REPLACES'],
+  ['REGULATES_BY', 'REGULATES'],
+  ['ENFORCED', 'ENFORCED_BY'],
+  ['AMENDED_BY', 'AMENDED_BY'],
+  ['MODIFIED_BY', 'AMENDED_BY'],
+  ['REVISED_BY', 'AMENDED_BY'],
+  ['OWNED_BY', 'OWNS'],
+  ['ACQUIRED_BY', 'ACQUIRED'],
+  ['PROPERTY_OF', 'OWNS'],
+  ['REPRESENTED_BY', 'REPRESENTS'],
+  ['SIGNED_BY', 'SIGNED'],
+])
+
+function sanitizePredicate(predicate: string): string {
+  return predicate
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_')
+    .replace(/[^A-Z0-9_]/g, '')
+}
+
+export function isSymmetricPredicate(predicate: string): boolean {
+  return SYMMETRIC_PREDICATES.has(predicate)
+}
 
 /**
  * Clusters semantically equivalent predicates into canonical forms.
@@ -195,28 +290,24 @@ const SYNONYM_GROUPS: readonly string[][] = [
  *
  * Resolution order:
  * 1. Exact canonical match (O(1))
- * 2. Static synonym table (O(1) deterministic)
- * 3. Resolved cache (skips embedding for repeated surface forms)
- * 4. Embedding similarity with tense guard (prevents cross-tense merging)
- * 5. Register as new canonical form
+ * 2. Static synonym table (O(1))
+ * 3. Inverse synonym table with subject/object swap metadata
+ * 4. Ontology validation; unknown predicates are rejected
  */
 export class PredicateNormalizer {
-  private readonly embedding: EmbeddingProvider
-  private readonly threshold: number
-  private readonly canonicalPredicates = new Map<string, number[]>() // predicate → embedding
-  // Cache: normalized text → canonical predicate (skips embedding for repeated surface forms)
-  private readonly resolvedCache = new Map<string, string>()
-  // Static synonym lookup: EMPLOYED_BY → WORKS_FOR, etc.
+  private readonly canonicalPredicates = new Set<string>()
   private readonly synonymMap = new Map<string, string>()
+  private readonly inverseSynonymMap = new Map<string, string>()
 
-  constructor(embedding: EmbeddingProvider, threshold = 0.85, extraSynonyms?: readonly string[][]) {
-    this.embedding = embedding
-    this.threshold = threshold
+  constructor(_embedding: EmbeddingProvider, _threshold = 0.85, extraSynonyms?: readonly string[][]) {
     for (const group of [...SYNONYM_GROUPS, ...(extraSynonyms ?? [])]) {
-      const canonical = group[0]!
+      const canonical = sanitizePredicate(group[0]!)
       for (const synonym of group) {
-        this.synonymMap.set(synonym, canonical)
+        this.synonymMap.set(sanitizePredicate(synonym), canonical)
       }
+    }
+    for (const [synonym, canonical] of INVERSE_SYNONYMS) {
+      this.inverseSynonymMap.set(sanitizePredicate(synonym), sanitizePredicate(canonical))
     }
   }
 
@@ -224,81 +315,28 @@ export class PredicateNormalizer {
    * Normalize a predicate to its canonical form.
    */
   async normalize(predicate: string): Promise<string> {
-    // 1. Exact match — skip everything
-    if (this.canonicalPredicates.has(predicate)) return predicate
+    return this.normalizeWithDirection(predicate).predicate
+  }
 
-    // 2. Static synonym lookup (O(1))
-    const synonymCanonical = this.synonymMap.get(predicate)
-    if (synonymCanonical) {
-      this.resolvedCache.set(predicate.replace(/_/g, ' ').toLowerCase(), synonymCanonical)
-      if (!this.canonicalPredicates.has(synonymCanonical)) {
-        const embedding = await this.embedding.embed(synonymCanonical.replace(/_/g, ' ').toLowerCase())
-        this.canonicalPredicates.set(synonymCanonical, embedding)
-      }
-      return synonymCanonical
+  normalizeWithDirection(predicate: string): PredicateNormalizationResult {
+    const original = sanitizePredicate(predicate)
+    const direct = this.synonymMap.get(original) ?? original
+    const inverse = this.inverseSynonymMap.get(original)
+    const normalized = inverse ?? direct
+    const valid = (ALL_PREDICATES as ReadonlySet<string>).has(normalized)
+    if (valid) this.canonicalPredicates.add(normalized)
+
+    return {
+      original,
+      predicate: normalized,
+      valid,
+      swapSubjectObject: !!inverse,
+      symmetric: isSymmetricPredicate(normalized),
     }
-
-    // 3. Resolved cache (catches variants we've already mapped)
-    const normalizedText = predicate.replace(/_/g, ' ').toLowerCase()
-    const cached = this.resolvedCache.get(normalizedText)
-    if (cached) return cached
-
-    // 4. Embedding comparison with tense guard
-    const predicateEmbedding = await this.embedding.embed(normalizedText)
-
-    let bestMatch: string | null = null
-    let bestSimilarity = 0
-
-    for (const [canonical, embedding] of this.canonicalPredicates) {
-      const similarity = cosineSimilarity(predicateEmbedding, embedding)
-      if (similarity > bestSimilarity) {
-        bestSimilarity = similarity
-        bestMatch = canonical
-      }
-    }
-
-    if (bestMatch && bestSimilarity >= this.threshold && !hasTenseMismatch(predicate, bestMatch)) {
-      this.resolvedCache.set(normalizedText, bestMatch)
-      return bestMatch
-    }
-
-    // 5. Register as new canonical predicate
-    this.canonicalPredicates.set(predicate, predicateEmbedding)
-    this.resolvedCache.set(normalizedText, predicate)
-    return predicate
   }
 
   /** Number of canonical predicates registered. */
   get size(): number {
     return this.canonicalPredicates.size
   }
-}
-
-/**
- * Detects tense mismatch between two SCREAMING_SNAKE_CASE predicates.
- * Prevents embedding fallback from merging PLAYS_FOR with PLAYED_FOR.
- */
-function hasTenseMismatch(a: string, b: string): boolean {
-  const verbA = a.split('_')[0] ?? ''
-  const verbB = b.split('_')[0] ?? ''
-  const isPast = (v: string) => v.endsWith('ED')
-  const isPresent = (v: string) => v.endsWith('S') || v.endsWith('ES')
-  return (isPast(verbA) && isPresent(verbB)) || (isPast(verbB) && isPresent(verbA))
-}
-
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length === 0 || b.length === 0 || a.length !== b.length) return 0
-
-  let dot = 0
-  let normA = 0
-  let normB = 0
-
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i]! * b[i]!
-    normA += a[i]! * a[i]!
-    normB += b[i]! * b[i]!
-  }
-
-  const denom = Math.sqrt(normA) * Math.sqrt(normB)
-  return denom === 0 ? 0 : dot / denom
 }

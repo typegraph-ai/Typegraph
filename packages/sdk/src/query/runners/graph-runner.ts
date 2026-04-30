@@ -1,4 +1,4 @@
-import type { EntityResult, FactResult, KnowledgeGraphBridge } from '../../types/graph-bridge.js'
+import type { EntityResult, FactResult, GraphSearchTrace, KnowledgeGraphBridge } from '../../types/graph-bridge.js'
 import type { typegraphIdentity } from '../../types/identity.js'
 import type { QueryGraphOptions } from '../../types/query.js'
 import type { RetrievalCandidate } from '../merger.js'
@@ -35,6 +35,7 @@ export interface GraphRunResult {
   results: RetrievalCandidate[]
   facts: FactResult[]
   entities: EntityResult[]
+  trace?: GraphSearchTrace | undefined
 }
 
 export class GraphRunner {
@@ -67,6 +68,7 @@ export class GraphRunner {
     return {
       facts: graphResult.facts,
       entities: graphResult.entities,
+      trace: graphResult.trace,
       results: graphResult.results.map(result => ({
         content: result.content,
         bucketId: result.bucketId,

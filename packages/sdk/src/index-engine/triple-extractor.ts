@@ -604,7 +604,11 @@ ${getPredicatesForPrompt()}
 
 Relationship rules:
 - Subject and object MUST be entities from Step 1 — do not introduce new entities
-- ALWAYS prefer a predicate from the vocabulary above. Only invent a new predicate if NONE fit.
+- Use ONLY predicates from the vocabulary above. Do not invent relation names; omit the relationship if no predicate fits.
+- Preserve logical direction. Passive voice must be converted to the active graph direction: "X was killed by Y" becomes Y KILLED X; "X was founded by Y" becomes Y FOUNDED X.
+- Use MARRIED for spouse, husband, wife, wed, or married relationships. Do not emit HUSBAND_OF, WIFE_OF, SPOUSE_OF, or MARRIED_TO.
+- Use PARENT_OF for father/mother/parent relationships, CHILD_OF for son/daughter/child relationships, and SIBLING_OF for brother/sister/sibling relationships.
+- Do not emit inverse predicates that are not in the vocabulary, such as KILLED_BY, FOUNDED_BY, WRITTEN_BY, OWNED_BY, or DESIGNED_BY. Swap subject and object instead.
 - Never create compound predicates (e.g., "MENTIONED_COOKING_IN")
 - Use the most specific predicate that accurately captures the relationship
 - Extract relationships that are explicitly stated or strongly implied in the text
@@ -842,7 +846,11 @@ For each relationship, provide:
 <TASK_RULES>
 
 - Subject and object MUST be from the entity list listed below — do not introduce new entities
-- ALWAYS prefer a predicate from the vocabulary listed below. Only invent a new predicate if NONE fit.
+- Use ONLY predicates from the vocabulary listed below. Do not invent relation names; omit the relationship if no predicate fits.
+- Preserve logical direction. Passive voice must be converted to the active graph direction: "X was killed by Y" becomes Y KILLED X; "X was founded by Y" becomes Y FOUNDED X.
+- Use MARRIED for spouse, husband, wife, wed, or married relationships. Do not emit HUSBAND_OF, WIFE_OF, SPOUSE_OF, or MARRIED_TO.
+- Use PARENT_OF for father/mother/parent relationships, CHILD_OF for son/daughter/child relationships, and SIBLING_OF for brother/sister/sibling relationships.
+- Do not emit inverse predicates that are not in the vocabulary, such as KILLED_BY, FOUNDED_BY, WRITTEN_BY, OWNED_BY, or DESIGNED_BY. Swap subject and object instead.
 - Never create compound predicates (e.g., "MENTIONED_COOKING_IN")
 - Use the most specific predicate that accurately captures the relationship
 - Extract relationships that are explicitly stated or strongly implied in the text

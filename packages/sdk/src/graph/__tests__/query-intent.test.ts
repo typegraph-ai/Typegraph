@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { parseGraphExploreIntent } from '../query-intent.js'
+import { parseGraphQueryIntent } from '../query-intent.js'
 import type { LLMProvider } from '../../types/llm-provider.js'
 
 function mockLlm(output: unknown): LLMProvider {
@@ -9,185 +9,141 @@ function mockLlm(output: unknown): LLMProvider {
   }
 }
 
-describe('parseGraphExploreIntent', () => {
-  it('maps profession questions to attribute mode and role predicates', async () => {
-    const result = await parseGraphExploreIntent({
-      query: "What is Elsie Inglis' profession?",
-    })
+describe('parseGraphQueryIntent', () => {
+  it('returns empty intent when no exploration LLM is configured', async () => {
+    const result = await parseGraphQueryIntent({ query: 'Who killed Chaacmol?' })
 
-    expect(result.parser).toBe('fallback')
-    expect(result.fallbackUsed).toBe(true)
-    expect(result.intent).toEqual(expect.objectContaining({
-      anchorText: 'Elsie Inglis',
-      mode: 'attribute',
-      targetEntityTypes: ['concept'],
-    }))
-    expect(result.intent.predicates.map(predicate => predicate.name)).toEqual(expect.arrayContaining([
-      'WORKS_AS',
-      'WORKED_AS',
-      'HELD_ROLE',
-      'PRACTICED_AS',
-    ]))
+    expect(result.parser).toBe('none')
+    expect(result.fallbackUsed).toBe(false)
+    expect(result.intent.sourceEntityQueries).toEqual([])
+    expect(result.intent.targetEntityQueries).toEqual([])
+    expect(result.intent.predicates).toEqual([])
+    expect(result.intent.answerSide).toBe('none')
   })
 
-  it('maps occupation wording to the same role predicates', async () => {
-    const result = await parseGraphExploreIntent({
-      query: 'What was Elsie Inglis occupation?',
-    })
-
-    expect(result.intent.anchorText).toBe('Elsie Inglis')
-    expect(result.intent.mode).toBe('attribute')
-    expect(result.intent.predicates.map(predicate => predicate.name)).toEqual(expect.arrayContaining([
-      'WORKS_AS',
-      'WORKED_AS',
-      'HELD_ROLE',
-      'PRACTICED_AS',
-    ]))
-  })
-
-  it('maps location questions to concrete location predicates', async () => {
-    const result = await parseGraphExploreIntent({
-      query: 'Where did Augustus Le Plongeon live?',
-    })
-
-    expect(result.intent).toEqual(expect.objectContaining({
-      anchorText: 'Augustus Le Plongeon',
-      mode: 'attribute',
-      targetEntityTypes: ['location'],
-    }))
-    expect(result.intent.predicates.map(predicate => predicate.name)).toEqual(expect.arrayContaining([
-      'LIVES_IN',
-      'LIVED_IN',
-    ]))
-  })
-
-  it('maps support questions without mangling apostrophes inside entity names', async () => {
-    const result = await parseGraphExploreIntent({
-      query: "Who supported Scottish Women's Hospitals?",
-    })
-
-    expect(result.intent).toEqual(expect.objectContaining({
-      anchorText: "Scottish Women's Hospitals",
-      mode: 'relationship',
-    }))
-    expect(result.anchorSide).toBe('target')
-    expect(result.intent.predicates.map(predicate => predicate.name)).toEqual(['SUPPORTED'])
-  })
-
-  it('infers source-side anchors from direct object questions', async () => {
-    const result = await parseGraphExploreIntent({
-      query: 'Who did Elsie support?',
-    })
-
-    expect(result.intent).toEqual(expect.objectContaining({
-      anchorText: 'Elsie',
-      mode: 'relationship',
-    }))
-    expect(result.anchorSide).toBe('source')
-    expect(result.intent.predicates.map(predicate => predicate.name)).toEqual(['SUPPORTED'])
-  })
-
-  it('infers target-side anchors for non-support predicates', async () => {
-    const result = await parseGraphExploreIntent({
-      query: 'Who founded Maternity Hospice?',
-    })
-
-    expect(result.intent).toEqual(expect.objectContaining({
-      anchorText: 'Maternity Hospice',
-      mode: 'relationship',
-      targetEntityTypes: ['person'],
-    }))
-    expect(result.anchorSide).toBe('target')
-    expect(result.intent.predicates.map(predicate => predicate.name)).toEqual(expect.arrayContaining([
-      'FOUNDED',
-      'CO_FOUNDED',
-    ]))
-  })
-
-  it('infers source-side anchors for non-support predicates', async () => {
-    const result = await parseGraphExploreIntent({
-      query: 'What did Elsie found?',
-    })
-
-    expect(result.intent).toEqual(expect.objectContaining({
-      anchorText: 'Elsie',
-      mode: 'relationship',
-      targetEntityTypes: ['organization'],
-    }))
-    expect(result.anchorSide).toBe('source')
-    expect(result.intent.predicates.map(predicate => predicate.name)).toEqual(expect.arrayContaining([
-      'FOUNDED',
-      'CO_FOUNDED',
-    ]))
-  })
-
-  it('keeps symmetric relationship questions as either-side anchors', async () => {
-    const result = await parseGraphExploreIntent({
-      query: 'Who worked with Elsie?',
-    })
-
-    expect(result.intent).toEqual(expect.objectContaining({
-      anchorText: 'Elsie',
-      mode: 'relationship',
-    }))
-    expect(result.anchorSide).toBe('either')
-    expect(result.intent.predicates.map(predicate => predicate.name)).toEqual(expect.arrayContaining([
-      'COLLABORATED_WITH',
-      'PARTNERED_WITH',
-      'ALLIED_WITH',
-      'CORRESPONDS_WITH',
-    ]))
-  })
-
-  it('handles short indirect wording with deterministic fallback', async () => {
-    const result = await parseGraphExploreIntent({
-      query: 'Elsie Inglis job?',
-    })
-
-    expect(result.parser).toBe('fallback')
-    expect(result.intent.anchorText).toBe('Elsie Inglis')
-    expect(result.intent.mode).toBe('attribute')
-    expect(result.intent.predicates.map(predicate => predicate.name)).toContain('WORKS_AS')
-  })
-
-  it('uses valid structured LLM output directly', async () => {
-    const result = await parseGraphExploreIntent({
-      query: "Who supported Scottish Women's Hospitals?",
+  it('parses parent questions into target anchor, PARENT_OF, and source answer side', async () => {
+    const result = await parseGraphQueryIntent({
+      query: 'Who are Chaacmol parents?',
       llm: mockLlm({
-        anchorText: "Scottish Women's Hospitals",
-        mode: 'relationship',
-        predicates: [{ name: 'SUPPORTED', confidence: 0.93 }],
-        targetEntityTypes: ['organization', 'person'],
+        sourceEntityQueries: [],
+        targetEntityQueries: ['Chaacmol'],
+        predicates: [{ name: 'PARENT_OF', confidence: 0.98 }],
+        answerSide: 'source',
+        subqueries: ['Chaacmol parents'],
+        mode: 'fact',
       }),
     })
 
     expect(result.parser).toBe('llm')
     expect(result.fallbackUsed).toBe(false)
-    expect(result.intent).toEqual(expect.objectContaining({
-      anchorText: "Scottish Women's Hospitals",
-      mode: 'relationship',
-      targetEntityTypes: ['organization', 'person'],
-    }))
-    expect(result.anchorSide).toBe('target')
-    expect(result.intent.predicates).toEqual([
-      { name: 'SUPPORTED', confidence: 0.93 },
-    ])
+    expect(result.intent.targetEntityQueries).toEqual(['Chaacmol'])
+    expect(result.intent.predicates).toEqual([{ name: 'PARENT_OF', confidence: 0.98, symmetric: false }])
+    expect(result.intent.answerSide).toBe('source')
   })
 
-  it('repairs incorrect LLM anchor side from query syntax', async () => {
-    const result = await parseGraphExploreIntent({
-      query: 'Who supported Elsie?',
+  it('parses active killer questions into source anchor and target answer side', async () => {
+    const result = await parseGraphQueryIntent({
+      query: 'Who did Aac kill?',
       llm: mockLlm({
-        anchorText: 'Elsie',
-        anchorSide: 'source',
-        mode: 'relationship',
-        predicates: [{ name: 'SUPPORTED', confidence: 0.93 }],
-        targetEntityTypes: ['person', 'organization'],
+        sourceEntityQueries: ['Aac'],
+        targetEntityQueries: [],
+        predicates: [{ name: 'KILLED', confidence: 0.97 }],
+        answerSide: 'target',
+        subqueries: ['Aac killed'],
+        mode: 'fact',
       }),
     })
 
-    expect(result.parser).toBe('llm')
-    expect(result.anchorSide).toBe('target')
-    expect(result.intent.anchorText).toBe('Elsie')
+    expect(result.intent.sourceEntityQueries).toEqual(['Aac'])
+    expect(result.intent.targetEntityQueries).toEqual([])
+    expect(result.intent.predicates.map((predicate) => predicate.name)).toEqual(['KILLED'])
+    expect(result.intent.answerSide).toBe('target')
+  })
+
+  it('parses passive killer questions into target anchor and source answer side', async () => {
+    const result = await parseGraphQueryIntent({
+      query: 'Who was Chaacmol killed by?',
+      llm: mockLlm({
+        sourceEntityQueries: [],
+        targetEntityQueries: ['Chaacmol'],
+        predicates: [{ name: 'KILLED', confidence: 0.97 }],
+        answerSide: 'source',
+        subqueries: ['Chaacmol killed by'],
+        mode: 'fact',
+      }),
+    })
+
+    expect(result.intent.sourceEntityQueries).toEqual([])
+    expect(result.intent.targetEntityQueries).toEqual(['Chaacmol'])
+    expect(result.intent.predicates.map((predicate) => predicate.name)).toEqual(['KILLED'])
+    expect(result.intent.answerSide).toBe('source')
+  })
+
+  it('normalizes gendered spouse predicates to MARRIED', async () => {
+    const result = await parseGraphQueryIntent({
+      query: 'Who is Chaacmol wife?',
+      llm: mockLlm({
+        sourceEntityQueries: ['Chaacmol'],
+        targetEntityQueries: [],
+        predicates: [{ name: 'WIFE_OF', confidence: 0.91 }],
+        answerSide: 'target',
+        subqueries: ['Chaacmol wife spouse married'],
+        mode: 'fact',
+      }),
+    })
+
+    expect(result.intent.sourceEntityQueries).toEqual(['Chaacmol'])
+    expect(result.intent.predicates).toEqual([{ name: 'MARRIED', confidence: 0.91, symmetric: true }])
+    expect(result.intent.answerSide).toBe('target')
+  })
+
+  it('parses sibling questions into symmetric sibling intent', async () => {
+    const result = await parseGraphQueryIntent({
+      query: 'Who is Chaacmol brother?',
+      llm: mockLlm({
+        sourceEntityQueries: ['Chaacmol'],
+        targetEntityQueries: [],
+        predicates: [{ name: 'BROTHER_OF', confidence: 0.93 }],
+        answerSide: 'target',
+        subqueries: ['Chaacmol brother sibling'],
+        mode: 'fact',
+      }),
+    })
+
+    expect(result.intent.sourceEntityQueries).toEqual(['Chaacmol'])
+    expect(result.intent.predicates).toEqual([{ name: 'SIBLING_OF', confidence: 0.93, symmetric: true }])
+    expect(result.intent.answerSide).toBe('target')
+  })
+
+  it('drops predicates that are not in the ontology', async () => {
+    const result = await parseGraphQueryIntent({
+      query: 'What happened in Chaacmol funeral chamber?',
+      llm: mockLlm({
+        sourceEntityQueries: ['Chaacmol'],
+        targetEntityQueries: ['funeral chamber'],
+        predicates: [{ name: 'FUNERAL_CHAMBER_IN', confidence: 0.9 }],
+        answerSide: 'either',
+        subqueries: ['Chaacmol funeral chamber'],
+        mode: 'summary',
+      }),
+    })
+
+    expect(result.intent.predicates).toEqual([])
+    expect(result.intent.sourceEntityQueries).toEqual(['Chaacmol'])
+    expect(result.intent.targetEntityQueries).toEqual(['funeral chamber'])
+  })
+
+  it('returns empty graph intent when LLM parsing fails', async () => {
+    const llm: LLMProvider = {
+      generateText: vi.fn().mockResolvedValue(''),
+      generateJSON: vi.fn().mockRejectedValue(new Error('bad JSON')),
+    }
+
+    const result = await parseGraphQueryIntent({ query: 'Who killed Chaacmol?', llm })
+
+    expect(result.parser).toBe('none')
+    expect(result.fallbackUsed).toBe(false)
+    expect(result.intent.predicates).toEqual([])
+    expect(result.intent.answerSide).toBe('none')
   })
 })

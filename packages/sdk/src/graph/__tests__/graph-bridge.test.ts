@@ -164,12 +164,12 @@ describe('createKnowledgeGraphBridge', () => {
 
       await bridge.addTriple!({
         subject: 'Vitamin D',
-        predicate: 'prevents',
-        object: 'osteoporosis',
-        relationshipDescription: 'Vitamin D helps prevent osteoporosis in elderly patients.',
-        evidenceText: 'Vitamin D prevents osteoporosis in elderly patients.',
+        predicate: 'supported',
+        object: 'bone health',
+        relationshipDescription: 'Vitamin D supports bone health in elderly patients.',
+        evidenceText: 'Vitamin D supports bone health in elderly patients.',
         sourceChunkId: 'chk-vitd-0',
-        content: 'Vitamin D prevents osteoporosis in elderly patients.',
+        content: 'Vitamin D supports bone health in elderly patients.',
         bucketId: 'bucket-1',
         documentId: 'doc-1',
         chunkIndex: 0,
@@ -184,13 +184,13 @@ describe('createKnowledgeGraphBridge', () => {
       expect(edges).toHaveLength(1)
 
       const edge = edges[0]!
-      expect(edge.relation).toBe('PREVENTS')
+      expect(edge.relation).toBe('SUPPORTED')
       expect(edge.properties.content).toBeUndefined()
       expect(edge.properties.bucketId).toBeUndefined()
       expect(edge.properties.chunkIndex).toBeUndefined()
       expect(edge.properties).toEqual(expect.objectContaining({
-        relationshipDescription: 'Vitamin D helps prevent osteoporosis in elderly patients.',
-        evidenceText: 'Vitamin D prevents osteoporosis in elderly patients.',
+        relationshipDescription: 'Vitamin D supports bone health in elderly patients.',
+        evidenceText: 'Vitamin D supports bone health in elderly patients.',
         sourceChunkId: 'chk-vitd-0',
       }))
 
@@ -395,6 +395,7 @@ describe('createKnowledgeGraphBridge', () => {
     it('normalizes predicate to SCREAMING_SNAKE_CASE', async () => {
       const edges: SemanticEdge[] = []
       const store = mockStore(new Map(), edges)
+      store.upsertFactRecord = vi.fn()
       const bridge = createKnowledgeGraphBridge({
         memoryStore: store,
         embedding: mockEmbedding(),
@@ -412,6 +413,103 @@ describe('createKnowledgeGraphBridge', () => {
       expect(edges[0]!.relation).toBe('WORKS_FOR')
     })
 
+    it('rejects invented predicates before persistence', async () => {
+      const edges: SemanticEdge[] = []
+      const store = mockStore(new Map(), edges)
+      store.upsertFactRecord = vi.fn()
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      await bridge.addTriple!({
+        subject: 'Chaacmol',
+        predicate: 'FUNERAL_CHAMBER_IN',
+        object: 'Chichen-Itza',
+        content: 'Chaacmol is associated with a funeral chamber at Chichen-Itza.',
+        bucketId: 'bucket-1',
+      })
+
+      expect(edges).toHaveLength(0)
+      expect(store.upsertFactRecord).not.toHaveBeenCalled()
+    })
+
+    it('normalizes inverse predicates by swapping subject and object', async () => {
+      const entities = new Map<string, SemanticEntity>()
+      const edges: SemanticEdge[] = []
+      const store = mockStore(entities, edges)
+      store.upsertFactRecord = vi.fn()
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      await bridge.addTriple!({
+        subject: 'Chaacmol',
+        predicate: 'KILLED_BY',
+        object: 'Aac',
+        relationshipDescription: 'Chaacmol was killed by Aac.',
+        evidenceText: 'Chaacmol was killed by Aac.',
+        content: 'Chaacmol was killed by Aac.',
+        bucketId: 'bucket-1',
+      })
+
+      const edge = edges[0]!
+      const entityById = new Map([...entities.values()].map(entity => [entity.id, entity]))
+      expect(edge.relation).toBe('KILLED')
+      expect(entityById.get(edge.sourceEntityId)?.name).toBe('Aac')
+      expect(entityById.get(edge.targetEntityId)?.name).toBe('Chaacmol')
+    })
+
+    it('drops obvious directional contradictions instead of persisting them', async () => {
+      const entities = new Map<string, SemanticEntity>()
+      const edges: SemanticEdge[] = []
+      const store = mockStore(entities, edges)
+      store.upsertFactRecord = vi.fn()
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      await bridge.addTriple!({
+        subject: 'Chaacmol',
+        predicate: 'KILLED',
+        object: 'Aac',
+        relationshipDescription: 'Aac killed Chaacmol with a spear.',
+        evidenceText: 'Aac killed Chaacmol with a spear.',
+        content: 'Aac killed Chaacmol with a spear.',
+        bucketId: 'bucket-1',
+      })
+
+      expect(edges).toHaveLength(0)
+      expect(store.upsertFactRecord).not.toHaveBeenCalled()
+    })
+
+    it('normalizes gendered spouse predicates to MARRIED before persistence', async () => {
+      const edges: SemanticEdge[] = []
+      const store = mockStore(new Map(), edges)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      await bridge.addTriple!({
+        subject: 'Moo',
+        predicate: 'WIFE_OF',
+        object: 'Chaacmol',
+        relationshipDescription: 'Moo was married to Chaacmol.',
+        evidenceText: 'Moo was married to Chaacmol.',
+        content: 'Moo was married to Chaacmol.',
+        bucketId: 'bucket-1',
+      })
+
+      expect(edges[0]!.relation).toBe('MARRIED')
+    })
+
     it('resolves duplicate entities on repeated addTriple calls', async () => {
       const entities = new Map<string, SemanticEntity>()
       const edges: SemanticEdge[] = []
@@ -425,8 +523,8 @@ describe('createKnowledgeGraphBridge', () => {
       // First triple: creates "Vitamin D" and "osteoporosis"
       await bridge.addTriple!({
         subject: 'Vitamin D',
-        predicate: 'prevents',
-        object: 'osteoporosis',
+        predicate: 'supported',
+        object: 'bone health',
         content: 'Chunk 1',
         bucketId: 'doc-1',
       })
@@ -436,16 +534,16 @@ describe('createKnowledgeGraphBridge', () => {
       // Second triple: "Vitamin D" should be resolved to existing entity
       await bridge.addTriple!({
         subject: 'Vitamin D',
-        predicate: 'supports',
-        object: 'bone health',
+        predicate: 'supported',
+        object: 'skeletal health',
         content: 'Chunk 2',
         bucketId: 'doc-1',
       })
 
-      // Should have 3 entities (Vitamin D reused, + osteoporosis + bone health)
+      // Should have 3 entities (Vitamin D reused, + bone health + skeletal health)
       expect(firstEntityCount).toBe(2)
       expect(entities.size).toBe(3)
-      // 2 explicit edges (prevents, supports), 0 CO_OCCURS (all entities have direct edges)
+      // 2 explicit edges, 0 CO_OCCURS (all entities have direct edges)
       expect(edges).toHaveLength(2)
     })
   })
@@ -648,11 +746,22 @@ describe('createKnowledgeGraphBridge', () => {
         embedding: mockEmbedding(),
         scope: testScope,
         resolveChunksTable: () => 'typegraph_chunks_mock',
+        explorationLlm: {
+          generateText: vi.fn().mockResolvedValue(''),
+          generateJSON: vi.fn().mockResolvedValue({
+            sourceEntityQueries: ['Adarsh'],
+            targetEntityQueries: [],
+            predicates: [],
+            answerSide: 'none',
+            subqueries: ['Adarsh'],
+            mode: 'summary',
+          }),
+        },
       })
 
       const result = await bridge.searchGraphPassages!('Adarsh', testScope, { count: 5 })
 
-      expect(store.searchEntitiesHybrid).toHaveBeenCalledWith(expect.any(String), expect.any(Array), testScope, 10)
+      expect(store.searchEntitiesHybrid).toHaveBeenCalledWith(expect.any(String), expect.any(Array), testScope, 5)
       expect(result.results).toHaveLength(1)
       expect(result.results[0]).toEqual(expect.objectContaining({
         passageId: 'passage_test',
@@ -724,6 +833,17 @@ describe('createKnowledgeGraphBridge', () => {
         embedding: mockEmbedding(),
         scope: testScope,
         resolveChunksTable: () => 'typegraph_chunks_mock',
+        explorationLlm: {
+          generateText: vi.fn().mockResolvedValue(''),
+          generateJSON: vi.fn().mockResolvedValue({
+            sourceEntityQueries: [],
+            targetEntityQueries: ['Maud'],
+            predicates: [{ name: 'WROTE', confidence: 0.95 }],
+            answerSide: 'source',
+            subqueries: ['who wrote Maud'],
+            mode: 'fact',
+          }),
+        },
       })
 
       const result = await bridge.searchGraphPassages!('Who moralised Maud?', testScope, { count: 5 })
@@ -859,89 +979,56 @@ describe('createKnowledgeGraphBridge', () => {
         embedding: mockEmbedding(),
         scope: testScope,
         resolveChunksTable: () => 'typegraph_chunks_mock',
+        explorationLlm: {
+          generateText: vi.fn().mockResolvedValue(''),
+          generateJSON: vi.fn().mockResolvedValue({
+            sourceEntityQueries: [],
+            targetEntityQueries: ['Maud'],
+            predicates: [{ name: 'WROTE', confidence: 0.95 }],
+            answerSide: 'source',
+            subqueries: ['who wrote Maud'],
+            mode: 'fact',
+          }),
+        },
       })
 
       const result = await bridge.searchGraphPassages!('Who wrote Maud?', testScope, {
         count: 5,
-        factSeedLimit: 3,
+        factCandidateLimit: 3,
         factChainLimit: 2,
       })
 
       expect(result.trace.selectedFactIds[0]).toBe('fact-maud')
       expect(result.facts[0]).toEqual(expect.objectContaining({ id: 'fact-maud', factText: 'Tennyson wrote Maud' }))
-      expect(result.factChains?.[0]).toEqual(expect.objectContaining({
-        content: expect.stringContaining('Tennyson wrote Maud'),
-        facts: expect.arrayContaining([
-          expect.objectContaining({ id: 'fact-maud' }),
-          expect.objectContaining({ id: 'fact-shell' }),
-        ]),
-      }))
-      expect(result.trace.selectedFactChains?.[0]?.factIds).toEqual(expect.arrayContaining(['fact-maud', 'fact-shell']))
+      expect(result.facts.map(fact => fact.id)).not.toContain('fact-noisy')
+      expect(result.facts.map(fact => fact.id)).not.toContain('fact-shell')
+      expect(result.factChains).toEqual([])
+      expect(result.trace.selectedFactChains).toEqual([])
     })
   })
 
-  describe('explore', () => {
-    it.each([
-      'plotline employees',
-      'employees at plotline',
-      'who works at plotline',
-    ])('resolves employment intent and returns fact projections for "%s"', async (query) => {
+  describe('explore graph intent V2', () => {
+    it('uses LLM source/target intent to keep only matching killer facts', async () => {
       const entities = new Map<string, SemanticEntity>([
-        ['plotline', makeEntity('plotline', 'Plotline', 'organization')],
-        ['adarsh', makeEntity('adarsh', 'Adarsh Tadimari', 'person')],
-        ['rajat', makeEntity('rajat', 'Rajat', 'person')],
+        ['aac', makeEntity('aac', 'Aac', 'person')],
+        ['chaacmol', makeEntity('chaacmol', 'Chaacmol', 'person')],
+        ['moo', makeEntity('moo', 'Moo', 'person')],
       ])
       const edges = [
-        makeEdge('edge-1', 'adarsh', 'plotline', 'WORKS_FOR'),
-        makeEdge('edge-2', 'rajat', 'plotline', 'MEMBER_OF'),
-        makeEdge('edge-3', 'adarsh', 'plotline', 'LEADS'),
+        makeEdge('edge-killed', 'aac', 'chaacmol', 'KILLED'),
+        makeEdge('edge-sibling', 'chaacmol', 'aac', 'SIBLING_OF'),
+        makeEdge('edge-married', 'chaacmol', 'moo', 'MARRIED'),
       ]
-      const store = mockStore(entities, edges)
-      const bridge = createKnowledgeGraphBridge({
-        memoryStore: store,
-        embedding: mockEmbedding(),
-        scope: testScope,
-      })
-
-      const result = await bridge.explore!(query, { userId: 'test-user', explain: true })
-
-      expect(result.intent.mode).toBe('relationship')
-      expect(result.intent.predicates.map(predicate => predicate.name)).toEqual(expect.arrayContaining([
-        'WORKS_FOR',
-        'WORKED_FOR',
-        'MEMBER_OF',
-      ]))
-      expect(result.intent.targetEntityTypes).toEqual(['person'])
-      expect(result.anchors[0]).toEqual(expect.objectContaining({ name: 'Plotline', entityType: 'organization' }))
-      expect(result.entities.map(entity => entity.name)).toEqual(expect.arrayContaining(['Adarsh Tadimari', 'Rajat']))
-      expect(result.entities.map(entity => entity.name)).not.toContain('Plotline')
-      expect(result.facts.map(fact => fact.relation)).toEqual(expect.arrayContaining(['WORKS_FOR', 'MEMBER_OF']))
-      expect(result.facts.map(fact => fact.relation)).not.toContain('LEADS')
-      expect(result.facts.every(fact => fact.similarity === undefined)).toBe(true)
-      expect(result.trace).toEqual(expect.objectContaining({
-        parser: 'fallback',
-        fallbackUsed: true,
-        mode: 'relationship',
-        selectedAnchorIds: ['plotline'],
-        selectedPredicates: expect.arrayContaining(['WORKS_FOR', 'WORKED_FOR', 'MEMBER_OF']),
-        targetEntityTypes: ['person'],
-      }))
-    })
-
-    it('uses the configured exploration LLM when it returns valid structured intent', async () => {
-      const entities = new Map<string, SemanticEntity>([
-        ['plotline', makeEntity('plotline', 'Plotline', 'organization')],
-        ['adarsh', makeEntity('adarsh', 'Adarsh Tadimari', 'person')],
-      ])
-      const edges = [makeEdge('edge-1', 'adarsh', 'plotline', 'WORKS_FOR')]
       const store = mockStore(entities, edges)
       const explorationLlm = {
         generateText: vi.fn().mockResolvedValue(''),
         generateJSON: vi.fn().mockResolvedValue({
-          anchorText: 'Plotline',
-          mode: 'relationship',
-          predicates: [{ name: 'WORKS_FOR', confidence: 0.95 }],
-          targetEntityTypes: ['person'],
+          sourceEntityQueries: [],
+          targetEntityQueries: ['Chaacmol'],
+          predicates: [{ name: 'KILLED', confidence: 0.98 }],
+          answerSide: 'source',
+          subqueries: ['who killed Chaacmol'],
+          mode: 'fact',
         }),
       }
       const bridge = createKnowledgeGraphBridge({
@@ -951,239 +1038,36 @@ describe('createKnowledgeGraphBridge', () => {
         explorationLlm,
       })
 
-      const result = await bridge.explore!('plotline employees', { userId: 'test-user', explain: true })
+      const result = await bridge.explore!('Who killed Chaacmol?', { userId: 'test-user', explain: true })
 
-      expect(explorationLlm.generateJSON).toHaveBeenCalled()
       expect(result.trace?.parser).toBe('llm')
-      expect(result.trace?.fallbackUsed).toBe(false)
-      expect(result.intent.anchorText).toBe('Plotline')
-      expect(result.intent.mode).toBe('relationship')
-      expect(result.intent.predicates[0]).toEqual(expect.objectContaining({
-        name: 'WORKS_FOR',
-        confidence: 0.95,
-      }))
-      expect(result.trace?.selectedPredicates).toEqual(['WORKS_FOR'])
+      expect(result.intent.targetEntityQueries).toEqual(['Chaacmol'])
+      expect(result.intent.predicates.map(predicate => predicate.name)).toEqual(['KILLED'])
+      expect(result.facts.map(fact => fact.edgeId)).toEqual(['edge-killed'])
+      expect(result.entities.map(entity => entity.name).sort()).toEqual(['Aac', 'Chaacmol'])
     })
 
-    it('falls back to deterministic parsing when the exploration LLM returns invalid output and can include passages', async () => {
+    it('treats spouse facts as symmetric evidence without returning unrelated relations', async () => {
       const entities = new Map<string, SemanticEntity>([
-        ['plotline', makeEntity('plotline', 'Plotline', 'organization')],
-        ['adarsh', makeEntity('adarsh', 'Adarsh Tadimari', 'person')],
-      ])
-      const edges = [makeEdge('edge-1', 'adarsh', 'plotline', 'WORKS_FOR')]
-      const store = mockStore(entities, edges)
-      Object.assign(store, {
-        getPassageEdgesForEntities: vi.fn().mockResolvedValue([{
-          passageId: 'passage_plotline_adarsh',
-          entityId: 'adarsh',
-          weight: 2,
-          mentionCount: 1,
-          confidence: 0.9,
-          surfaceTexts: ['Adarsh Tadimari'],
-          mentionTypes: ['subject'],
-        }]),
-        getPassagesByIds: vi.fn().mockResolvedValue([{
-          passageId: 'passage_plotline_adarsh',
-          content: 'Adarsh Tadimari works at Plotline on SDK integration issues.',
-          bucketId: 'bucket-1',
-          documentId: 'doc-1',
-          chunkIndex: 0,
-          totalChunks: 1,
-          metadata: { source: 'test' },
-          userId: 'test-user',
-        }]),
-      })
-      const explorationLlm = {
-        generateText: vi.fn().mockResolvedValue(''),
-        generateJSON: vi.fn().mockResolvedValue({
-          anchorText: 'Plotline',
-          mode: 'relationship',
-          predicates: [{ name: 'not-a-predicate', confidence: 1 }],
-          targetEntityTypes: [],
-        }),
-      }
-      const bridge = createKnowledgeGraphBridge({
-        memoryStore: store,
-        embedding: mockEmbedding(),
-        scope: testScope,
-        resolveChunksTable: () => 'typegraph_chunks_mock',
-        explorationLlm,
-      })
-
-      const result = await bridge.explore!('plotline employees', {
-        userId: 'test-user',
-        include: { passages: true },
-        explain: true,
-      })
-
-      expect(result.trace?.parser).toBe('fallback')
-      expect(result.trace?.fallbackUsed).toBe(true)
-      expect(result.intent.mode).toBe('relationship')
-      expect(result.intent.predicates.map(predicate => predicate.name)).toEqual(expect.arrayContaining([
-        'WORKS_FOR',
-        'WORKED_FOR',
-        'MEMBER_OF',
-      ]))
-      expect(result.passages).toEqual([
-        expect.objectContaining({
-          passageId: 'passage_plotline_adarsh',
-          documentId: 'doc-1',
-          chunkIndex: 0,
-        }),
-      ])
-      expect(result.passages?.[0]?.score).toBeGreaterThan(0)
-    })
-
-    it('returns attribute-mode profession results from anchor-adjacent edges', async () => {
-      const entities = new Map<string, SemanticEntity>([
-        ['elsie', makeEntity('elsie', 'Elsie Inglis', 'person')],
-        ['doctor', makeEntity('doctor', 'doctor', 'concept')],
-        ['serbia', makeEntity('serbia', 'Serbia', 'location')],
+        ['aac', makeEntity('aac', 'Aac', 'person')],
+        ['chaacmol', makeEntity('chaacmol', 'Chaacmol', 'person')],
+        ['moo', makeEntity('moo', 'Moo', 'person')],
       ])
       const edges = [
-        makeEdge('edge-role', 'elsie', 'doctor', 'WORKS_AS'),
-        makeEdge('edge-travel', 'elsie', 'serbia', 'TRAVELED_TO'),
-      ]
-      const store = mockStore(entities, edges)
-      const bridge = createKnowledgeGraphBridge({
-        memoryStore: store,
-        embedding: mockEmbedding(),
-        scope: testScope,
-      })
-
-      const result = await bridge.explore!("What is Elsie Inglis' profession?", {
-        userId: 'test-user',
-        explain: true,
-      })
-
-      expect(result.intent).toEqual(expect.objectContaining({
-        anchorText: 'Elsie Inglis',
-        mode: 'attribute',
-        targetEntityTypes: ['concept'],
-      }))
-      expect(result.intent.predicates.map(predicate => predicate.name)).toEqual(expect.arrayContaining([
-        'WORKS_AS',
-        'WORKED_AS',
-        'HELD_ROLE',
-        'PRACTICED_AS',
-      ]))
-      expect(result.anchors).toEqual([
-        expect.objectContaining({ id: 'elsie', name: 'Elsie Inglis', entityType: 'person' }),
-      ])
-      expect(result.entities).toEqual([
-        expect.objectContaining({ id: 'doctor', name: 'doctor', entityType: 'concept' }),
-      ])
-      expect(result.facts).toEqual([
-        expect.objectContaining({ edgeId: 'edge-role', relation: 'WORKS_AS' }),
-      ])
-      expect(result.entities.map(entity => entity.name)).not.toContain('Serbia')
-      expect(result.trace).toEqual(expect.objectContaining({
-        mode: 'attribute',
-        selectedPredicates: expect.arrayContaining(['WORKS_AS', 'WORKED_AS', 'HELD_ROLE', 'PRACTICED_AS']),
-        targetEntityTypes: ['concept'],
-      }))
-    })
-
-    it('filters directed support queries to the requested anchor side', async () => {
-      const entities = new Map<string, SemanticEntity>([
-        ['elsie', makeEntity('elsie', 'Elsie', 'person')],
-        ['bishop', makeEntity('bishop', 'Bishop Gore', 'person')],
-        ['jugoslav', makeEntity('jugoslav', 'Jugoslav Division', 'organization')],
-      ])
-      const edges = [
-        makeEdge('edge-incoming-support', 'bishop', 'elsie', 'SUPPORTED'),
-        makeEdge('edge-outgoing-support', 'elsie', 'jugoslav', 'SUPPORTED'),
-      ]
-      const store = mockStore(entities, edges)
-      const bridge = createKnowledgeGraphBridge({
-        memoryStore: store,
-        embedding: mockEmbedding(),
-        scope: testScope,
-      })
-
-      const incoming = await bridge.explore!('Who supported Elsie?', {
-        userId: 'test-user',
-        explain: true,
-      })
-
-      expect(incoming.trace?.anchorSide).toBe('target')
-      expect(incoming.entities.map(entity => entity.name)).toEqual(['Bishop Gore'])
-      expect(incoming.entities.map(entity => entity.name)).not.toContain('Jugoslav Division')
-      expect(incoming.facts.map(fact => fact.edgeId)).toEqual(['edge-incoming-support'])
-      expect(incoming.trace?.droppedByDirection).toBeGreaterThanOrEqual(1)
-
-      const outgoing = await bridge.explore!('Who did Elsie support?', {
-        userId: 'test-user',
-        explain: true,
-      })
-
-      expect(outgoing.trace?.anchorSide).toBe('source')
-      expect(outgoing.entities.map(entity => entity.name)).toEqual(['Jugoslav Division'])
-      expect(outgoing.entities.map(entity => entity.name)).not.toContain('Bishop Gore')
-      expect(outgoing.facts.map(fact => fact.edgeId)).toEqual(['edge-outgoing-support'])
-      expect(outgoing.trace?.droppedByDirection).toBeGreaterThanOrEqual(1)
-    })
-
-    it('applies direction filtering to non-support predicates', async () => {
-      const entities = new Map<string, SemanticEntity>([
-        ['elsie', makeEntity('elsie', 'Elsie', 'person')],
-        ['hospice', makeEntity('hospice', 'Maternity Hospice', 'organization')],
-        ['committee', makeEntity('committee', 'Hospital Committee', 'organization')],
-      ])
-      const edges = [
-        makeEdge('edge-founded-correct', 'elsie', 'hospice', 'FOUNDED'),
-        makeEdge('edge-founded-opposite', 'hospice', 'committee', 'FOUNDED'),
-      ]
-      const store = mockStore(entities, edges)
-      const bridge = createKnowledgeGraphBridge({
-        memoryStore: store,
-        embedding: mockEmbedding(),
-        scope: testScope,
-      })
-
-      const founderResult = await bridge.explore!('Who founded Maternity Hospice?', {
-        userId: 'test-user',
-        explain: true,
-      })
-
-      expect(founderResult.trace?.anchorSide).toBe('target')
-      expect(founderResult.entities.map(entity => entity.name)).toEqual(['Elsie'])
-      expect(founderResult.entities.map(entity => entity.name)).not.toContain('Hospital Committee')
-      expect(founderResult.facts.map(fact => fact.edgeId)).toEqual(['edge-founded-correct'])
-      expect(founderResult.trace?.droppedByDirection).toBeGreaterThanOrEqual(1)
-
-      const foundedResult = await bridge.explore!('What did Elsie found?', {
-        userId: 'test-user',
-        explain: true,
-      })
-
-      expect(foundedResult.trace?.anchorSide).toBe('source')
-      expect(foundedResult.entities.map(entity => entity.name)).toEqual(['Maternity Hospice'])
-      expect(foundedResult.entities.map(entity => entity.name)).not.toContain('Hospital Committee')
-      expect(foundedResult.facts.map(fact => fact.edgeId)).toEqual(['edge-founded-correct'])
-    })
-
-    it('keeps relationship traversal working beyond the anchor while enforcing target types', async () => {
-      const entities = new Map<string, SemanticEntity>([
-        ['plotline', makeEntity('plotline', 'Plotline', 'organization')],
-        ['adarsh', makeEntity('adarsh', 'Adarsh Tadimari', 'person')],
-        ['rajat', makeEntity('rajat', 'Rajat', 'person')],
-        ['committee', makeEntity('committee', 'Research Committee', 'organization')],
-      ])
-      const edges = [
-        makeEdge('edge-employment', 'adarsh', 'plotline', 'WORKS_FOR'),
-        makeEdge('edge-person-collab', 'adarsh', 'rajat', 'COLLABORATED_WITH'),
-        makeEdge('edge-mixed-collab', 'adarsh', 'committee', 'COLLABORATED_WITH'),
-        makeEdge('edge-anchor-org-collab', 'plotline', 'committee', 'COLLABORATED_WITH'),
+        makeEdge('edge-killed', 'aac', 'chaacmol', 'KILLED'),
+        makeEdge('edge-sibling', 'chaacmol', 'aac', 'SIBLING_OF'),
+        makeEdge('edge-married', 'moo', 'chaacmol', 'MARRIED'),
       ]
       const store = mockStore(entities, edges)
       const explorationLlm = {
         generateText: vi.fn().mockResolvedValue(''),
         generateJSON: vi.fn().mockResolvedValue({
-          anchorText: 'Plotline',
-          mode: 'relationship',
-          predicates: [{ name: 'COLLABORATED_WITH', confidence: 0.9 }],
-          targetEntityTypes: ['person'],
+          sourceEntityQueries: ['Chaacmol'],
+          targetEntityQueries: [],
+          predicates: [{ name: 'WIFE_OF', confidence: 0.98 }],
+          answerSide: 'target',
+          subqueries: ['Chaacmol wife spouse married'],
+          mode: 'fact',
         }),
       }
       const bridge = createKnowledgeGraphBridge({
@@ -1193,32 +1077,15 @@ describe('createKnowledgeGraphBridge', () => {
         explorationLlm,
       })
 
-      const result = await bridge.explore!('Who worked with Plotline?', {
-        userId: 'test-user',
-        depth: 2,
-        explain: true,
-      })
+      const result = await bridge.explore!('Who is Chaacmol wife?', { userId: 'test-user', explain: true })
 
-      expect(result.intent).toEqual(expect.objectContaining({
-        anchorText: 'Plotline',
-        mode: 'relationship',
-        targetEntityTypes: ['person'],
-      }))
-      expect(result.entities.map(entity => entity.name)).toEqual(expect.arrayContaining([
-        'Adarsh Tadimari',
-        'Rajat',
-      ]))
-      expect(result.entities.map(entity => entity.name)).not.toContain('Research Committee')
-      expect(result.facts.map(fact => fact.relation)).toEqual([
-        'COLLABORATED_WITH',
-        'COLLABORATED_WITH',
+      expect(result.intent.predicates).toEqual([
+        expect.objectContaining({ name: 'MARRIED', symmetric: true }),
       ])
-      expect(result.trace).toEqual(expect.objectContaining({
-        parser: 'llm',
-        mode: 'relationship',
-        selectedPredicates: ['COLLABORATED_WITH'],
-      }))
-      expect(result.trace?.droppedByType).toBeGreaterThanOrEqual(1)
+      expect(result.facts.map(fact => fact.edgeId)).toEqual(['edge-married'])
+      expect(result.entities.map(entity => entity.name).sort()).toEqual(['Chaacmol', 'Moo'])
+      expect(result.facts.map(fact => fact.relation)).not.toContain('KILLED')
+      expect(result.facts.map(fact => fact.relation)).not.toContain('SIBLING_OF')
     })
   })
 })

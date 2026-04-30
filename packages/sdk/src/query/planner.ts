@@ -3,7 +3,7 @@ import type { QueryChunkResult, QueryMemoryResult, QueryOpts, QueryResponse, Que
 import type { VectorStoreAdapter } from '../types/adapter.js'
 import type { EmbeddingProvider } from '../embedding/provider.js'
 import { embeddingModelKey } from '../embedding/provider.js'
-import type { EntityResult, FactResult, MemoryBridge, KnowledgeGraphBridge } from '../types/graph-bridge.js'
+import type { EntityResult, FactResult, GraphSearchTrace, MemoryBridge, KnowledgeGraphBridge } from '../types/graph-bridge.js'
 import type { typegraphEvent, typegraphEventSink } from '../types/events.js'
 import type { typegraphLogger } from '../types/logger.js'
 import { IndexedRunner } from './runners/indexed.js'
@@ -260,6 +260,7 @@ function partitionResults(
   needsMemory: boolean,
   graphFacts: FactResult[],
   graphEntities: EntityResult[],
+  graphTrace?: GraphSearchTrace | undefined,
   effectiveScoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory', number>>,
 ): QueryResults {
   const chunks: QueryChunkResult[] = []
@@ -281,6 +282,7 @@ function partitionResults(
     facts: signals.graph ? uniqueById(graphFacts) : [],
     entities: signals.graph ? uniqueById(graphEntities) : [],
     memories: signals.memory ? memories : [],
+    ...(signals.graph && graphTrace ? { graphTrace } : {}),
   }
 }
 
@@ -376,6 +378,7 @@ export class QueryPlanner {
       const runnerArrays: RetrievalCandidate[][] = []
       let graphFacts: FactResult[] = []
       let graphEntities: EntityResult[] = []
+      let graphTrace: GraphSearchTrace | undefined
 
       // Memory runner
       if (needsMemory) {
@@ -405,6 +408,7 @@ export class QueryPlanner {
           )
           graphFacts = graphRun.facts
           graphEntities = graphRun.entities
+          graphTrace = graphRun.trace
           const graphResults = graphRun.results
           if (graphResults.length > 0) runnerArrays.push(graphResults)
         } catch (err) {
@@ -418,7 +422,7 @@ export class QueryPlanner {
         ? mergeAndRank(runnerArrays, count, undefined, signals, effectiveScoreWeights)
         : (runnerArrays[0] ?? []).slice(0, count)
 
-      const results = partitionResults(allResults, signals, Math.max(1, runnerArrays.length), needsGraph, needsMemory, graphFacts, graphEntities, effectiveScoreWeights)
+      const results = partitionResults(allResults, signals, Math.max(1, runnerArrays.length), needsGraph, needsMemory, graphFacts, graphEntities, graphTrace, effectiveScoreWeights)
 
       const bucketTimings: QueryResponse['buckets'] = {}
       if (needsMemory) bucketTimings['__memory__'] = { mode: 'memory', resultCount: results.memories.length, durationMs: Date.now() - startMs, status: 'ok' }
@@ -515,6 +519,7 @@ export class QueryPlanner {
     const runnerArrays: RetrievalCandidate[][] = [allResults]
     let graphFacts: FactResult[] = []
     let graphEntities: EntityResult[] = []
+    let graphTrace: GraphSearchTrace | undefined
     if (needsGraph || needsMemory) {
       // Skip memory runner if store has no memories (avoids empty table query per query)
       const skipMemory = !needsMemory || (this.memory?.hasMemories ? !(await this.memory.hasMemories()) : false)
@@ -546,6 +551,7 @@ export class QueryPlanner {
       const graphResults = graphRun.results
       graphFacts = graphRun.facts
       graphEntities = graphRun.entities
+      graphTrace = graphRun.trace
 
       if (memResults.length > 0) {
         // Memory results already carry semantic similarity scores from the memory
@@ -594,7 +600,7 @@ export class QueryPlanner {
       ? mergeAndRank(runnerArrays, count, undefined, signals, effectiveScoreWeights)
       : allResults.slice(0, count)
 
-    const results = partitionResults(mergedResults, signals, Math.max(1, runnerArrays.length), needsGraph, needsMemory, graphFacts, graphEntities, effectiveScoreWeights)
+    const results = partitionResults(mergedResults, signals, Math.max(1, runnerArrays.length), needsGraph, needsMemory, graphFacts, graphEntities, graphTrace, effectiveScoreWeights)
 
     const durationMs = Date.now() - startMs
     const counts = resultCounts(results)

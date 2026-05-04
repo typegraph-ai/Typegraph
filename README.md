@@ -53,10 +53,8 @@ const tg = await typegraphInit({
 
 await tg.ingest([
   {
-    id: 'handbook',
     title: 'Employee handbook',
     content: 'Acme employees configure SSO from the admin security page.',
-    metadata: { source: 'handbook' },
   },
 ])
 

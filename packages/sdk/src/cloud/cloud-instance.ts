@@ -12,7 +12,7 @@ import type { PaginationOpts, PaginatedResult } from '../types/pagination.js'
 import type { ConversationTurnResult, MemoryHealthReport } from '../types/memory.js'
 import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
 import type { Job, JobFilter } from '../types/job.js'
-import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput } from '../types/graph-bridge.js'
+import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult } from '../types/graph-bridge.js'
 import { DEFAULT_BUCKET_ID, normalizeRawDocument } from '../typegraph.js'
 import { HttpClient } from './http-client.js'
 import type { CloudConfig } from './http-client.js'
@@ -114,6 +114,14 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     },
     async linkExternalIds(entityId: string, externalIds: ExternalId[], identity?: typegraphIdentity): Promise<EntityDetail> {
       return client.post<EntityDetail>(`/v1/graph/entities/${e(entityId)}/external-ids`, { externalIds, identity })
+    },
+    async mergeEntities(input: MergeGraphEntitiesInput): Promise<MergeGraphEntitiesResult> {
+      return client.post<MergeGraphEntitiesResult>('/v1/graph/entities/merge', input)
+    },
+    async deleteEntity(entityId: string, opts?: DeleteGraphEntityOpts): Promise<DeleteGraphEntityResult> {
+      const { tenantId, groupId, userId, agentId, conversationId, ...rest } = opts ?? {}
+      const identity = { tenantId, groupId, userId, agentId, conversationId }
+      return client.delete<DeleteGraphEntityResult>(`/v1/graph/entities/${e(entityId)}`, { ...rest, identity })
     },
     async upsertEdge(input: UpsertGraphEdgeInput): Promise<EdgeResult> {
       return client.post<EdgeResult>('/v1/graph/edges', input)

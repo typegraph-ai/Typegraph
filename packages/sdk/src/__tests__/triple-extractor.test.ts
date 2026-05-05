@@ -221,7 +221,7 @@ describe('TripleExtractor', () => {
           },
           {
             name: 'doctor',
-            type: 'concept',
+            type: 'role',
             description: 'A profession practiced by Elsie Inglis.',
             aliases: [],
           },
@@ -246,7 +246,48 @@ describe('TripleExtractor', () => {
       subjectType: 'person',
       predicate: 'WORKS_AS',
       object: 'doctor',
-      objectType: 'concept',
+      objectType: 'role',
+    }))
+  })
+
+  it('accepts B2B entity types from the centralized ontology', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          { name: 'Acme security review deck', type: 'artifact', description: 'A security review artifact.', aliases: ['deck'] },
+          { name: 'SOC2 rollout', type: 'project', description: 'A compliance rollout project.', aliases: [] },
+          { name: 'AUTH-123', type: 'issue', description: 'An authentication issue.', aliases: [] },
+          { name: 'Acme demo', type: 'meeting', description: 'A sales demo meeting.', aliases: [] },
+        ],
+        relationships: [
+          { subject: 'Acme security review deck', predicate: 'describes', object: 'SOC2 rollout', confidence: 0.9 },
+        ],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'The Acme security review deck describes the SOC2 rollout after AUTH-123 came up in the Acme demo.',
+      'bucket-1',
+      0,
+      'doc-1',
+    )
+
+    expect(graph.addEntityMentions).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ name: 'Acme security review deck', type: 'artifact' }),
+      expect.objectContaining({ name: 'SOC2 rollout', type: 'project' }),
+      expect.objectContaining({ name: 'AUTH-123', type: 'issue' }),
+      expect.objectContaining({ name: 'Acme demo', type: 'meeting' }),
+    ]))
+    expect(graph.addTriple).toHaveBeenCalledWith(expect.objectContaining({
+      predicate: 'DESCRIBES',
+      subjectType: 'artifact',
+      objectType: 'project',
     }))
   })
 

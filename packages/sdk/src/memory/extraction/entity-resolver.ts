@@ -570,8 +570,8 @@ export class EntityResolver {
       externalIds: mergeExternalIds(existing.externalIds, incoming.externalIds),
       properties,
       descriptionEmbedding,
-      // Keep existing type unless it's generic and incoming is more specific
-      entityType: (existing.entityType === 'entity' || existing.entityType === 'other')
+      // Keep existing type unless it is a generic/fallback type and incoming is more specific.
+      entityType: (existing.entityType === 'entity' || existing.entityType === 'other' || existing.entityType === 'concept')
         ? incoming.entityType
         : existing.entityType,
     }
@@ -1028,10 +1028,10 @@ function trigramJaccard(a: string, b: string): number {
 /**
  * Check if two entity types are compatible for merging.
  * Prevents merging a person with a location, etc.
- * Generic types ("entity", "other", "") are compatible with anything.
+ * Generic/fallback types are compatible with anything.
  */
 function typesCompatible(a: string, b: string): boolean {
-  const GENERIC_TYPES = new Set(['entity', 'other', ''])
+  const GENERIC_TYPES = new Set(['entity', 'other', 'concept', ''])
   return a === b || GENERIC_TYPES.has(a) || GENERIC_TYPES.has(b)
 }
 

@@ -6,6 +6,7 @@ import type { QueryEntityScope, QuerySignals } from './query.js'
 import type { PaginationOpts } from './pagination.js'
 import type { TelemetryOpts } from './events.js'
 import type { Visibility } from './typegraph-document.js'
+import type { PredicateTemporalStatus } from '../index-engine/ontology.js'
 
 // ── Memory method opts ──
 // All memory ops take a unified (payload, opts) shape. `opts` extends
@@ -94,6 +95,9 @@ export interface UpsertGraphEdgeInput extends typegraphIdentity {
   properties?: Record<string, unknown> | undefined
   description?: string | undefined
   evidenceText?: string | undefined
+  temporalStatus?: PredicateTemporalStatus | undefined
+  validFrom?: string | undefined
+  validTo?: string | undefined
   sourceChunkId?: string | undefined
   visibility?: Visibility | undefined
 }
@@ -107,10 +111,45 @@ export interface UpsertGraphFactInput extends typegraphIdentity {
   factText?: string | undefined
   description?: string | undefined
   evidenceText?: string | undefined
+  temporalStatus?: PredicateTemporalStatus | undefined
+  validFrom?: string | undefined
+  validTo?: string | undefined
   sourceChunkId?: string | undefined
   confidence?: number | undefined
   properties?: Record<string, unknown> | undefined
   visibility?: Visibility | undefined
+}
+
+export interface MergeGraphEntitiesInput extends typegraphIdentity {
+  sourceEntityId: string
+  targetEntityId: string
+  properties?: Record<string, unknown> | undefined
+}
+
+export interface MergeGraphEntitiesResult {
+  target: EntityDetail
+  sourceEntityId: string
+  targetEntityId: string
+  redirectedEdges: number
+  redirectedFacts: number
+  redirectedGraphEdges: number
+  movedMentions: number
+  movedExternalIds: number
+  removedSelfEdges: number
+}
+
+export interface DeleteGraphEntityOpts extends typegraphIdentity {
+  mode?: 'invalidate' | 'purge' | undefined
+}
+
+export interface DeleteGraphEntityResult {
+  entityId: string
+  mode: 'invalidate' | 'purge'
+  deletedEdges: number
+  deletedFacts: number
+  deletedGraphEdges: number
+  deletedMentions: number
+  deletedExternalIds: number
 }
 
 /**
@@ -175,6 +214,9 @@ export interface KnowledgeGraphBridge {
     objectDescription?: string
     relationshipDescription?: string | undefined
     evidenceText?: string | undefined
+    temporalStatus?: PredicateTemporalStatus | undefined
+    validFrom?: string | undefined
+    validTo?: string | undefined
     sourceChunkId?: string | undefined
     confidence?: number
     content: string
@@ -201,6 +243,12 @@ export interface KnowledgeGraphBridge {
 
   /** Attach deterministic external IDs to an existing entity. */
   linkExternalIds?(entityId: string, externalIds: ExternalId[], identity?: typegraphIdentity): Promise<EntityDetail>
+
+  /** Merge a duplicate source entity into a surviving target entity and rewrite graph references. */
+  mergeEntities?(input: MergeGraphEntitiesInput): Promise<MergeGraphEntitiesResult>
+
+  /** Invalidate or purge an entity and its graph references without deleting chunks/documents/memories. */
+  deleteEntity?(entityId: string, opts?: DeleteGraphEntityOpts): Promise<DeleteGraphEntityResult>
 
   /** Create or update a deterministic developer-seeded edge. */
   upsertEdge?(input: UpsertGraphEdgeInput): Promise<EdgeResult>

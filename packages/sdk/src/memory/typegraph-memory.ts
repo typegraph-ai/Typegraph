@@ -22,6 +22,7 @@ import { InvalidationEngine } from './extraction/invalidation.js'
 import { decayScore, DEFAULT_DECAY_CONFIG } from './consolidation/decay.js'
 import { createTemporal } from './temporal.js'
 import { generateId } from '../utils/id.js'
+import { DEFAULT_ENTITY_TYPE } from '../index-engine/ontology.js'
 import { createHash } from 'crypto'
 
 // ── Recall option shapes ──
@@ -147,6 +148,14 @@ export class TypegraphMemory {
     return `ent_${createHash('sha256').update(`${scopeKey}\u001f${key}`).digest('hex').slice(0, 32)}`
   }
 
+  private memorySubjectEntityType(subject: MemorySubject): string {
+    if (subject.entityType?.trim()) return subject.entityType.trim()
+    const identityType = subject.externalIds?.[0]?.identityType
+    if (identityType === 'user') return 'person'
+    if (identityType === 'tenant' || identityType === 'group') return 'organization'
+    return DEFAULT_ENTITY_TYPE
+  }
+
   private async resolveMemorySubject(subject: MemorySubject | undefined, visibility?: Visibility): Promise<SemanticEntity | null> {
     if (!subject) return null
     if (subject.entityId && this.store.getEntity) {
@@ -169,7 +178,7 @@ export class TypegraphMemory {
     return this.store.upsertEntity({
       id: subject.entityId ?? this.stableMemoryEntityId(subject),
       name,
-      entityType: subject.entityType ?? 'entity',
+      entityType: this.memorySubjectEntityType(subject),
       aliases: subject.aliases ?? [],
       externalIds: subject.externalIds,
       properties: subject.properties ?? {},

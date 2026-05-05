@@ -4,7 +4,7 @@ import { embeddingModelKey } from '../embedding/provider.js'
 import type { typegraphIdentity } from '../types/identity.js'
 import type { EmbeddingConfig } from '../types/bucket.js'
 import type { LLMConfig, LLMProvider } from '../types/llm-provider.js'
-import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, EntityScopeResolution, KnowledgeSearchOpts, KnowledgeSearchResult } from '../types/graph-bridge.js'
+import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, EntityScopeResolution, KnowledgeSearchOpts, KnowledgeSearchResult, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult } from '../types/graph-bridge.js'
 import { resolveEmbeddingProvider, resolveLLMProvider } from '../typegraph.js'
 import type { ExternalId, MemoryStoreAdapter, SemanticEdge, SemanticEntity, SemanticEntityMention, SemanticEntityChunkEdge, SemanticFactRecord, SemanticGraphEdge } from '../memory/types/index.js'
 import type { ChunkRef } from '../types/document.js'
@@ -18,6 +18,14 @@ import {
   formatFactEvidence,
 } from './retrieval-primitives.js'
 import { isSymmetricPredicate } from '../memory/extraction/predicate-normalizer.js'
+import {
+  ALIAS_ASSIGNMENT_CUES,
+  DEFAULT_ENTITY_TYPE,
+  GENERIC_DISALLOWED_PREDICATES,
+  sanitizePredicate,
+  validatePredicateTypes,
+  type PredicateTemporalStatus,
+} from '../index-engine/ontology.js'
 
 // ── Config ──
 
@@ -88,6 +96,10 @@ function cleanOptionalText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const cleaned = value.replace(/\s+/g, ' ').trim()
   return cleaned ? cleaned : undefined
+}
+
+function isAliasAssignmentRelation(predicate: string): boolean {
+  return ALIAS_ASSIGNMENT_CUES.has(sanitizePredicate(predicate))
 }
 
 function propertyString(properties: Record<string, unknown> | undefined, key: string): string | undefined {
@@ -200,12 +212,6 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   const graph = new EmbeddedGraph(memoryStore)
   const resolver = new EntityResolver({ store: memoryStore, embedding })
   const predicateNormalizer = new PredicateNormalizer(embedding)
-
-  // Generic predicates that add noise without information — filter these out
-  const GENERIC_PREDICATES = new Set([
-    'IS', 'IS_A', 'IS_AN', 'HAS', 'HAS_A', 'RELATED_TO', 'INVOLVES',
-    'MENTIONED', 'ASSOCIATED_WITH',
-  ])
 
   function uniqueIds(ids: string[]): string[] {
     return [...new Set(ids)]
@@ -768,7 +774,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     if (entity) {
       entity = await resolver.merge(entity, {
         name: input.name,
-        entityType: input.entityType ?? 'entity',
+        entityType: input.entityType ?? DEFAULT_ENTITY_TYPE,
         aliases: input.aliases ?? [],
         description: input.description,
         externalIds,
@@ -781,7 +787,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       entity = {
         id: input.id,
         name: input.name,
-        entityType: input.entityType ?? 'entity',
+        entityType: input.entityType ?? DEFAULT_ENTITY_TYPE,
         aliases: input.aliases ?? [],
         externalIds,
         properties: input.description ? { description: input.description } : {},
@@ -794,7 +800,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     } else {
       const resolved = await resolver.resolve(
         input.name,
-        input.entityType ?? 'entity',
+        input.entityType ?? DEFAULT_ENTITY_TYPE,
         input.aliases ?? [],
         scope,
         input.description,
@@ -857,7 +863,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       if (entity) return entity
       return upsertSeedEntity({
         name: ref,
-        entityType: 'entity',
+        entityType: DEFAULT_ENTITY_TYPE,
         tenantId: parentScope.tenantId,
         groupId: parentScope.groupId,
         userId: parentScope.userId,
@@ -908,9 +914,12 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     evidenceText?: string | undefined
     sourceChunkId?: string | undefined
     factText?: string | undefined
+    temporalStatus?: PredicateTemporalStatus | undefined
+    validFrom?: string | undefined
+    validTo?: string | undefined
   }): Promise<{ edge: SemanticEdge; fact?: SemanticFactRecord | undefined; source: SemanticEntity; target: SemanticEntity }> {
     const normalizedRelation = predicateNormalizer.normalizeWithDirection(input.relation)
-    if (!normalizedRelation.valid || GENERIC_PREDICATES.has(normalizedRelation.predicate)) {
+    if (!normalizedRelation.valid || GENERIC_DISALLOWED_PREDICATES.has(normalizedRelation.predicate)) {
       throw new Error(`Invalid or too-generic graph relation: ${input.relation}`)
     }
 
@@ -924,6 +933,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     if (source.id === target.id) throw new Error(`Refusing to create self-edge for entity ${source.id}`)
 
     const relation = normalizedRelation.predicate
+    const typeValidation = validatePredicateTypes(relation, source.entityType, target.entityType)
     if (normalizedRelation.symmetric) {
       const sourceKey = normalizeSurfaceText(source.id || source.name)
       const targetKey = normalizeSurfaceText(target.id || target.name)
@@ -935,16 +945,24 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const relationshipDescription = cleanOptionalText(input.description)
     const evidenceText = cleanOptionalText(input.evidenceText)
     const sourceChunkId = cleanOptionalText(input.sourceChunkId)
+    const temporalStatus = input.temporalStatus ?? normalizedRelation.temporalStatus
+    const validFrom = cleanOptionalText(input.validFrom)
+    const validTo = cleanOptionalText(input.validTo)
+    const weight = (input.weight ?? 1) * (typeValidation.valid ? 1 : 0.85)
     const edge: SemanticEdge = {
       id: stableGraphId('edge', [source.id, relation, target.id]),
       sourceEntityId: source.id,
       targetEntityId: target.id,
       relation,
-      weight: input.weight ?? 1,
+      weight,
       properties: {
         ...(relationshipDescription ? { relationshipDescription } : {}),
         ...(evidenceText ? { evidenceText } : {}),
         ...(sourceChunkId ? { sourceChunkId } : {}),
+        ...(temporalStatus ? { temporalStatus } : {}),
+        ...(validFrom ? { validFrom } : {}),
+        ...(validTo ? { validTo } : {}),
+        ...(!typeValidation.valid ? { predicateValidation: typeValidation } : {}),
         ...(input.properties ?? {}),
       },
       scope: input.scope,
@@ -981,6 +999,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         visibility: storedEdge.visibility,
         createdAt: storedEdge.temporal.createdAt,
         updatedAt: new Date(),
+        ...(storedEdge.temporal.invalidAt ? { invalidAt: storedEdge.temporal.invalidAt } : {}),
       })
     }
 
@@ -1089,7 +1108,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     })
     const result = await resolver.resolve(
       input.name,
-      input.type ?? 'entity',
+      input.type ?? DEFAULT_ENTITY_TYPE,
       input.aliases ?? [],
       scope,
       input.description,
@@ -1190,6 +1209,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     objectDescription?: string
     relationshipDescription?: string | undefined
     evidenceText?: string | undefined
+    temporalStatus?: PredicateTemporalStatus | undefined
+    validFrom?: string | undefined
+    validTo?: string | undefined
     sourceChunkId?: string | undefined
     confidence?: number
     content: string
@@ -1212,8 +1234,35 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       conversationId: triple.conversationId,
     })
 
+    if (isAliasAssignmentRelation(triple.predicate)) {
+      const alias = cleanOptionalText(triple.object)
+      const aliases = [...new Map([
+        ...(triple.subjectAliases ?? []),
+        ...(alias && normalizeSurfaceText(alias) !== normalizeSurfaceText(triple.subject) ? [alias] : []),
+        ...(triple.objectAliases ?? []),
+      ].map(value => [normalizeSurfaceText(value), value])).values()]
+      await resolveAndStoreEntity({
+        name: triple.subject,
+        type: triple.subjectType,
+        aliases,
+        description: triple.subjectDescription,
+        bucketId: triple.bucketId,
+        documentId: triple.documentId,
+        chunkIndex: triple.chunkIndex,
+        tenantId: triple.tenantId,
+        groupId: triple.groupId,
+        userId: triple.userId,
+        agentId: triple.agentId,
+        conversationId: triple.conversationId,
+        visibility: triple.visibility,
+        confidence: triple.confidence,
+        mentionType: 'entity',
+      })
+      return
+    }
+
     const normalizedRelation = predicateNormalizer.normalizeWithDirection(triple.predicate)
-    if (!normalizedRelation.valid || GENERIC_PREDICATES.has(normalizedRelation.predicate)) return
+    if (!normalizedRelation.valid || GENERIC_DISALLOWED_PREDICATES.has(normalizedRelation.predicate)) return
 
     let sourceInput = {
       name: triple.subject,
@@ -1271,10 +1320,14 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     if (sourceEntity.id === targetEntity.id) return
 
     const relation = normalizedRelation.predicate
-    const weight = triple.confidence ?? 1.0
+    const typeValidation = validatePredicateTypes(relation, sourceEntity.entityType, targetEntity.entityType)
+    const weight = (triple.confidence ?? 1.0) * (typeValidation.valid ? 1 : 0.85)
     const relationshipDescription = cleanOptionalText(triple.relationshipDescription)
     const evidenceText = cleanOptionalText(triple.evidenceText)
     const sourceChunkId = cleanOptionalText(triple.sourceChunkId)
+    const temporalStatus = triple.temporalStatus ?? normalizedRelation.temporalStatus
+    const validFrom = cleanOptionalText(triple.validFrom)
+    const validTo = cleanOptionalText(triple.validTo)
 
     if (textMentionsDirectionalContradiction({
       relation,
@@ -1305,6 +1358,10 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         ...(relationshipDescription ? { relationshipDescription } : {}),
         ...(evidenceText ? { evidenceText } : {}),
         ...(sourceChunkId ? { sourceChunkId } : {}),
+        ...(temporalStatus ? { temporalStatus } : {}),
+        ...(validFrom ? { validFrom } : {}),
+        ...(validTo ? { validTo } : {}),
+        ...(!typeValidation.valid ? { predicateValidation: typeValidation } : {}),
         ...(triple.metadata ? { metadata: triple.metadata } : {}),
       },
       scope,
@@ -1341,6 +1398,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         visibility: storedEdge.visibility,
         createdAt: storedEdge.temporal.createdAt,
         updatedAt: new Date(),
+        ...(storedEdge.temporal.invalidAt ? { invalidAt: storedEdge.temporal.invalidAt } : {}),
       })
     }
 
@@ -1455,6 +1513,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       description: input.description,
       evidenceText: input.evidenceText,
       sourceChunkId: input.sourceChunkId,
+      temporalStatus: input.temporalStatus,
+      validFrom: input.validFrom,
+      validTo: input.validTo,
     })
     return edgeResultFromSemanticEdge(
       result.edge,
@@ -1487,6 +1548,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       evidenceText: input.evidenceText,
       sourceChunkId: input.sourceChunkId,
       factText: input.factText,
+      temporalStatus: input.temporalStatus,
+      validFrom: input.validFrom,
+      validTo: input.validTo,
     })
     if (result.fact) {
       const [fact] = await hydrateFacts([result.fact], scope)
@@ -2669,6 +2733,25 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     return memoryStore.getEntityTypes ? memoryStore.getEntityTypes(identity) : []
   }
 
+  async function mergeEntities(input: MergeGraphEntitiesInput): Promise<MergeGraphEntitiesResult> {
+    if (!memoryStore.mergeEntityReferences) {
+      throw new ConfigError('MemoryStoreAdapter does not support transactional entity merge operations.')
+    }
+    const result = await memoryStore.mergeEntityReferences(input)
+    return {
+      ...result,
+      target: await getEntity(input.targetEntityId, input)
+        ?? result.target,
+    }
+  }
+
+  async function deleteEntity(entityId: string, opts: DeleteGraphEntityOpts = {}): Promise<DeleteGraphEntityResult> {
+    if (!memoryStore.deleteEntityReferences) {
+      throw new ConfigError('MemoryStoreAdapter does not support transactional entity delete operations.')
+    }
+    return memoryStore.deleteEntityReferences(entityId, opts)
+  }
+
   async function deploy(): Promise<void> {
     await memoryStore.initialize()
   }
@@ -2680,6 +2763,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     upsertEntities,
     resolveEntity,
     linkExternalIds,
+    mergeEntities,
+    deleteEntity,
     upsertEdge,
     upsertEdges,
     upsertFact,

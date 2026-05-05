@@ -5,7 +5,7 @@ import { buildScope } from '../../memory/index.js'
 
 const testScope = buildScope({ userId: 'test-user' })
 
-function makeEntity(id: string, name: string, type: string = 'entity'): SemanticEntity {
+function makeEntity(id: string, name: string, type: string = 'concept'): SemanticEntity {
   return {
     id,
     name,
@@ -130,6 +130,114 @@ function mockStore(
       }))
       const entity = entityId ? entities.get(entityId) : undefined
       return entity ? attachExternalIds(entity) : null
+    }),
+    mergeEntityReferences: vi.fn().mockImplementation(async ({ sourceEntityId, targetEntityId, properties }) => {
+      const source = entities.get(sourceEntityId)
+      const target = entities.get(targetEntityId)
+      if (!source || !target) throw new Error('entity not found')
+      const sourceExternalIds = externalIdsByEntity.get(sourceEntityId) ?? []
+      const targetExternalIds = externalIdsByEntity.get(targetEntityId) ?? []
+      const mergedExternalIds = [...targetExternalIds]
+      for (const externalId of sourceExternalIds) {
+        const key = externalIdKey(externalId)
+        const linked = externalEntityIdByKey.get(key)
+        if (linked && linked !== sourceEntityId && linked !== targetEntityId) throw new Error('external ID conflict')
+        externalEntityIdByKey.set(key, targetEntityId)
+        if (!mergedExternalIds.some(existing => externalIdKey(existing) === key)) mergedExternalIds.push(externalId)
+      }
+      externalIdsByEntity.delete(sourceEntityId)
+      externalIdsByEntity.set(targetEntityId, mergedExternalIds)
+      let redirectedEdges = 0
+      let removedSelfEdges = 0
+      for (const edge of edges) {
+        if (edge.sourceEntityId === sourceEntityId) {
+          edge.sourceEntityId = targetEntityId
+          edge.sourceId = targetEntityId
+          redirectedEdges += 1
+        }
+        if (edge.targetEntityId === sourceEntityId) {
+          edge.targetEntityId = targetEntityId
+          edge.targetId = targetEntityId
+          redirectedEdges += 1
+        }
+        if (edge.sourceEntityId === edge.targetEntityId) {
+          edge.temporal.invalidAt = new Date()
+          removedSelfEdges += 1
+        }
+      }
+      let movedMentions = 0
+      for (const mention of mentions) {
+        if (mention.entityId === sourceEntityId) {
+          mention.entityId = targetEntityId
+          movedMentions += 1
+        }
+      }
+      const updatedTarget: SemanticEntity = {
+        ...target,
+        aliases: [...new Set([...target.aliases, source.name, ...source.aliases])],
+        externalIds: mergedExternalIds,
+        properties: { ...source.properties, ...target.properties, ...(properties ?? {}) },
+      }
+      const mergedSource: SemanticEntity = {
+        ...source,
+        status: 'merged',
+        mergedIntoEntityId: targetEntityId,
+        temporal: { ...source.temporal, invalidAt: new Date() },
+      }
+      entities.set(targetEntityId, updatedTarget)
+      entities.set(sourceEntityId, mergedSource)
+      return {
+        target: {
+          id: updatedTarget.id,
+          name: updatedTarget.name,
+          entityType: updatedTarget.entityType,
+          aliases: updatedTarget.aliases,
+          externalIds: mergedExternalIds,
+          edgeCount: edges.filter(edge => edge.sourceEntityId === targetEntityId || edge.targetEntityId === targetEntityId).length,
+          properties: updatedTarget.properties,
+          createdAt: updatedTarget.temporal.createdAt,
+          validAt: updatedTarget.temporal.validAt,
+          topEdges: [],
+        },
+        sourceEntityId,
+        targetEntityId,
+        redirectedEdges,
+        redirectedFacts: 0,
+        redirectedGraphEdges: redirectedEdges,
+        movedMentions,
+        movedExternalIds: sourceExternalIds.length,
+        removedSelfEdges,
+      }
+    }),
+    deleteEntityReferences: vi.fn().mockImplementation(async (entityId: string, opts = {}) => {
+      const mode = opts.mode ?? 'invalidate'
+      const matchingEdges = edges.filter(edge => edge.sourceEntityId === entityId || edge.targetEntityId === entityId)
+      const matchingMentions = mentions.filter(mention => mention.entityId === entityId)
+      const matchingExternalIds = externalIdsByEntity.get(entityId) ?? []
+      if (mode === 'purge') {
+        entities.delete(entityId)
+        for (const externalId of matchingExternalIds) externalEntityIdByKey.delete(externalIdKey(externalId))
+        externalIdsByEntity.delete(entityId)
+      } else {
+        const entity = entities.get(entityId)
+        if (entity) {
+          entities.set(entityId, {
+            ...entity,
+            status: 'invalidated',
+            temporal: { ...entity.temporal, invalidAt: new Date() },
+          })
+        }
+      }
+      for (const edge of matchingEdges) edge.temporal.invalidAt = new Date()
+      return {
+        entityId,
+        mode,
+        deletedEdges: matchingEdges.length,
+        deletedFacts: 0,
+        deletedGraphEdges: matchingEdges.length,
+        deletedMentions: matchingMentions.length,
+        deletedExternalIds: matchingExternalIds.length,
+      }
     }),
     searchEntities: vi.fn().mockImplementation(async () => [...entities.values()].map(attachExternalIds)),
     searchEntitiesHybrid: vi.fn().mockImplementation(async (query: string) => {
@@ -281,6 +389,70 @@ describe('createKnowledgeGraphBridge', () => {
       expect(fact.relation).toBe('WORKS_FOR')
     })
 
+    it('merges entities through the graph bridge and rewrites references', async () => {
+      const entities = new Map<string, SemanticEntity>([
+        ['source', makeEntity('source', 'Pat Old', 'person')],
+        ['target', makeEntity('target', 'Pat Canonical', 'person')],
+        ['acme', makeEntity('acme', 'Acme', 'organization')],
+      ])
+      const edges = [makeEdge('edge-1', 'source', 'acme', 'WORKS_FOR')]
+      const mentions: MockMention[] = [{
+        entityId: 'source',
+        documentId: 'doc-1',
+        chunkIndex: 0,
+        bucketId: 'bucket-1',
+        mentionType: 'entity',
+        surfaceText: 'Pat Old',
+        normalizedSurfaceText: 'pat old',
+      }]
+      const store = mockStore(entities, edges, mentions)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      const result = await bridge.mergeEntities!({
+        sourceEntityId: 'source',
+        targetEntityId: 'target',
+        properties: { reviewed: true },
+      })
+
+      expect(result.sourceEntityId).toBe('source')
+      expect(result.targetEntityId).toBe('target')
+      expect(result.redirectedEdges).toBe(1)
+      expect(result.movedMentions).toBe(1)
+      expect(edges[0]!.sourceEntityId).toBe('target')
+      expect(mentions[0]!.entityId).toBe('target')
+      expect(entities.get('source')?.status).toBe('merged')
+      expect(entities.get('source')?.mergedIntoEntityId).toBe('target')
+      expect(entities.get('target')?.aliases).toContain('Pat Old')
+      expect(entities.get('target')?.properties.reviewed).toBe(true)
+    })
+
+    it('invalidates and purges entities through the graph bridge', async () => {
+      const entities = new Map<string, SemanticEntity>([
+        ['pat', makeEntity('pat', 'Pat', 'person')],
+        ['acme', makeEntity('acme', 'Acme', 'organization')],
+      ])
+      const edges = [makeEdge('edge-1', 'pat', 'acme', 'WORKS_FOR')]
+      const store = mockStore(entities, edges)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      const invalidated = await bridge.deleteEntity!('pat', { mode: 'invalidate' })
+      expect(invalidated.mode).toBe('invalidate')
+      expect(entities.get('pat')?.status).toBe('invalidated')
+      expect(edges[0]!.temporal.invalidAt).toBeInstanceOf(Date)
+
+      const purged = await bridge.deleteEntity!('acme', { mode: 'purge' })
+      expect(purged.mode).toBe('purge')
+      expect(entities.has('acme')).toBe(false)
+    })
+
     it('rejects external ID conflicts instead of reassigning identity', async () => {
       const entities = new Map<string, SemanticEntity>()
       const store = mockStore(entities)
@@ -416,7 +588,7 @@ describe('createKnowledgeGraphBridge', () => {
       expect(edges).toHaveLength(1)
 
       const edge = edges[0]!
-      expect(edge.relation).toBe('SUPPORTED')
+      expect(edge.relation).toBe('SUPPORTS')
       expect(edge.properties.content).toBeUndefined()
       expect(edge.properties.bucketId).toBeUndefined()
       expect(edge.properties.chunkIndex).toBeUndefined()
@@ -569,7 +741,7 @@ describe('createKnowledgeGraphBridge', () => {
       expect(foundByAsciiAlias[0]).toEqual(expect.objectContaining({ name: 'Cæsar Simon' }))
     })
 
-    it('does not persist self-edges after entity resolution', async () => {
+    it('routes alias predicates into entity aliases instead of graph edges', async () => {
       const entities = new Map<string, SemanticEntity>()
       const edges: SemanticEdge[] = []
       const store = mockStore(entities, edges)
@@ -594,6 +766,8 @@ describe('createKnowledgeGraphBridge', () => {
       })
 
       expect(edges).toHaveLength(0)
+      expect(entities.size).toBe(1)
+      expect([...entities.values()][0]?.aliases).toContain('Conway')
     })
 
     it('stores entity mentions even when no relationship is available', async () => {
@@ -786,7 +960,7 @@ describe('createKnowledgeGraphBridge', () => {
         ['alice', makeEntity('alice', 'Alice', 'person')],
         ['beta', makeEntity('beta', 'Beta Inc', 'organization')],
       ])
-      const edges = [makeEdge('edge-1', 'alice', 'beta', 'WORKS_AT')]
+      const edges = [makeEdge('edge-1', 'alice', 'beta', 'WORKS_FOR')]
       const store = mockStore(entities, edges)
       Object.assign(store, {
         listChunkBackfillRecords: vi.fn().mockImplementation(async ({ offset }: { offset?: number }) => {
@@ -857,7 +1031,7 @@ describe('createKnowledgeGraphBridge', () => {
       expect(result.entityProfilesUpdated).toBe(2)
       expect(store.upsertGraphEdges).toHaveBeenCalled()
       expect(store.upsertFactRecord).toHaveBeenCalledWith(expect.objectContaining({
-        factText: 'Alice works at Beta Inc',
+        factText: 'Alice works for Beta Inc',
       }))
     })
   })
@@ -998,15 +1172,15 @@ describe('createKnowledgeGraphBridge', () => {
     it('attaches selected graph facts and entity names to evidence chunks', async () => {
       const entities = new Map<string, SemanticEntity>([
         ['tennyson', makeEntity('tennyson', 'Tennyson', 'person')],
-        ['maud', makeEntity('maud', 'Maud', 'work_of_art')],
+        ['maud', makeEntity('maud', 'Maud', 'creative_work')],
       ])
-      const edges = [makeEdge('edge-1', 'tennyson', 'maud', 'WROTE')]
+      const edges = [makeEdge('edge-1', 'tennyson', 'maud', 'AUTHORED')]
       const fact: SemanticFactRecord = {
         id: 'fact-1',
         edgeId: 'edge-1',
         sourceEntityId: 'tennyson',
         targetEntityId: 'maud',
-        relation: 'WROTE',
+        relation: 'AUTHORED',
         factText: 'Tennyson wrote Maud',
         weight: 1,
         evidenceCount: 1,
@@ -1092,12 +1266,12 @@ describe('createKnowledgeGraphBridge', () => {
     it('ranks exact entity-constrained facts ahead of weaker adjacent facts and emits chains', async () => {
       const entities = new Map<string, SemanticEntity>([
         ['tennyson', makeEntity('tennyson', 'Tennyson', 'person')],
-        ['maud', makeEntity('maud', 'Maud', 'work_of_art')],
+        ['maud', makeEntity('maud', 'Maud', 'creative_work')],
         ['shell', makeEntity('shell', 'Tiny shell', 'object')],
         ['lizard', makeEntity('lizard', 'Lizard', 'place')],
       ])
       const edges = [
-        makeEdge('edge-1', 'tennyson', 'maud', 'WROTE'),
+        makeEdge('edge-1', 'tennyson', 'maud', 'AUTHORED'),
         makeEdge('edge-2', 'maud', 'shell', 'MORALISED'),
         makeEdge('edge-3', 'lizard', 'shell', 'CONTAINS'),
       ]
@@ -1121,7 +1295,7 @@ describe('createKnowledgeGraphBridge', () => {
           edgeId: 'edge-1',
           sourceEntityId: 'tennyson',
           targetEntityId: 'maud',
-          relation: 'WROTE',
+          relation: 'AUTHORED',
           factText: 'Tennyson wrote Maud',
           weight: 1,
           evidenceCount: 1,

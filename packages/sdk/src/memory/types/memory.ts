@@ -120,6 +120,12 @@ export interface SemanticEntity {
   externalIds?: ExternalId[] | undefined
   /** Arbitrary typed properties */
   properties: Record<string, unknown>
+  /** Entity lifecycle status. Missing/undefined is treated as active for older rows. */
+  status?: 'active' | 'merged' | 'invalidated' | undefined
+  /** Set when this entity was merged into another canonical entity. */
+  mergedIntoEntityId?: string | undefined
+  /** Set when the entity was invalidated or purged by an entity maintenance operation. */
+  deletedAt?: Date | undefined
   /** Embedding of the entity name for similarity matching */
   embedding?: number[] | undefined
   /** Embedding of the entity description for Phase 3.5 near-miss matching */
@@ -212,6 +218,7 @@ export interface SemanticFactRecord {
   visibility?: Visibility | undefined
   createdAt: Date
   updatedAt: Date
+  invalidAt?: Date | undefined
   similarity?: number | undefined
 }
 

@@ -14,6 +14,12 @@ import type {
   SemanticFactRecord,
 } from './memory.js'
 import type { ChunkRef } from '../../types/document.js'
+import type {
+  DeleteGraphEntityOpts,
+  DeleteGraphEntityResult,
+  MergeGraphEntitiesInput,
+  MergeGraphEntitiesResult,
+} from '../../types/graph-bridge.js'
 
 // ── Memory Filtering ──
 
@@ -128,6 +134,8 @@ export interface MemoryStoreAdapter {
   findEntities?(query: string, scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]>
   upsertEntityExternalIds?(entityId: string, externalIds: ExternalId[], scope: typegraphIdentity): Promise<void>
   findEntityByExternalId?(externalId: ExternalId, scope?: typegraphIdentity): Promise<SemanticEntity | null>
+  mergeEntityReferences?(input: MergeGraphEntitiesInput): Promise<MergeGraphEntitiesResult>
+  deleteEntityReferences?(entityId: string, opts: DeleteGraphEntityOpts): Promise<DeleteGraphEntityResult>
   searchEntities?(embedding: number[], scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]>
   searchEntitiesHybrid?(query: string, embedding: number[], scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]>
 

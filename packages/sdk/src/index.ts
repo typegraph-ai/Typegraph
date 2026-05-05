@@ -65,6 +65,10 @@ export type {
   UpsertGraphEntityInput,
   UpsertGraphEdgeInput,
   UpsertGraphFactInput,
+  MergeGraphEntitiesInput,
+  MergeGraphEntitiesResult,
+  DeleteGraphEntityOpts,
+  DeleteGraphEntityResult,
   EntityScopeResolution,
   KnowledgeSearchOpts,
   KnowledgeSearchResult,
@@ -141,7 +145,38 @@ export type { AISDKLLMInput } from './llm/index.js'
 export { PolicyEngine, PolicyViolationError } from './governance/index.js'
 
 // Index engine
-export { IndexEngine, defaultChunker, sha256, stripMarkdown } from './index-engine/index.js'
+export {
+  IndexEngine,
+  defaultChunker,
+  sha256,
+  stripMarkdown,
+  ENTITY_TYPES,
+  DEFAULT_ENTITY_TYPE,
+  VALID_ENTITY_TYPES,
+  ENTITY_TYPES_LIST,
+  ENTITY_TYPE_SPECS,
+  PREDICATE_SPECS,
+  ALL_PREDICATES,
+  PREDICATE_BY_NAME,
+  SYMMETRIC_PREDICATES,
+  GENERIC_DISALLOWED_PREDICATES,
+  ALIAS_RELATION_CUES,
+  ALIAS_ASSIGNMENT_CUES,
+  sanitizePredicate,
+  isSymmetricPredicate,
+  getPredicatesForPrompt,
+  normalizePredicateWithDirection,
+  validatePredicateTypes,
+} from './index-engine/index.js'
+export type {
+  EntityType,
+  EntityTypeSpec,
+  PredicateAliasSpec,
+  PredicateSpec,
+  PredicateTemporalStatus,
+  PredicateNormalization,
+  PredicateTypeValidation,
+} from './index-engine/index.js'
 
 // Query engine
 export { mergeAndRank, minMaxNormalize, calibrateSemantic, calibrateKeyword, normalizeGraphPPR } from './query/index.js'

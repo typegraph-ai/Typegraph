@@ -12,6 +12,7 @@ import type {
   MemoryBridge, KnowledgeGraphBridge,
   EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchTrace, ChunkResult,
   SubgraphOpts, SubgraphResult, GraphStats, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput,
+  MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult,
   RememberOpts, ForgetOpts, CorrectOpts, AddConversationTurnOpts,
   RecallOpts, HealthCheckOpts,
 } from './types/graph-bridge.js'
@@ -174,6 +175,8 @@ export interface GraphApi {
   upsertEntities(inputs: UpsertGraphEntityInput[], opts?: TelemetryOpts): Promise<EntityDetail[]>
   resolveEntity(ref: GraphEntityRef | string, identity?: typegraphIdentity, opts?: TelemetryOpts): Promise<EntityDetail | null>
   linkExternalIds(entityId: string, externalIds: ExternalId[], identity?: typegraphIdentity & TelemetryOpts): Promise<EntityDetail>
+  mergeEntities(input: MergeGraphEntitiesInput, opts?: TelemetryOpts): Promise<MergeGraphEntitiesResult>
+  deleteEntity(entityId: string, opts?: DeleteGraphEntityOpts & TelemetryOpts): Promise<DeleteGraphEntityResult>
   upsertEdge(input: UpsertGraphEdgeInput, opts?: TelemetryOpts): Promise<EdgeResult>
   upsertEdges(inputs: UpsertGraphEdgeInput[], opts?: TelemetryOpts): Promise<EdgeResult[]>
   upsertFact(input: UpsertGraphFactInput, opts?: TelemetryOpts): Promise<FactResult>
@@ -546,6 +549,30 @@ class TypegraphImpl implements typegraphInstance {
       if (!kg.linkExternalIds) throw new ConfigError('Knowledge graph bridge does not support deterministic entity external IDs.')
       const result = await kg.linkExternalIds(entityId, externalIds, identity)
       this.emitEvent('graph.entity.external_ids.link' as typegraphEventType, entityId, { count: externalIds.length }, identity)
+      return result
+    },
+
+    mergeEntities: async (input: MergeGraphEntitiesInput, opts?: TelemetryOpts): Promise<MergeGraphEntitiesResult> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.mergeEntities) throw new ConfigError('Knowledge graph bridge does not support entity merge operations.')
+      const result = await kg.mergeEntities(input)
+      this.emitEvent('graph.entity.merge' as typegraphEventType, input.targetEntityId, {
+        sourceEntityId: input.sourceEntityId,
+        redirectedEdges: result.redirectedEdges,
+        redirectedFacts: result.redirectedFacts,
+      }, opts)
+      return result
+    },
+
+    deleteEntity: async (entityId: string, opts?: DeleteGraphEntityOpts & TelemetryOpts): Promise<DeleteGraphEntityResult> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.deleteEntity) throw new ConfigError('Knowledge graph bridge does not support entity delete operations.')
+      const result = await kg.deleteEntity(entityId, opts)
+      this.emitEvent('graph.entity.delete' as typegraphEventType, entityId, {
+        mode: result.mode,
+        deletedEdges: result.deletedEdges,
+        deletedFacts: result.deletedFacts,
+      }, opts)
       return result
     },
 

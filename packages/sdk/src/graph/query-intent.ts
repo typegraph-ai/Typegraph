@@ -327,7 +327,7 @@ function parseDirectFact(query: string): IntentDraft | null {
   ])
   if (match) {
     const targetEntityQueries = entity(match[1])
-    const verb = query.match(/\b(authored|composed)\b/i)?.[1]?.toUpperCase() ?? 'WROTE'
+    const verb = query.match(/\b(authored|composed)\b/i)?.[1]?.toUpperCase() ?? 'AUTHORED'
     return draft({ targetEntityQueries, predicates: predicate(verb), mode: 'fact', strictness: 'strict', matchedPatterns: ['work-target'] })
   }
 
@@ -336,7 +336,7 @@ function parseDirectFact(query: string): IntentDraft | null {
   ])
   if (match) {
     const sourceEntityQueries = entity(match[1])
-    return draft({ sourceEntityQueries, predicates: predicate('WROTE'), mode: 'fact', strictness: 'strict', matchedPatterns: ['work-source'] })
+    return draft({ sourceEntityQueries, predicates: predicate('AUTHORED'), mode: 'fact', strictness: 'strict', matchedPatterns: ['work-source'] })
   }
 
   match = matchOne(query, [
@@ -352,8 +352,7 @@ function parseDirectFact(query: string): IntentDraft | null {
   ])
   if (match) {
     const sourceEntityQueries = entity(match[1])
-    const predicateName = /co[-\s]?found/i.test(match[2] ?? '') ? 'CO_FOUNDED' : 'FOUNDED'
-    return draft({ sourceEntityQueries, predicates: predicate(predicateName), mode: 'fact', strictness: 'strict', matchedPatterns: ['founded-source'] })
+    return draft({ sourceEntityQueries, predicates: predicate('FOUNDED'), mode: 'fact', strictness: 'strict', matchedPatterns: ['founded-source'] })
   }
 
   match = matchOne(query, [
@@ -361,7 +360,7 @@ function parseDirectFact(query: string): IntentDraft | null {
   ])
   if (match) {
     const sourceEntityQueries = entity(match[1])
-    return draft({ sourceEntityQueries, predicates: predicate('BORN_IN'), mode: 'fact', strictness: 'strict', matchedPatterns: ['born-in'] })
+    return draft({ sourceEntityQueries, predicates: predicate('LOCATED_IN'), mode: 'fact', strictness: 'strict', matchedPatterns: ['born-in'] })
   }
 
   match = matchOne(query, [
@@ -534,9 +533,9 @@ async function parseWithLlm(query: string, llm: LLMProvider): Promise<ParsedGrap
     '',
     'Examples:',
     '- "Who founded Stripe?" -> {"sourceEntityQueries":[],"targetEntityQueries":["Stripe"],"predicates":[{"name":"FOUNDED","confidence":0.98}],"subqueries":["Stripe founded"],"mode":"fact","strictness":"strict"}',
-    '- "What did Ada Lovelace write?" -> {"sourceEntityQueries":["Ada Lovelace"],"targetEntityQueries":[],"predicates":[{"name":"WROTE","confidence":0.98}],"subqueries":["Ada Lovelace wrote"],"mode":"fact","strictness":"strict"}',
-    '- "Who wrote Frankenstein?" -> {"sourceEntityQueries":[],"targetEntityQueries":["Frankenstein"],"predicates":[{"name":"WROTE","confidence":0.98}],"subqueries":["Frankenstein wrote"],"mode":"fact","strictness":"strict"}',
-    '- "Where was Marie Curie born?" -> {"sourceEntityQueries":["Marie Curie"],"targetEntityQueries":[],"predicates":[{"name":"BORN_IN","confidence":0.98}],"subqueries":["Marie Curie born in"],"mode":"fact","strictness":"strict"}',
+    '- "What did Ada Lovelace write?" -> {"sourceEntityQueries":["Ada Lovelace"],"targetEntityQueries":[],"predicates":[{"name":"AUTHORED","confidence":0.98}],"subqueries":["Ada Lovelace authored"],"mode":"fact","strictness":"strict"}',
+    '- "Who wrote Frankenstein?" -> {"sourceEntityQueries":[],"targetEntityQueries":["Frankenstein"],"predicates":[{"name":"AUTHORED","confidence":0.98}],"subqueries":["Frankenstein authored"],"mode":"fact","strictness":"strict"}',
+    '- "Where was Marie Curie born?" -> {"sourceEntityQueries":["Marie Curie"],"targetEntityQueries":[],"predicates":[{"name":"LOCATED_IN","confidence":0.98}],"subqueries":["Marie Curie born in"],"mode":"fact","strictness":"strict"}',
     '- "Who was Hamlet killed by?" -> {"sourceEntityQueries":[],"targetEntityQueries":["Hamlet"],"predicates":[{"name":"KILLED","confidence":0.98}],"subqueries":["Hamlet killed"],"mode":"fact","strictness":"strict"}',
     '- "Summarize the relationship between Tesla and Edison" -> {"sourceEntityQueries":["Tesla"],"targetEntityQueries":["Edison"],"predicates":[],"subqueries":["Tesla Edison relationship"],"mode":"summary","strictness":"soft"}',
     '- "How are Kubernetes and Docker related?" -> {"sourceEntityQueries":["Kubernetes"],"targetEntityQueries":["Docker"],"predicates":[],"subqueries":["Kubernetes Docker relationship"],"mode":"relationship","strictness":"soft"}',

@@ -554,7 +554,7 @@ For each entity, provide:
   NEVER include as aliases:
   - Pronouns or pronoun phrases (he, she, it, they, them, we, his, her, its)
   - Generic references (the team, the roster, the company, the city, the league, the organization, the event, the protocol, the framework, the ingredient)
-  - Surnames or first names alone as canonical entity names (Curry, Obama, Kevin, Marie). A bare surname may be an alias only when the same passage or prior context clearly ties it to a full person entity, e.g. "Conway" after "Cole Conway"
+  - Surnames or first names alone as canonical entity names (Curry, Obama, Kevin, Marie). A bare surname may be an alias only when the same chunk or prior context clearly ties it to a full person entity, e.g. "Conway" after "Cole Conway"
   - Names of DIFFERENT entities — "FIBA Hall of Fame" and "Naismith Hall of Fame" are SEPARATE entities; "React" and "React Native" are SEPARATE; "Python 2" and "Python 3" are SEPARATE
   - Descriptive phrases (the American team, the defending champions, the former president, the lead researcher, the main ingredient)
   - Country/city names for their teams — "France" is NOT an alias of "France men's national basketball team"; "Brazil" is NOT an alias of "Brazil national football team"
@@ -682,7 +682,7 @@ function buildEntityExtractionPrompt(content: string, entityContext?: EntityCont
     -- NEVER include as aliases:
     --- Pronouns or pronoun phrases (he, she, it, they, them, we, his, her, its)
     --- Generic references (the team, the roster, the company, the city, the league, the organization, the event, the protocol, the framework, the ingredient)
-    --- Surnames or first names alone as canonical entity names (Curry, Obama, Kevin, Marie). A bare surname may be an alias only when the same passage or prior context clearly ties it to a full person entity, e.g. "Conway" after "Cole Conway"
+    --- Surnames or first names alone as canonical entity names (Curry, Obama, Kevin, Marie). A bare surname may be an alias only when the same chunk or prior context clearly ties it to a full person entity, e.g. "Conway" after "Cole Conway"
     --- Names of DIFFERENT entities — "FIBA Hall of Fame" and "Naismith Hall of Fame" are SEPARATE entities; "React" and "React Native" are SEPARATE; "Python 2" and "Python 3" are SEPARATE
     --- Descriptive phrases (the American team, the defending champions, the former president, the lead researcher, the main ingredient)
     --- Country/city names for their teams — "France" is NOT an alias of "France men's national basketball team"; "Brazil" is NOT an alias of "Brazil national football team"
@@ -1042,10 +1042,6 @@ export class TripleExtractor {
     }
 
     return { entities: entities.map(e => ({ name: e.name, type: e.type })) }
-  }
-
-  async persistPassageNodes(nodes: Parameters<NonNullable<KnowledgeGraphBridge['upsertPassageNodes']>>[0]): Promise<void> {
-    await this.graph.upsertPassageNodes?.(nodes)
   }
 
   /** Single combined LLM call for entities + relationships. Used only when twoPass is disabled. */

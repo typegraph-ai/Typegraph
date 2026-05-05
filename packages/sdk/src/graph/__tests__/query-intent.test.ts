@@ -421,7 +421,7 @@ describe('parseGraphQueryIntent', () => {
     'what is going on here?',
     'summarize this',
     'why does this matter?',
-    'compare the two passages',
+    'compare the two chunks',
   ])('returns no parser for non-actionable graph query %s', async (query) => {
     const result = await parseGraphQueryIntent({ query })
 

@@ -6,6 +6,8 @@ import { embeddingModelKey } from '../embedding/provider.js'
 import type { EntityResult, FactResult, GraphSearchTrace, MemoryBridge, KnowledgeGraphBridge } from '../types/graph-bridge.js'
 import type { typegraphEvent, typegraphEventSink } from '../types/events.js'
 import type { typegraphLogger } from '../types/logger.js'
+import type { ChunkRef } from '../types/document.js'
+import { ConfigError } from '../types/errors.js'
 import { IndexedRunner } from './runners/indexed.js'
 import { MemoryRunner } from './runners/memory-runner.js'
 import { GraphRunner, type GraphRunResult } from './runners/graph-runner.js'
@@ -279,8 +281,8 @@ function partitionResults(
 
   return {
     chunks,
-    facts: signals.graph ? uniqueById(graphFacts) : [],
-    entities: signals.graph ? uniqueById(graphEntities) : [],
+    facts: graphFacts.length > 0 ? uniqueById(graphFacts) : [],
+    entities: graphEntities.length > 0 ? uniqueById(graphEntities) : [],
     memories: signals.memory ? memories : [],
     ...(signals.graph && graphTrace ? { graphTrace } : {}),
   }
@@ -301,6 +303,16 @@ function resultCounts(results: QueryResults): {
     factCount: results.facts.length,
     entityCount: results.entities.length,
     memoryCount,
+  }
+}
+
+function boostScopedCandidates(candidates: RetrievalCandidate[], chunkRefs: ChunkRef[]): void {
+  if (chunkRefs.length === 0) return
+  const scoped = new Set(chunkRefs.map(ref => `${ref.bucketId}:${ref.documentId}:${ref.chunkIndex}`))
+  for (const candidate of candidates) {
+    if (!scoped.has(resultIdentityKey(candidate))) continue
+    candidate.normalizedScore = Math.min(1, candidate.normalizedScore * 1.15 + 0.05)
+    candidate.rawScores.semantic = Math.min(1, (candidate.rawScores.semantic ?? candidate.normalizedScore) * 1.15 + 0.05)
   }
 }
 
@@ -365,6 +377,22 @@ export class QueryPlanner {
     const needsGraph = Boolean(signals.graph && this.knowledgeGraph)
     const needsMemory = Boolean(signals.memory && this.memory)
     const identity = { tenantId: opts.tenantId, groupId: opts.groupId, userId: opts.userId, agentId: opts.agentId, conversationId: opts.conversationId }
+    const entityScopeMode = opts.entityScope?.mode ?? 'filter'
+    let scopedEntityIds: string[] = []
+    let scopedChunkRefs: ChunkRef[] = []
+    const graphScopedQuery = Boolean(opts.entityScope && (needsIndexedSearch || signals.graph))
+    if (opts.entityScope && graphScopedQuery) {
+      if (!this.knowledgeGraph?.resolveEntityScope) {
+        throw new ConfigError('entityScope requires a knowledge graph bridge with entity scope resolution.')
+      }
+      const resolved = await this.knowledgeGraph.resolveEntityScope(opts.entityScope, identity, {
+        bucketIds: activeBucketIds,
+        limit: Math.max(count * 50, 200),
+      })
+      scopedEntityIds = resolved.entityIds
+      scopedChunkRefs = resolved.chunkRefs
+      if (resolved.warnings) warnings.push(...resolved.warnings)
+    }
 
     // Timeouts (user-configurable or defaults)
     const timeouts = {
@@ -385,7 +413,7 @@ export class QueryPlanner {
         try {
           const memoryRunner = new MemoryRunner(this.memory!)
           const memResults = await withTimeout(
-            memoryRunner.run(text, identity, count, { useKeyword: signals.keyword }),
+            memoryRunner.run(text, identity, count, { useKeyword: signals.keyword, entityScope: opts.entityScope }),
             timeouts.memory,
             [] as RetrievalCandidate[]
           )
@@ -402,7 +430,10 @@ export class QueryPlanner {
         try {
           const graphRunner = new GraphRunner(this.knowledgeGraph!)
           const graphRun = await withTimeout(
-            graphRunner.run(text, identity, count, activeBucketIds, opts.graph),
+            graphRunner.run(text, identity, count, activeBucketIds, {
+              ...opts.graph,
+              ...(opts.entityScope ? { entityScope: opts.entityScope, resolvedEntityIds: scopedEntityIds } : {}),
+            }),
             timeouts.graph,
             { results: [], facts: [], entities: [] } as GraphRunResult
           )
@@ -475,7 +506,18 @@ export class QueryPlanner {
 
       try {
         const results = await withTimeout(
-          runner.run(text, modelGroups, count, identity, opts.documentFilter, signals, opts.traceId, opts.spanId, opts.temporalAt),
+          runner.run(
+            text,
+            modelGroups,
+            count,
+            identity,
+            opts.documentFilter,
+            signals,
+            opts.traceId,
+            opts.spanId,
+            opts.temporalAt,
+            opts.entityScope && entityScopeMode === 'filter' ? scopedChunkRefs : undefined,
+          ),
           timeouts.indexed,
           [] as RetrievalCandidate[]
         )
@@ -520,6 +562,25 @@ export class QueryPlanner {
     let graphFacts: FactResult[] = []
     let graphEntities: EntityResult[] = []
     let graphTrace: GraphSearchTrace | undefined
+    if (opts.entityScope && entityScopeMode === 'boost') {
+      boostScopedCandidates(allResults, scopedChunkRefs)
+    }
+    if (needsIndexedSearch && this.knowledgeGraph?.searchKnowledge) {
+      try {
+        const direct = await this.knowledgeGraph.searchKnowledge(text, identity, {
+          count,
+          signals,
+          entityScope: opts.entityScope,
+          resolvedEntityIds: scopedEntityIds,
+        })
+        graphFacts = direct.facts
+        graphEntities = direct.entities
+      } catch (err) {
+        const msg = `Knowledge search failed: ${err instanceof Error ? err.message : String(err)}`
+        warnings.push(msg)
+        this.logger?.warn(msg)
+      }
+    }
     if (needsGraph || needsMemory) {
       // Skip memory runner if store has no memories (avoids empty table query per query)
       const skipMemory = !needsMemory || (this.memory?.hasMemories ? !(await this.memory.hasMemories()) : false)
@@ -529,6 +590,7 @@ export class QueryPlanner {
             new MemoryRunner(this.memory!).run(text, identity, count, {
               ...(opts.temporalAt ? { temporalAt: opts.temporalAt } : {}),
               ...(opts.includeInvalidated != null ? { includeInvalidated: opts.includeInvalidated } : {}),
+              ...(opts.entityScope ? { entityScope: opts.entityScope } : {}),
               useKeyword: signals.keyword,
             }).catch((err) => { this.logger?.warn(`MemoryRunner failed: ${err instanceof Error ? err.message : err}`); warnings.push(`Memory search failed: ${err instanceof Error ? err.message : String(err)}`); return [] as RetrievalCandidate[] }),
             timeouts.memory,
@@ -538,7 +600,10 @@ export class QueryPlanner {
       const graphPromise = !needsGraph
         ? Promise.resolve({ results: [], facts: [], entities: [] } as GraphRunResult)
         : withTimeout(
-            new GraphRunner(this.knowledgeGraph!).run(text, identity, count, activeBucketIds, opts.graph)
+            new GraphRunner(this.knowledgeGraph!).run(text, identity, count, activeBucketIds, {
+              ...opts.graph,
+              ...(opts.entityScope ? { entityScope: opts.entityScope, resolvedEntityIds: scopedEntityIds } : {}),
+            })
               .catch((err) => { this.logger?.warn(`GraphRunner failed: ${err instanceof Error ? err.message : err}`); warnings.push(`Graph search failed: ${err instanceof Error ? err.message : String(err)}`); return { results: [], facts: [], entities: [] } as GraphRunResult }),
             timeouts.graph,
             { results: [], facts: [], entities: [] } as GraphRunResult
@@ -549,8 +614,8 @@ export class QueryPlanner {
         graphPromise,
       ])
       const graphResults = graphRun.results
-      graphFacts = graphRun.facts
-      graphEntities = graphRun.entities
+      graphFacts = [...graphFacts, ...graphRun.facts]
+      graphEntities = [...graphEntities, ...graphRun.entities]
       graphTrace = graphRun.trace
 
       if (memResults.length > 0) {

@@ -27,10 +27,20 @@ export interface EmbeddedChunk {
   indexedAt: Date
 }
 
+export interface ChunkRef {
+  bucketId: string
+  documentId: string
+  chunkIndex: number
+  embeddingModel?: string | undefined
+  chunkId?: string | undefined
+}
+
 export interface ChunkFilter {
   bucketId?: string | undefined
   /** Filter to any of several buckets. Preferred over `bucketId` when searching multiple. */
   bucketIds?: string[] | undefined
+  /** Restrict search to exact chunk identities. Empty array intentionally matches nothing. */
+  chunkRefs?: ChunkRef[] | undefined
   tenantId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined

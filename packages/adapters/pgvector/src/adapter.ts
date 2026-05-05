@@ -345,6 +345,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     const hasExplicitFilter =
       filter.bucketId != null ||
       (filter.bucketIds != null && filter.bucketIds.length > 0) ||
+      filter.chunkRefs != null ||
       filter.tenantId != null ||
       filter.groupId != null ||
       filter.userId != null ||
@@ -877,6 +878,23 @@ function buildWhere(filter?: ChunkFilter): { where: string; params: unknown[] } 
   if (filter?.bucketIds != null && filter.bucketIds.length > 0) {
     params.push(filter.bucketIds)
     conditions.push(`bucket_id = ANY($${params.length}::text[])`)
+  }
+  if (filter?.chunkRefs != null) {
+    if (filter.chunkRefs.length === 0) {
+      conditions.push('FALSE')
+    } else {
+      params.push(filter.chunkRefs.map(ref => ref.bucketId))
+      const bucketParam = `$${params.length}`
+      params.push(filter.chunkRefs.map(ref => ref.documentId))
+      const documentParam = `$${params.length}`
+      params.push(filter.chunkRefs.map(ref => ref.chunkIndex))
+      const chunkParam = `$${params.length}`
+      conditions.push(
+        `(bucket_id, document_id, chunk_index) IN (` +
+        `SELECT * FROM unnest(${bucketParam}::text[], ${documentParam}::text[], ${chunkParam}::int[])` +
+        `)`
+      )
+    }
   }
   if (filter?.tenantId != null) {
     params.push(filter.tenantId)

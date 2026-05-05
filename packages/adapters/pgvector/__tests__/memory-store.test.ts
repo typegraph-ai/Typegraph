@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ExternalId, SemanticFactRecord } from '@typegraph-ai/sdk'
+import type { ExternalId, SemanticFactRecord, SemanticGraphEdge } from '@typegraph-ai/sdk'
 import { PgMemoryStoreAdapter } from '../src/memory-store.js'
 
 function makeFact(): SemanticFactRecord {
@@ -41,6 +41,78 @@ function rowFromParams(params: unknown[] = []): Record<string, unknown> {
 }
 
 describe('PgMemoryStoreAdapter', () => {
+  it('initializes the canonical graph-edge pattern without creating legacy passage tables', async () => {
+    const queries: string[] = []
+    const sql = vi.fn(async (query: string) => {
+      queries.push(query)
+      if (query.includes('FROM pg_constraint')) return []
+      return []
+    })
+    const store = new PgMemoryStoreAdapter({ sql, embeddingDimensions: 4 })
+
+    await store.initialize()
+
+    const ddl = queries.join('\n')
+    expect(ddl).toContain('typegraph_graph_edges')
+    expect(ddl).toContain('source_type')
+    expect(ddl).toContain('target_type')
+    expect(ddl).toContain("CHECK (source_type IN ('entity', 'chunk', 'memory'))")
+    expect(ddl).toContain('typegraph_entity_chunk_mentions')
+    expect(ddl).not.toContain('typegraph_passage_nodes')
+    expect(ddl).not.toContain('typegraph_passage_entity_edges')
+  })
+
+  it('upserts entity-to-chunk associations as typed graph edges with chunk refs', async () => {
+    let capturedQuery = ''
+    let capturedParams: unknown[] = []
+    const sql = vi.fn(async (query: string, params?: unknown[]) => {
+      capturedQuery = query
+      capturedParams = params ?? []
+      return []
+    })
+    const store = new PgMemoryStoreAdapter({ sql, embeddingDimensions: 4 })
+    const edge: SemanticGraphEdge = {
+      id: 'edge_chunk_1',
+      sourceType: 'entity',
+      sourceId: 'ent_pat',
+      targetType: 'chunk',
+      targetId: 'chunk_pat',
+      relation: 'MENTIONED_IN',
+      weight: 1.5,
+      properties: { mentionCount: 1 },
+      scope: { tenantId: 'tenant-1' },
+      targetChunkRef: {
+        bucketId: 'bucket-1',
+        documentId: 'doc-1',
+        chunkIndex: 2,
+        embeddingModel: 'mock-embed',
+        chunkId: 'chunk_pat',
+      },
+      visibility: 'tenant',
+      evidence: ['chunk_pat'],
+      temporal: {
+        validAt: new Date('2026-04-16T00:00:00Z'),
+        createdAt: new Date('2026-04-16T00:00:00Z'),
+      },
+    }
+
+    await store.upsertGraphEdges([edge])
+
+    expect(capturedQuery).toContain('INSERT INTO typegraph_graph_edges')
+    expect(capturedQuery).toContain('ON CONFLICT (source_type, source_id, target_type, target_id, relation)')
+    expect(capturedParams[1]).toBe('entity')
+    expect(capturedParams[2]).toBe('ent_pat')
+    expect(capturedParams[3]).toBe('chunk')
+    expect(capturedParams[4]).toBe('chunk_pat')
+    expect(capturedParams[14]).toBe('bucket-1')
+    expect(capturedParams[15]).toBe('doc-1')
+    expect(capturedParams[16]).toBe(2)
+    expect(capturedParams[17]).toBe('mock-embed')
+    expect(capturedParams[18]).toBe('chunk_pat')
+    expect(capturedParams[19]).toBe('tenant-1')
+    expect(capturedParams[24]).toBe('tenant')
+  })
+
   it('retries fact record upsert on duplicate deterministic fact id', async () => {
     const queries: string[] = []
     const sql = vi.fn(async (query: string, params?: unknown[]) => {

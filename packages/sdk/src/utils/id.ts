@@ -27,7 +27,7 @@ export interface ChunkIdInput {
 }
 
 /**
- * Generate the stable chunk id used by vector rows and graph passage nodes.
+ * Generate the stable chunk id used by vector rows and graph chunk endpoints.
  *
  * This keeps chunk identity in the SDK instead of letting each adapter invent
  * storage-local ids that graph code cannot know about.

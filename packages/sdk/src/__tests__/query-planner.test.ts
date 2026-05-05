@@ -7,8 +7,9 @@ import { createTestDocuments } from './helpers/mock-connector.js'
 import { IndexEngine } from '../index-engine/engine.js'
 import { defaultChunker } from '../index-engine/chunker.js'
 import type { EmbeddingProvider } from '../embedding/provider.js'
-import type { KnowledgeGraphBridge } from '../types/graph-bridge.js'
+import type { KnowledgeGraphBridge, MemoryBridge } from '../types/graph-bridge.js'
 import type { typegraphEvent, typegraphEventSink } from '../types/events.js'
+import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
 
 describe('QueryPlanner', () => {
   let adapter: ReturnType<typeof createMockAdapter>
@@ -166,9 +167,162 @@ describe('QueryPlanner', () => {
     expect(result.sources).toContain('semantic')
   })
 
+  it('returns direct facts and entities for semantic search without graph traversal', async () => {
+    const fact = {
+      id: 'fact-direct',
+      edgeId: 'edge-direct',
+      sourceEntityId: 'ent-pat',
+      sourceEntityName: 'Pat',
+      targetEntityId: 'ent-sms',
+      targetEntityName: 'SMS',
+      relation: 'PREFERS',
+      factText: 'Pat prefers SMS',
+      weight: 1,
+      evidenceCount: 1,
+    }
+    const entity = {
+      id: 'ent-pat',
+      name: 'Pat',
+      entityType: 'person',
+      aliases: [],
+      edgeCount: 1,
+    }
+    const knowledgeGraph: KnowledgeGraphBridge = {
+      searchKnowledge: vi.fn().mockResolvedValue({ facts: [fact], entities: [entity] }),
+      searchGraphChunks: vi.fn(),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, knowledgeGraph)
+
+    const response = await planner.execute('sms', {
+      signals: { semantic: true, keyword: false, graph: false },
+      count: 2,
+    })
+
+    expect(knowledgeGraph.searchKnowledge).toHaveBeenCalledWith('sms', expect.anything(), expect.objectContaining({
+      count: 2,
+      signals: expect.objectContaining({ semantic: true, keyword: false, graph: false }),
+    }))
+    expect(knowledgeGraph.searchGraphChunks).not.toHaveBeenCalled()
+    expect(response.results.chunks.length).toBeGreaterThan(0)
+    expect(response.results.facts).toEqual([expect.objectContaining({ id: 'fact-direct', factText: 'Pat prefers SMS' })])
+    expect(response.results.entities).toEqual([expect.objectContaining({ id: 'ent-pat', name: 'Pat' })])
+  })
+
+  it('prefilters indexed chunks with OR entity-scope chunk refs', async () => {
+    const [firstChunk, secondChunk] = [...adapter._chunks.values()][0]!
+    const externalId: ExternalId = { id: 'pat@example.com', type: 'email', identityType: 'user' }
+    const knowledgeGraph: KnowledgeGraphBridge = {
+      resolveEntityScope: vi.fn().mockResolvedValue({
+        entityIds: ['ent-1', 'ent-2'],
+        chunkRefs: [
+          {
+            bucketId: firstChunk!.bucketId,
+            documentId: firstChunk!.documentId,
+            chunkIndex: firstChunk!.chunkIndex,
+            embeddingModel: firstChunk!.embeddingModel,
+          },
+          {
+            bucketId: secondChunk!.bucketId,
+            documentId: secondChunk!.documentId,
+            chunkIndex: secondChunk!.chunkIndex,
+            embeddingModel: secondChunk!.embeddingModel,
+          },
+        ],
+      }),
+      searchKnowledge: vi.fn().mockResolvedValue({ facts: [], entities: [] }),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, knowledgeGraph)
+
+    const response = await planner.execute('Document', {
+      entityScope: { entityIds: ['ent-1', 'ent-2'], externalIds: [externalId] },
+      count: 10,
+    })
+    const searchCall = adapter.calls.find(call => call.method === 'search')
+
+    expect(knowledgeGraph.resolveEntityScope).toHaveBeenCalledWith(
+      { entityIds: ['ent-1', 'ent-2'], externalIds: [externalId] },
+      expect.anything(),
+      expect.anything(),
+    )
+    expect(searchCall).toBeDefined()
+    expect((searchCall!.args[2] as { filter?: unknown }).filter).toEqual(expect.objectContaining({
+      chunkRefs: [
+        {
+          bucketId: firstChunk!.bucketId,
+          documentId: firstChunk!.documentId,
+          chunkIndex: firstChunk!.chunkIndex,
+          embeddingModel: firstChunk!.embeddingModel,
+        },
+        {
+          bucketId: secondChunk!.bucketId,
+          documentId: secondChunk!.documentId,
+          chunkIndex: secondChunk!.chunkIndex,
+          embeddingModel: secondChunk!.embeddingModel,
+        },
+      ],
+    }))
+    expect(response.results.chunks).toHaveLength(2)
+    expect(response.results.chunks.map(chunk => `${chunk.document.bucketId}:${chunk.document.id}:${chunk.chunk.index}`)).toEqual(expect.arrayContaining([
+      `${firstChunk!.bucketId}:${firstChunk!.documentId}:${firstChunk!.chunkIndex}`,
+      `${secondChunk!.bucketId}:${secondChunk!.documentId}:${secondChunk!.chunkIndex}`,
+    ]))
+  })
+
+  it('throws for indexed entity scope without graph scope resolution', async () => {
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings)
+
+    await expect(planner.execute('Document', {
+      entityScope: { entityIds: ['ent-1'] },
+      count: 1,
+    })).rejects.toThrow('entityScope requires a knowledge graph bridge with entity scope resolution.')
+  })
+
+  it('allows memory-only entity scope without a knowledge graph bridge', async () => {
+    const email: ExternalId = { id: 'pat@example.com', type: 'email', identityType: 'user' }
+    const memory: MemoryRecord = {
+      id: 'mem-1',
+      category: 'semantic',
+      status: 'active',
+      content: 'Pat prefers SMS for urgent notices',
+      importance: 0.8,
+      accessCount: 0,
+      lastAccessedAt: new Date(),
+      metadata: { _similarity: 0.9 },
+      scope: { tenantId: 'tenant-1' },
+      validAt: new Date(),
+      createdAt: new Date(),
+    }
+    const memoryBridge: MemoryBridge = {
+      remember: vi.fn(),
+      forget: vi.fn(),
+      correct: vi.fn(),
+      addConversationTurn: vi.fn(),
+      recall: vi.fn().mockResolvedValue([memory]),
+      hasMemories: vi.fn().mockResolvedValue(true),
+    }
+    const planner = new QueryPlanner(adapter, [], new Map(), new Map(), memoryBridge)
+
+    const response = await planner.execute('urgent notices', {
+      tenantId: 'tenant-1',
+      signals: { semantic: false, keyword: false, memory: true, graph: false },
+      entityScope: { externalIds: [email] },
+      count: 3,
+    })
+
+    expect(memoryBridge.recall).toHaveBeenCalledWith('urgent notices', expect.objectContaining({
+      tenantId: 'tenant-1',
+      limit: 3,
+      entityScope: { externalIds: [email] },
+    }))
+    expect(response.results.memories).toEqual([expect.objectContaining({
+      id: 'mem-1',
+      content: 'Pat prefers SMS for urgent notices',
+    })])
+  })
+
   it('autoWeights adjusts scoring without enabling graph search', async () => {
     const knowledgeGraph: KnowledgeGraphBridge = {
-      searchGraphPassages: vi.fn().mockResolvedValue({
+      searchGraphChunks: vi.fn().mockResolvedValue({
         results: [],
         facts: [],
         entities: [],
@@ -182,17 +336,17 @@ describe('QueryPlanner', () => {
       count: 1,
     })
 
-    expect(knowledgeGraph.searchGraphPassages).not.toHaveBeenCalled()
+    expect(knowledgeGraph.searchGraphChunks).not.toHaveBeenCalled()
     expect(response.results.facts).toEqual([])
     expect(response.results.entities).toEqual([])
   })
 
-  it('returns nonzero graph scores for graph-only passage graph results', async () => {
+  it('returns nonzero graph scores for graph-only chunk graph results', async () => {
     const firstChunk = [...adapter._chunks.values()][0]![0]!
     const knowledgeGraph: KnowledgeGraphBridge = {
-      searchGraphPassages: vi.fn().mockResolvedValue({
+      searchGraphChunks: vi.fn().mockResolvedValue({
         results: [{
-          passageId: 'passage-test',
+          chunkId: 'chunk-test',
           content: firstChunk.content,
           bucketId: firstChunk.bucketId,
           documentId: firstChunk.documentId,
@@ -223,7 +377,7 @@ describe('QueryPlanner', () => {
         trace: {
           entitySeedCount: 1,
           factSeedCount: 1,
-          passageSeedCount: 1,
+          chunkSeedCount: 1,
           graphNodeCount: 3,
           graphEdgeCount: 2,
           pprNonzeroCount: 3,
@@ -232,7 +386,7 @@ describe('QueryPlanner', () => {
           topGraphScores: [0.25],
           selectedFactIds: ['fact-1'],
           selectedEntityIds: ['ent-1'],
-          selectedPassageIds: ['passage-test'],
+          selectedChunkIds: ['chunk-test'],
         },
       }),
     }
@@ -249,7 +403,7 @@ describe('QueryPlanner', () => {
     expect(response.results.chunks[0]!.scores.normalized.graph).toBeCloseTo(Math.sqrt(Math.sqrt(0.25)))
     expect(response.results.facts).toEqual([expect.objectContaining({ id: 'fact-1', factText: 'Tennyson wrote Maud' })])
     expect(response.results.entities).toEqual([expect.objectContaining({ id: 'ent-1', name: 'Tennyson' })])
-    expect(knowledgeGraph.searchGraphPassages).toHaveBeenCalledWith(
+    expect(knowledgeGraph.searchGraphChunks).toHaveBeenCalledWith(
       'Document 1',
       expect.anything(),
       expect.objectContaining({
@@ -257,7 +411,7 @@ describe('QueryPlanner', () => {
         factCandidateLimit: 80,
         factFilterInputLimit: 12,
         factSeedLimit: 4,
-        passageSeedLimit: 80,
+        chunkSeedLimit: 80,
         maxExpansionEdgesPerEntity: 25,
         factChainLimit: 2,
         maxPprIterations: 40,
@@ -269,9 +423,9 @@ describe('QueryPlanner', () => {
   it('merges graph scores into indexed results by chunk identity', async () => {
     const firstChunk = [...adapter._chunks.values()][0]![0]!
     const knowledgeGraph: KnowledgeGraphBridge = {
-      searchGraphPassages: vi.fn().mockResolvedValue({
+      searchGraphChunks: vi.fn().mockResolvedValue({
         results: [{
-          passageId: 'passage-test',
+          chunkId: 'chunk-test',
           content: `${firstChunk.content} with graph-only formatting`,
           bucketId: firstChunk.bucketId,
           documentId: firstChunk.documentId,
@@ -302,7 +456,7 @@ describe('QueryPlanner', () => {
         trace: {
           entitySeedCount: 1,
           factSeedCount: 1,
-          passageSeedCount: 1,
+          chunkSeedCount: 1,
           graphNodeCount: 3,
           graphEdgeCount: 2,
           pprNonzeroCount: 3,
@@ -311,7 +465,7 @@ describe('QueryPlanner', () => {
           topGraphScores: [0.36],
           selectedFactIds: ['fact-1'],
           selectedEntityIds: ['ent-1'],
-          selectedPassageIds: ['passage-test'],
+          selectedChunkIds: ['chunk-test'],
         },
       }),
     }
@@ -333,7 +487,7 @@ describe('QueryPlanner', () => {
     expect(response.results.entities).toEqual([expect.objectContaining({ id: 'ent-1', name: 'Tennyson' })])
   })
 
-  it('surfaces a misconfigured graph bridge when searchGraphPassages is missing', async () => {
+  it('surfaces a misconfigured graph bridge when searchGraphChunks is missing', async () => {
     const knowledgeGraph: KnowledgeGraphBridge = {}
     const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, knowledgeGraph)
 
@@ -346,7 +500,7 @@ describe('QueryPlanner', () => {
     expect(response.results.facts).toEqual([])
     expect(response.results.entities).toEqual([])
     expect(response.warnings).toEqual(expect.arrayContaining([
-      'Graph search failed: Knowledge graph bridge must implement searchGraphPassages for graph queries.',
+      'Graph search failed: Knowledge graph bridge must implement searchGraphChunks for graph queries.',
     ]))
   })
 })

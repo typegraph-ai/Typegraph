@@ -10,7 +10,7 @@ import type { typegraphHooks } from './types/hooks.js'
 import type { LLMProvider, LLMConfig } from './types/llm-provider.js'
 import type {
   MemoryBridge, KnowledgeGraphBridge,
-  EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchTrace, PassageResult,
+  EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchTrace, ChunkResult,
   SubgraphOpts, SubgraphResult, GraphStats, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput,
   RememberOpts, ForgetOpts, CorrectOpts, AddConversationTurnOpts,
   RecallOpts, HealthCheckOpts,
@@ -191,10 +191,10 @@ export interface GraphApi {
   } & typegraphIdentity): Promise<EdgeResult[]>
   searchFacts(query: string, opts?: FactSearchOpts & TelemetryOpts): Promise<FactResult[]>
   explore(query: string, opts?: GraphExploreOpts): Promise<GraphExploreResult>
-  getPassagesForEntity(entityId: string, opts?: {
+  getChunksForEntity(entityId: string, opts?: {
     bucketIds?: string[] | undefined
     limit?: number | undefined
-  } & typegraphIdentity): Promise<PassageResult[]>
+  } & typegraphIdentity): Promise<ChunkResult[]>
   explainQuery(query: string, opts?: GraphExplainOpts & TelemetryOpts): Promise<GraphSearchTrace>
   backfill(identity: typegraphIdentity, opts?: GraphBackfillOpts & TelemetryOpts): Promise<GraphBackfillResult>
   getSubgraph(opts: SubgraphOpts): Promise<SubgraphResult>
@@ -627,13 +627,13 @@ class TypegraphImpl implements typegraphInstance {
       return kg.explore(query, opts)
     },
 
-    getPassagesForEntity: async (entityId: string, opts?: {
+    getChunksForEntity: async (entityId: string, opts?: {
       bucketIds?: string[] | undefined
       limit?: number | undefined
-    } & typegraphIdentity): Promise<PassageResult[]> => {
+    } & typegraphIdentity): Promise<ChunkResult[]> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.getPassagesForEntity) throw new ConfigError('Knowledge graph bridge does not support passage lookup.')
-      return kg.getPassagesForEntity(entityId, opts)
+      if (!kg.getChunksForEntity) throw new ConfigError('Knowledge graph bridge does not support chunk lookup.')
+      return kg.getChunksForEntity(entityId, opts)
     },
 
     explainQuery: async (query: string, opts?: GraphExplainOpts & TelemetryOpts): Promise<GraphSearchTrace> => {

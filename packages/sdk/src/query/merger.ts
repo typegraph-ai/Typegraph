@@ -52,7 +52,7 @@ export function normalizeRRF(rrfScore: number, numLists: number, k = 60): number
 }
 
 /** Normalize graph PPR scores with fourth-root scaling.
- *  PPR is a probability mass and useful passage scores are often small
+ *  PPR is a probability mass and useful chunk scores are often small
  *  absolute values. Fourth-root scaling expands low-but-meaningful scores
  *  while keeping the mapping deterministic and comparable across queries. */
 export function normalizeGraphPPR(pprScore: number): number {

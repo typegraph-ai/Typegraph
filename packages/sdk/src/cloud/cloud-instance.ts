@@ -12,7 +12,7 @@ import type { PaginationOpts, PaginatedResult } from '../types/pagination.js'
 import type { ConversationTurnResult, MemoryHealthReport } from '../types/memory.js'
 import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
 import type { Job, JobFilter } from '../types/job.js'
-import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, PassageResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput } from '../types/graph-bridge.js'
+import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput } from '../types/graph-bridge.js'
 import { DEFAULT_BUCKET_ID, normalizeRawDocument } from '../typegraph.js'
 import { HttpClient } from './http-client.js'
 import type { CloudConfig } from './http-client.js'
@@ -161,13 +161,13 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
       const identity = { tenantId, groupId, userId, agentId, conversationId }
       return client.post<GraphExploreResult>('/v1/graph/explore', { query, identity, ...rest })
     },
-    async getPassagesForEntity(entityId: string, opts?: {
+    async getChunksForEntity(entityId: string, opts?: {
       bucketIds?: string[] | undefined
       limit?: number | undefined
-    } & typegraphIdentity): Promise<PassageResult[]> {
+    } & typegraphIdentity): Promise<ChunkResult[]> {
       const { tenantId, groupId, userId, agentId, conversationId, ...rest } = opts ?? {}
       const identity = { tenantId, groupId, userId, agentId, conversationId }
-      return client.post<PassageResult[]>(`/v1/graph/entities/${e(entityId)}/passages`, { ...rest, identity })
+      return client.post<ChunkResult[]>(`/v1/graph/entities/${e(entityId)}/chunks`, { ...rest, identity })
     },
     async explainQuery(query: string, opts?: GraphExplainOpts): Promise<GraphSearchTrace> {
       const { tenantId, groupId, userId, agentId, conversationId, ...rest } = opts ?? {}

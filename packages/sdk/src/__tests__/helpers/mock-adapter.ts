@@ -19,6 +19,16 @@ function cosineSimilarity(a: number[], b: number[]): number {
 function matchesFilter(chunk: EmbeddedChunk, filter: ChunkFilter): boolean {
   if (filter.bucketId && chunk.bucketId !== filter.bucketId) return false
   if (filter.bucketIds && filter.bucketIds.length > 0 && !filter.bucketIds.includes(chunk.bucketId)) return false
+  if (filter.chunkRefs) {
+    if (filter.chunkRefs.length === 0) return false
+    const matched = filter.chunkRefs.some(ref =>
+      ref.bucketId === chunk.bucketId &&
+      ref.documentId === chunk.documentId &&
+      ref.chunkIndex === chunk.chunkIndex &&
+      (ref.embeddingModel == null || ref.embeddingModel === chunk.embeddingModel)
+    )
+    if (!matched) return false
+  }
   if (filter.tenantId && chunk.tenantId !== filter.tenantId) return false
   if (filter.groupId && chunk.groupId !== filter.groupId) return false
   if (filter.userId && chunk.userId !== filter.userId) return false

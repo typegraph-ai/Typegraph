@@ -1,5 +1,6 @@
 import type { typegraphIdentity } from '../../types/identity.js'
 import type { Visibility } from '../../types/typegraph-document.js'
+import type { ChunkRef } from '../../types/document.js'
 
 // ── Memory Categories ──
 
@@ -147,24 +148,29 @@ export interface SemanticEntityMention {
   confidence?: number | undefined
 }
 
-export interface SemanticPassageNode {
+export type SemanticGraphNodeType = 'entity' | 'chunk' | 'memory'
+
+export interface SemanticGraphEdge {
   id: string
-  bucketId: string
-  documentId: string
-  chunkIndex: number
-  embeddingModel: string
-  contentHash: string
-  chunkId?: string | undefined
-  metadata: Record<string, unknown>
+  sourceType: SemanticGraphNodeType
+  sourceId: string
+  targetType: SemanticGraphNodeType
+  targetId: string
+  relation: string
+  weight: number
+  properties: Record<string, unknown>
   scope: typegraphIdentity
   visibility?: Visibility | undefined
-  createdAt: Date
-  updatedAt: Date
+  temporal: TemporalRecord
+  evidence: string[]
+  sourceChunkRef?: ChunkRef | undefined
+  targetChunkRef?: ChunkRef | undefined
 }
 
-export interface SemanticPassageEntityEdge {
-  passageId: string
+export interface SemanticEntityChunkEdge {
+  id: string
   entityId: string
+  chunkRef: ChunkRef
   weight: number
   mentionCount: number
   confidence?: number | undefined
@@ -174,6 +180,18 @@ export interface SemanticPassageEntityEdge {
   visibility?: Visibility | undefined
   createdAt?: Date | undefined
   updatedAt?: Date | undefined
+}
+
+export interface SemanticChunkRecord extends ChunkRef {
+  content: string
+  totalChunks: number
+  metadata: Record<string, unknown>
+  similarity?: number | undefined
+  tenantId?: string | undefined
+  groupId?: string | undefined
+  userId?: string | undefined
+  agentId?: string | undefined
+  conversationId?: string | undefined
 }
 
 export interface SemanticFactRecord {
@@ -202,6 +220,10 @@ export interface SemanticFactRecord {
 
 export interface SemanticEdge {
   id: string
+  sourceType?: 'entity' | undefined
+  sourceId?: string | undefined
+  targetType?: 'entity' | undefined
+  targetId?: string | undefined
   sourceEntityId: string
   targetEntityId: string
   /** Relationship type in SCREAMING_SNAKE_CASE: 'WORKS_AT', 'PREFERS', 'KNOWS' */

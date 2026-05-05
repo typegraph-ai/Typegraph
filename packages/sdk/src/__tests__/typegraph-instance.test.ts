@@ -253,13 +253,13 @@ describe('typegraphInit', () => {
       const result = await inst.graph.explore('plotline employees', {
         ...identity,
         depth: 1,
-        include: { passages: false },
+        include: { chunks: false },
       })
 
       expect(knowledgeGraph.explore).toHaveBeenCalledWith('plotline employees', {
         ...identity,
         depth: 1,
-        include: { passages: false },
+        include: { chunks: false },
       })
       expect(result).toEqual(exploreResult)
     })

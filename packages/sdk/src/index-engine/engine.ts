@@ -162,23 +162,6 @@ export class IndexEngine {
 
       if (!dryRun) {
         await this.adapter.upsertDocument(modelId, embeddedChunks)
-        if (shouldExtract) {
-          await this.tripleExtractor?.persistPassageNodes?.(embeddedChunks.map(chunk => ({
-            bucketId: chunk.bucketId,
-            documentId: chunk.documentId,
-            chunkIndex: chunk.chunkIndex,
-            chunkId: chunk.id,
-            embeddingModel: chunk.embeddingModel,
-            contentHash: sha256(chunk.content),
-            metadata: chunk.metadata,
-            visibility: chunk.visibility,
-            tenantId: chunk.tenantId,
-            groupId: chunk.groupId,
-            userId: chunk.userId,
-            agentId: chunk.agentId,
-            conversationId: chunk.conversationId,
-          })))
-        }
       }
 
       let extraction: { succeeded: number; failed: number; failedChunks?: ExtractionFailure[] } | undefined
@@ -428,23 +411,6 @@ export class IndexEngine {
 
       if (!dryRun) {
         await this.adapter.upsertDocument(modelId, embeddedChunks)
-        if (shouldExtract) {
-          await this.tripleExtractor?.persistPassageNodes?.(embeddedChunks.map(chunk => ({
-            bucketId: chunk.bucketId,
-            documentId: chunk.documentId,
-            chunkIndex: chunk.chunkIndex,
-            chunkId: chunk.id,
-            embeddingModel: chunk.embeddingModel,
-            contentHash: sha256(chunk.content),
-            metadata: chunk.metadata,
-            visibility: chunk.visibility,
-            tenantId: chunk.tenantId,
-            groupId: chunk.groupId,
-            userId: chunk.userId,
-            agentId: chunk.agentId,
-            conversationId: chunk.conversationId,
-          })))
-        }
       }
 
       let extraction: { succeeded: number; failed: number; failedChunks?: ExtractionFailure[] } | undefined

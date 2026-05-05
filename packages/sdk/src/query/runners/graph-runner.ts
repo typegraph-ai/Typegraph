@@ -8,7 +8,7 @@ const FACT_FILTERED_NARROW_GRAPH_OPTIONS: Required<Pick<QueryGraphOptions,
   'factCandidateLimit' |
   'factFilterInputLimit' |
   'factSeedLimit' |
-  'passageSeedLimit' |
+  'chunkSeedLimit' |
   'maxExpansionEdgesPerEntity' |
   'factChainLimit' |
   'maxPprIterations' |
@@ -18,7 +18,7 @@ const FACT_FILTERED_NARROW_GRAPH_OPTIONS: Required<Pick<QueryGraphOptions,
   factCandidateLimit: 80,
   factFilterInputLimit: 12,
   factSeedLimit: 4,
-  passageSeedLimit: 80,
+  chunkSeedLimit: 80,
   maxExpansionEdgesPerEntity: 25,
   factChainLimit: 2,
   maxPprIterations: 40,
@@ -44,10 +44,10 @@ export class GraphRunner {
   /**
    * Graph-augmented retrieval via Personalized PageRank.
    *
-   * 1. Build fact, entity, and passage seeds
-   * 2. Traverse a heterogeneous entity<->passage graph
-   * 3. Read out ranked passage nodes directly
-   * 4. Return passage-backed results for merging with other runners
+   * 1. Build fact, entity, and chunk seeds
+   * 2. Traverse a heterogeneous entity<->chunk graph
+   * 3. Read out ranked chunks directly
+   * 4. Return chunk-backed results for merging with other runners
    */
   async run(
     text: string,
@@ -56,11 +56,11 @@ export class GraphRunner {
     bucketIds?: string[],
     options?: QueryGraphOptions,
   ): Promise<GraphRunResult> {
-    if (!this.graph.searchGraphPassages) {
-      throw new Error('Knowledge graph bridge must implement searchGraphPassages for graph queries.')
+    if (!this.graph.searchGraphChunks) {
+      throw new Error('Knowledge graph bridge must implement searchGraphChunks for graph queries.')
     }
 
-    const graphResult = await this.graph.searchGraphPassages(text, identity, {
+    const graphResult = await this.graph.searchGraphChunks(text, identity, {
       ...resolveGraphSearchOptions(options),
       count,
       bucketIds,
@@ -78,7 +78,7 @@ export class GraphRunner {
         mode: 'graph' as const,
         metadata: {
           ...(result.metadata ?? {}),
-          passageId: result.passageId,
+          chunkId: result.chunkId,
         },
         chunk: { index: result.chunkIndex, total: result.totalChunks ?? 1 },
         tenantId: result.tenantId ?? identity.tenantId,

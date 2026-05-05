@@ -15,6 +15,7 @@ export type {
 
 export type {
   EmbeddedChunk,
+  ChunkRef,
   ChunkFilter,
   ScoredChunk,
 } from './document.js'
@@ -40,6 +41,7 @@ export type {
   QueryContextStats,
   RawScores,
   NormalizedScores,
+  QueryEntityScope,
   QueryOpts,
   QueryResponse,
 } from './query.js'
@@ -71,10 +73,14 @@ export type { typegraphIdentity } from './identity.js'
 export type {
   MemoryBridge,
   KnowledgeGraphBridge,
+  MemorySubject,
   GraphEntityRef,
   UpsertGraphEntityInput,
   UpsertGraphEdgeInput,
   UpsertGraphFactInput,
+  EntityScopeResolution,
+  KnowledgeSearchOpts,
+  KnowledgeSearchResult,
   EntityResult,
   EntityDetail,
   EdgeResult,
@@ -89,7 +95,7 @@ export type {
   GraphBackfillOpts,
   GraphBackfillResult,
   GraphExplainOpts,
-  PassageResult,
+  ChunkResult,
   GraphIntentParserMode,
   GraphSearchProfile,
   GraphSearchOpts,

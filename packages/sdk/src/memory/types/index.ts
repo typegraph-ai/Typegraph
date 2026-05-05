@@ -10,8 +10,10 @@ export type {
   SemanticEntity,
   EntityMentionType,
   SemanticEntityMention,
-  SemanticPassageNode,
-  SemanticPassageEntityEdge,
+  SemanticGraphNodeType,
+  SemanticGraphEdge,
+  SemanticEntityChunkEdge,
+  SemanticChunkRecord,
   SemanticEdge,
   SemanticFactRecord,
   SemanticFact,
@@ -27,8 +29,8 @@ export {
 
 export type {
   GraphBackfillPageOpts,
-  PassageBackfillChunk,
-  PassageMentionBackfillRow,
+  ChunkBackfillRecord,
+  ChunkMentionBackfillRow,
   MemoryFilter,
   MemorySearchOpts,
   MemoryStoreAdapter,

@@ -4,9 +4,11 @@ import { embeddingModelKey } from '../embedding/provider.js'
 import type { typegraphIdentity } from '../types/identity.js'
 import type { EmbeddingConfig } from '../types/bucket.js'
 import type { LLMConfig, LLMProvider } from '../types/llm-provider.js'
-import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, PassageResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput } from '../types/graph-bridge.js'
+import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, EntityScopeResolution, KnowledgeSearchOpts, KnowledgeSearchResult } from '../types/graph-bridge.js'
 import { resolveEmbeddingProvider, resolveLLMProvider } from '../typegraph.js'
-import type { ExternalId, MemoryStoreAdapter, SemanticEdge, SemanticEntity, SemanticEntityMention, SemanticFactRecord, SemanticPassageEntityEdge } from '../memory/types/index.js'
+import type { ExternalId, MemoryStoreAdapter, SemanticEdge, SemanticEntity, SemanticEntityMention, SemanticEntityChunkEdge, SemanticFactRecord, SemanticGraphEdge } from '../memory/types/index.js'
+import type { ChunkRef } from '../types/document.js'
+import { ConfigError } from '../types/errors.js'
 import { EntityResolver, PredicateNormalizer, createTemporal } from '../memory/index.js'
 import { EmbeddedGraph } from './graph/embedded-graph.js'
 import { parseGraphQueryIntent } from './query-intent.js'
@@ -27,9 +29,8 @@ export interface CreateKnowledgeGraphBridgeConfig {
   scope?: typegraphIdentity
   /**
    * Resolves an embedding model key to the Postgres chunks table that holds
-   * its embeddings. Required for heterogeneous graph retrieval — the bridge
-   * JOINs persisted passage nodes back to the per-model chunks table to
-   * retrieve source text. Typically wired to `vectorAdapter.getTable(model)`.
+   * its embeddings. Required for heterogeneous graph retrieval over chunks.
+   * Typically wired to `vectorAdapter.getTable(model)`.
    */
   resolveChunksTable?: (model: string) => string | Promise<string>
   factRelevanceFilter?: FactRelevanceFilter | undefined
@@ -56,10 +57,6 @@ function stableGraphId(prefix: string, parts: Array<string | number | undefined>
   return `${prefix}_${hash}`
 }
 
-function contentHashFor(value: string): string {
-  return createHash('sha256').update(value).digest('hex')
-}
-
 function mergeScope(defaultScope: typegraphIdentity, override?: typegraphIdentity): typegraphIdentity {
   return {
     tenantId: override?.tenantId ?? defaultScope.tenantId,
@@ -70,19 +67,8 @@ function mergeScope(defaultScope: typegraphIdentity, override?: typegraphIdentit
   }
 }
 
-function passageIdFor(input: {
-  scope: typegraphIdentity
-  bucketId: string
-  documentId: string
-  chunkIndex: number
-  embeddingModel: string
-}): string {
-  return stableGraphId('passage', [
-    input.scope.tenantId,
-    input.scope.groupId,
-    input.scope.userId,
-    input.scope.agentId,
-    input.scope.conversationId,
+function chunkNodeIdFor(input: ChunkRef): string {
+  return input.chunkId ?? stableGraphId('chunk', [
     input.bucketId,
     input.documentId,
     input.chunkIndex,
@@ -160,6 +146,41 @@ function buildEntityMentions(input: {
   for (const name of input.names) add(name, input.mentionType)
   for (const alias of input.aliases) add(alias, 'alias')
   return rows
+}
+
+function buildEntityChunkGraphEdge(input: {
+  entityId: string
+  chunkRef: ChunkRef
+  relation?: string | undefined
+  weight: number
+  mentionCount: number
+  confidence?: number | undefined
+  surfaceTexts: string[]
+  mentionTypes: SemanticEntityMention['mentionType'][]
+  scope: typegraphIdentity
+  visibility?: import('../types/typegraph-document.js').Visibility | undefined
+}): SemanticGraphEdge {
+  const chunkId = chunkNodeIdFor(input.chunkRef)
+  return {
+    id: stableGraphId('edge', ['entity', input.entityId, input.relation ?? 'MENTIONED_IN', 'chunk', chunkId]),
+    sourceType: 'entity',
+    sourceId: input.entityId,
+    targetType: 'chunk',
+    targetId: chunkId,
+    relation: input.relation ?? 'MENTIONED_IN',
+    weight: input.weight,
+    properties: {
+      mentionCount: input.mentionCount,
+      confidence: input.confidence,
+      surfaceTexts: input.surfaceTexts,
+      mentionTypes: input.mentionTypes,
+    },
+    scope: input.scope,
+    visibility: input.visibility,
+    temporal: createTemporal(),
+    evidence: [],
+    targetChunkRef: input.chunkRef,
+  }
 }
 
 // ── Knowledge Graph Bridge Factory ──
@@ -377,7 +398,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     ]).join('\n')
   }
 
-  function passageIntentSearchText(intent: GraphQueryIntent, fallbackQuery: string): string {
+  function chunkIntentSearchText(intent: GraphQueryIntent, fallbackQuery: string): string {
     return uniqueIds([
       fallbackQuery,
       ...intent.sourceEntityQueries,
@@ -1091,21 +1112,19 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       if (mentions.length > 0) await memoryStore.upsertEntityChunkMentions(mentions)
     }
 
-    if (memoryStore.upsertPassageEntityEdges && input.documentId && input.chunkIndex !== undefined) {
-      const passageId = passageIdFor({
-        scope,
-        bucketId: input.bucketId,
-        documentId: input.documentId,
-        chunkIndex: input.chunkIndex,
-        embeddingModel: embeddingModelKey(embedding),
-      })
+    if (memoryStore.upsertGraphEdges && input.documentId && input.chunkIndex !== undefined) {
       const surfaceTexts = [input.name, result.entity.name, ...(input.aliases ?? [])]
         .map(value => value.trim())
         .filter(Boolean)
       const uniqueSurfaceTexts = [...new Map(surfaceTexts.map(value => [normalizeSurfaceText(value), value])).values()]
-      await memoryStore.upsertPassageEntityEdges([{
-        passageId,
+      await memoryStore.upsertGraphEdges([buildEntityChunkGraphEdge({
         entityId: result.entity.id,
+        chunkRef: {
+          bucketId: input.bucketId,
+          documentId: input.documentId,
+          chunkIndex: input.chunkIndex,
+          embeddingModel: embeddingModelKey(embedding),
+        },
         weight: Math.min(2, 0.5 + (input.confidence ?? 0.75)),
         mentionCount: Math.max(1, uniqueSurfaceTexts.length),
         confidence: input.confidence,
@@ -1113,7 +1132,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         mentionTypes: [input.mentionType],
         scope,
         visibility: input.visibility,
-      }])
+      })])
     }
 
     return result.entity
@@ -1604,59 +1623,11 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     return adjacency
   }
 
-  async function upsertPassageNodes(nodes: Array<{
-    bucketId: string
-    documentId: string
-    chunkIndex: number
-    embeddingModel: string
-    contentHash: string
-    chunkId?: string | undefined
-    metadata?: Record<string, unknown> | undefined
-    visibility?: import('../types/typegraph-document.js').Visibility | undefined
-    tenantId?: string | undefined
-    groupId?: string | undefined
-    userId?: string | undefined
-    agentId?: string | undefined
-    conversationId?: string | undefined
-  }>): Promise<void> {
-    if (!memoryStore.upsertPassageNodes || nodes.length === 0) return
-    const now = new Date()
-    await memoryStore.upsertPassageNodes(nodes.map(node => {
-      const scope = mergeScope(defaultScope, {
-        tenantId: node.tenantId,
-        groupId: node.groupId,
-        userId: node.userId,
-        agentId: node.agentId,
-        conversationId: node.conversationId,
-      })
-      return {
-        id: passageIdFor({
-          scope,
-          bucketId: node.bucketId,
-          documentId: node.documentId,
-          chunkIndex: node.chunkIndex,
-          embeddingModel: node.embeddingModel,
-        }),
-        bucketId: node.bucketId,
-        documentId: node.documentId,
-        chunkIndex: node.chunkIndex,
-        chunkId: node.chunkId,
-        embeddingModel: node.embeddingModel,
-        contentHash: node.contentHash,
-        metadata: node.metadata ?? {},
-        scope,
-        visibility: node.visibility,
-        createdAt: now,
-        updatedAt: now,
-      }
-    }))
-  }
-
   async function searchFacts(
     query: string,
     opts: FactSearchOpts = {},
   ): Promise<FactResult[]> {
-    if (!memoryStore.searchFacts) return []
+    if (!memoryStore.searchFacts && !memoryStore.searchFactsHybrid) return []
     const queryEmbedding = await embedding.embed(query)
     const identity = {
       tenantId: opts.tenantId,
@@ -1665,7 +1636,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       agentId: opts.agentId,
       conversationId: opts.conversationId,
     }
-    const facts = await memoryStore.searchFacts(queryEmbedding, identity, opts.limit ?? 20)
+    const facts = memoryStore.searchFactsHybrid
+      ? await memoryStore.searchFactsHybrid(query, queryEmbedding, identity, opts.limit ?? 20)
+      : await memoryStore.searchFacts!(queryEmbedding, identity, opts.limit ?? 20)
     return hydrateFacts(facts, identity)
   }
 
@@ -1683,12 +1656,12 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const include = {
       entities: opts.include?.entities ?? true,
       facts: opts.include?.facts ?? true,
-      passages: opts.include?.passages ?? false,
+      chunks: opts.include?.chunks ?? false,
     }
     const anchorLimit = Math.max(1, opts.anchorLimit ?? 3)
     const entityLimit = requestedLimit(opts.entityLimit)
     const factLimit = requestedLimit(opts.factLimit)
-    const passageLimit = Math.max(1, opts.passageLimit ?? 10)
+    const chunkLimit = Math.max(1, opts.chunkLimit ?? 10)
     const depth: 1 | 2 = opts.depth === 2 ? 2 : 1
 
     const parsed = await parseGraphQueryIntent({
@@ -1737,7 +1710,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       anchors,
       entities: [],
       facts: [],
-      ...(include.passages ? { passages: [] } : {}),
+      ...(include.chunks ? { chunks: [] } : {}),
       ...(opts.explain ? { trace } : {}),
     }
 
@@ -1821,37 +1794,38 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
           .map(match => factResultFromEdge(match.edge, nameMap, match.score))
       : []
 
-    let passages: PassageResult[] | undefined
-    if (include.passages) {
-      const passageEntityLimit = Math.max(1, Math.min(entityLimit ?? 10, 10))
+    let chunks: ChunkResult[] | undefined
+    if (include.chunks) {
+      const chunkEntityLimit = Math.max(1, Math.min(entityLimit ?? 10, 10))
       const topEntityIds = [...entityScoreById.entries()]
         .sort((a, b) => b[1] - a[1])
-        .slice(0, passageEntityLimit)
+        .slice(0, chunkEntityLimit)
         .map(([entityId]) => entityId)
 
-      const passageMap = new Map<string, PassageResult>()
+      const chunkMap = new Map<string, ChunkResult>()
       for (const entityId of topEntityIds) {
-        const connectedPassages = await getPassagesForEntity(entityId, {
+        const connectedChunks = await getChunksForEntity(entityId, {
           bucketIds: opts.bucketIds,
-          limit: passageLimit,
+          limit: chunkLimit,
           ...identity,
         })
         const entityScore = entityScoreById.get(entityId) ?? 0
-        for (const passage of connectedPassages) {
-          const score = entityScore * Math.log2(1 + passage.score)
-          const existing = passageMap.get(passage.passageId)
+        for (const chunk of connectedChunks) {
+          const key = chunkRefKey(chunk)
+          const score = entityScore * Math.log2(1 + chunk.score)
+          const existing = chunkMap.get(key)
           if (!existing || score > existing.score) {
-            passageMap.set(passage.passageId, {
-              ...passage,
+            chunkMap.set(key, {
+              ...chunk,
               score,
             })
           }
         }
       }
 
-      passages = [...passageMap.values()]
+      chunks = [...chunkMap.values()]
         .sort((a, b) => b.score - a.score)
-        .slice(0, passageLimit)
+        .slice(0, chunkLimit)
     }
 
     return {
@@ -1859,16 +1833,20 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       anchors,
       entities: entityResults,
       facts,
-      ...(include.passages ? { passages: passages ?? [] } : {}),
+      ...(include.chunks ? { chunks: chunks ?? [] } : {}),
       ...(opts.explain ? { trace } : {}),
     }
   }
 
-  async function getPassagesForEntity(entityId: string, opts?: {
+  function chunkRefKey(ref: ChunkRef): string {
+    return `${ref.bucketId}\u001f${ref.documentId}\u001f${ref.chunkIndex}\u001f${ref.embeddingModel ?? ''}`
+  }
+
+  async function getChunksForEntity(entityId: string, opts?: {
     bucketIds?: string[] | undefined
     limit?: number | undefined
-  } & typegraphIdentity): Promise<PassageResult[]> {
-    if (!memoryStore.getPassageEdgesForEntities || !memoryStore.getPassagesByIds || !config.resolveChunksTable) return []
+  } & typegraphIdentity): Promise<ChunkResult[]> {
+    if (!memoryStore.getChunkEdgesForEntities || !memoryStore.getChunksByRefs || !config.resolveChunksTable) return []
     const identity = {
       tenantId: opts?.tenantId,
       groupId: opts?.groupId,
@@ -1876,27 +1854,28 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       agentId: opts?.agentId,
       conversationId: opts?.conversationId,
     }
-    const passageEdges = await memoryStore.getPassageEdgesForEntities([entityId], {
+    const chunkEdges = await memoryStore.getChunkEdgesForEntities([entityId], {
       scope: identity,
       bucketIds: opts?.bucketIds,
       limit: opts?.limit ?? 20,
     })
-    if (passageEdges.length === 0) return []
+    if (chunkEdges.length === 0) return []
     const chunksTable = await config.resolveChunksTable(embeddingModelKey(embedding))
-    const passageRows = await memoryStore.getPassagesByIds(
-      passageEdges.map(edge => edge.passageId),
+    const chunkRows = await memoryStore.getChunksByRefs(
+      chunkEdges.map(edge => edge.chunkRef),
       { chunksTable, bucketIds: opts?.bucketIds, scope: identity },
     )
-    const scoreByPassage = new Map(passageEdges.map(edge => [edge.passageId, edge.weight]))
-    return passageRows
+    const scoreByChunk = new Map(chunkEdges.map(edge => [chunkRefKey(edge.chunkRef), edge.weight]))
+    return chunkRows
       .map(row => ({
-        passageId: row.passageId,
         content: row.content,
         bucketId: row.bucketId,
         documentId: row.documentId,
         chunkIndex: row.chunkIndex,
+        embeddingModel: row.embeddingModel,
+        chunkId: row.chunkId,
         totalChunks: row.totalChunks,
-        score: scoreByPassage.get(row.passageId) ?? 0,
+        score: scoreByChunk.get(chunkRefKey(row)) ?? 0,
         metadata: row.metadata,
         tenantId: row.tenantId,
         groupId: row.groupId,
@@ -1908,22 +1887,108 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       .slice(0, opts?.limit ?? 20)
   }
 
-  async function searchGraphPassages(
+  async function resolveEntityScope(scope: import('../types/query.js').QueryEntityScope, identity: typegraphIdentity, opts?: {
+    bucketIds?: string[] | undefined
+    limit?: number | undefined
+  }): Promise<EntityScopeResolution> {
+    const warnings: string[] = []
+    const entityIds = new Set((scope.entityIds ?? []).filter(Boolean))
+    if ((scope.externalIds?.length ?? 0) > 0 && !memoryStore.findEntityByExternalId) {
+      throw new ConfigError('entityScope.externalIds requires a knowledge graph store with external ID resolution.')
+    }
+    for (const externalId of scope.externalIds ?? []) {
+      const entity = memoryStore.findEntityByExternalId
+        ? await memoryStore.findEntityByExternalId(externalId, identity)
+        : null
+      if (entity) entityIds.add(entity.id)
+    }
+    if ((scope.externalIds?.length ?? 0) > 0 && entityIds.size === (scope.entityIds?.length ?? 0)) {
+      warnings.push('No entities resolved for the provided external IDs.')
+    }
+    const resolvedIds = [...entityIds]
+    if (resolvedIds.length > 0 && !memoryStore.getChunkEdgesForEntities) {
+      throw new ConfigError('entityScope requires a knowledge graph store with entity-chunk edge lookup.')
+    }
+    const chunkEdges = resolvedIds.length > 0
+      ? await memoryStore.getChunkEdgesForEntities!(resolvedIds, {
+          scope: identity,
+          bucketIds: opts?.bucketIds,
+          limit: opts?.limit ?? Math.max(200, resolvedIds.length * 200),
+        })
+      : []
+    const chunkRefs = [...new Map(chunkEdges.map(edge => [chunkRefKey(edge.chunkRef), edge.chunkRef])).values()]
+    return {
+      entityIds: resolvedIds,
+      chunkRefs,
+      ...(warnings.length > 0 ? { warnings } : {}),
+    }
+  }
+
+  async function searchKnowledge(
+    query: string,
+    identity: typegraphIdentity,
+    opts: KnowledgeSearchOpts = {},
+  ): Promise<KnowledgeSearchResult> {
+    const limit = opts.count ?? 10
+    const scopeEntityIds = new Set(opts.resolvedEntityIds ?? [])
+    const hasEntityScopeFilter = Boolean(opts.entityScope && opts.entityScope.mode !== 'boost')
+    if (hasEntityScopeFilter && scopeEntityIds.size === 0) return { facts: [], entities: [] }
+    const shouldFilter = hasEntityScopeFilter
+    const queryEmbedding = opts.signals?.semantic !== false || opts.signals?.keyword
+      ? await embedding.embed(query)
+      : undefined
+
+    const entityRows = queryEmbedding && (memoryStore.searchEntitiesHybrid || memoryStore.searchEntities)
+      ? (memoryStore.searchEntitiesHybrid
+          ? await memoryStore.searchEntitiesHybrid(query, queryEmbedding, identity, limit)
+          : await memoryStore.searchEntities!(queryEmbedding, identity, limit))
+      : []
+    const entities = (await hydrateEntityResults(entityRows, undefined, identity))
+      .filter(entity => !shouldFilter || scopeEntityIds.has(entity.id))
+      .slice(0, limit)
+
+    const factRows = memoryStore.searchFactsHybrid
+      ? await memoryStore.searchFactsHybrid(query, queryEmbedding, identity, limit)
+      : queryEmbedding && memoryStore.searchFacts
+        ? await memoryStore.searchFacts(queryEmbedding, identity, limit)
+        : []
+    const facts = (await hydrateFacts(
+      factRows.filter(fact =>
+        !shouldFilter ||
+        scopeEntityIds.has(fact.sourceEntityId) ||
+        scopeEntityIds.has(fact.targetEntityId)
+      ),
+      identity,
+    )).slice(0, limit)
+
+    return { facts, entities }
+  }
+
+  async function searchGraphChunks(
     query: string,
     identity: typegraphIdentity,
     opts: GraphSearchOpts = {},
   ): Promise<GraphSearchResult> {
     const count = opts.count ?? 10
     const restartProbability = opts.restartProbability ?? 0.5
-    const passageSeedWeight = opts.passageSeedWeight ?? 0.05
+    const chunkSeedWeight = opts.chunkSeedWeight ?? 0.05
     const entitySeedWeight = opts.entitySeedWeight ?? 1.0
     const factCandidateLimit = opts.factCandidateLimit ?? 200
     const factFilterInputLimit = opts.factFilterInputLimit ?? 8
-    const passageSeedLimit = opts.passageSeedLimit ?? 200
+    const chunkSeedLimit = opts.chunkSeedLimit ?? 200
     const maxIterations = opts.maxPprIterations ?? 50
     const minPprScore = opts.minPprScore ?? 1e-10
     const maxExpansionEdgesPerEntity = opts.maxExpansionEdgesPerEntity ?? 100
     const factChainLimit = opts.factChainLimit ?? 3
+    const entityScopeMode = opts.entityScope?.mode ?? 'filter'
+    const scopedEntityIds = opts.entityScope
+      ? (opts.resolvedEntityIds ?? (await resolveEntityScope(opts.entityScope, identity, {
+          bucketIds: opts.bucketIds,
+          limit: Math.max(count * 50, 200),
+        })).entityIds)
+      : []
+    const scopedEntityIdSet = new Set(scopedEntityIds)
+    const isEntityScopeFilter = Boolean(opts.entityScope && entityScopeMode === 'filter')
 
     const parsed = await parseGraphQueryIntent({
       query,
@@ -1936,7 +2001,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       parser: parsed.parser,
       entitySeedCount: 0,
       factSeedCount: 0,
-      passageSeedCount: 0,
+      chunkSeedCount: 0,
       graphNodeCount: 0,
       graphEdgeCount: 0,
       pprNonzeroCount: 0,
@@ -1945,8 +2010,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       topGraphScores: [],
       selectedFactIds: [],
       selectedEntityIds: [],
-      selectedPassageIds: [],
-      finalPassageIds: [],
+      selectedChunkIds: [],
+      finalChunkIds: [],
       selectedFactTexts: [],
       selectedEntityNames: [],
       selectedFactChains: [],
@@ -1965,15 +2030,15 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
     const needsFactSearch = parsed.intent.strictness === 'strict'
     const factSearchText = intentSearchText(parsed.intent, query)
-    const passageSearchText = passageIntentSearchText(parsed.intent, query)
-    const [factEmbedding, passageEmbedding] = needsFactSearch
-      ? (factSearchText === passageSearchText
+    const chunkSearchText = chunkIntentSearchText(parsed.intent, query)
+    const [factEmbedding, chunkEmbedding] = needsFactSearch
+      ? (factSearchText === chunkSearchText
           ? await embedding.embed(factSearchText).then(value => [value, value] as const)
           : await Promise.all([
               embedding.embed(factSearchText),
-              embedding.embed(passageSearchText),
+              embedding.embed(chunkSearchText),
             ]))
-      : [undefined, await embedding.embed(passageSearchText)] as const
+      : [undefined, await embedding.embed(chunkSearchText)] as const
     const chunksTable = await config.resolveChunksTable(embeddingModelKey(embedding))
 
     const factCandidates = needsFactSearch && factEmbedding && memoryStore.searchFacts
@@ -2002,8 +2067,17 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         // Keep the strict graph-intent matches when optional LLM fact filtering fails.
       }
     }
+    if (isEntityScopeFilter) {
+      selectedFacts = selectedFacts.filter(fact =>
+        scopedEntityIdSet.has(fact.sourceEntityId) ||
+        scopedEntityIdSet.has(fact.targetEntityId)
+      )
+    }
 
     const entitySeeds = new Map<string, number>()
+    for (const entityId of scopedEntityIdSet) {
+      entitySeeds.set(entityId, Math.max(entitySeeds.get(entityId) ?? 0, entitySeedWeight))
+    }
     for (const anchor of resolvedAnchors.anchors) {
       const score = normalizeSeedScore(anchor.similarity ?? 1) * entitySeedWeight
       entitySeeds.set(anchor.id, Math.max(entitySeeds.get(anchor.id) ?? 0, score))
@@ -2014,16 +2088,19 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       entitySeeds.set(fact.targetEntityId, Math.max(entitySeeds.get(fact.targetEntityId) ?? 0, score))
     }
 
-    const passageSeeds = new Map<string, number>()
-    const passageSeedRows = memoryStore.searchPassageNodes
-      ? await memoryStore.searchPassageNodes(passageEmbedding, identity, {
+    const chunkSeeds = new Map<string, number>()
+    const chunkSeedRows = memoryStore.searchChunks
+      ? await memoryStore.searchChunks(chunkEmbedding, identity, {
           chunksTable,
           bucketIds: opts.bucketIds,
-          limit: passageSeedLimit,
+          limit: chunkSeedLimit,
         })
       : []
-    for (const passage of passageSeedRows) {
-      passageSeeds.set(passage.passageId, normalizeSeedScore(passage.similarity) * passageSeedWeight)
+    const chunkRefById = new Map<string, ChunkRef>()
+    for (const chunk of chunkSeedRows) {
+      const chunkNodeId = chunkNodeIdFor(chunk)
+      chunkRefById.set(chunkNodeId, chunk)
+      chunkSeeds.set(chunkNodeId, normalizeSeedScore(chunk.similarity ?? 0) * chunkSeedWeight)
     }
 
     const adjacency = new Map<string, Array<{ target: string; weight: number }>>()
@@ -2054,81 +2131,96 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       activeEntityIds.add(node)
       for (const edge of edges) activeEntityIds.add(edge.target)
     }
+    for (const entityId of scopedEntityIdSet) activeEntityIds.add(entityId)
 
-    const passageEntityEdges = memoryStore.getPassageEdgesForEntities
-      ? await memoryStore.getPassageEdgesForEntities([...activeEntityIds], {
+    const scopedChunkIds = new Set<string>()
+    const chunkEntityEdges = memoryStore.getChunkEdgesForEntities
+      ? await memoryStore.getChunkEdgesForEntities([...activeEntityIds], {
           scope: identity,
           bucketIds: opts.bucketIds,
           limit: Math.max(100, activeEntityIds.size * maxExpansionEdgesPerEntity),
         })
       : []
-    for (const edge of passageEntityEdges) {
+    for (const edge of chunkEntityEdges) {
+      const chunkNodeId = chunkNodeIdFor(edge.chunkRef)
+      chunkRefById.set(chunkNodeId, edge.chunkRef)
+      if (scopedEntityIdSet.has(edge.entityId)) scopedChunkIds.add(chunkNodeId)
       const weight = Math.log2(1 + edge.weight)
-      addWeightedEdge(edge.entityId, edge.passageId, weight)
-      addWeightedEdge(edge.passageId, edge.entityId, weight)
+      addWeightedEdge(edge.entityId, chunkNodeId, weight)
+      addWeightedEdge(chunkNodeId, edge.entityId, weight)
       const entitySeedScore = entitySeeds.get(edge.entityId)
       if (entitySeedScore != null) {
         const mentionSeedScore = entitySeedScore * weight * 0.6
-        passageSeeds.set(edge.passageId, Math.max(passageSeeds.get(edge.passageId) ?? 0, mentionSeedScore))
+        chunkSeeds.set(chunkNodeId, Math.max(chunkSeeds.get(chunkNodeId) ?? 0, mentionSeedScore))
       }
     }
 
-    for (const passageId of passageSeeds.keys()) {
-      if (!adjacency.has(passageId)) adjacency.set(passageId, [])
+    for (const chunkId of chunkSeeds.keys()) {
+      if (!adjacency.has(chunkId)) adjacency.set(chunkId, [])
     }
 
     const seedWeights = new Map<string, number>()
     for (const [id, score] of entitySeeds) seedWeights.set(id, Math.max(seedWeights.get(id) ?? 0, score))
-    for (const [id, score] of passageSeeds) seedWeights.set(id, Math.max(seedWeights.get(id) ?? 0, score))
+    for (const [id, score] of chunkSeeds) seedWeights.set(id, Math.max(seedWeights.get(id) ?? 0, score))
 
     if (seedWeights.size === 0) {
       return { results: [], facts: [], entities: [], factChains: [], trace: emptyTrace() }
     }
 
     const pprScores = runWeightedPPR(adjacency, seedWeights, restartProbability, maxIterations, minPprScore)
-    const scoredPassageIds = [...pprScores.entries()]
-      .filter(([id]) => id.startsWith('passage_'))
+    const scoredChunkIds = [...pprScores.entries()]
+      .filter(([id]) => id.startsWith('chunk_') || chunkRefById.has(id))
       .sort((a, b) => b[1] - a[1])
       .slice(0, Math.max(count * 3, count))
       .map(([id]) => id)
 
-    const fallbackPassageIds = passageSeedRows
-      .map(row => row.passageId)
-      .filter(id => !scoredPassageIds.includes(id))
-      .slice(0, Math.max(0, count - scoredPassageIds.length))
-    const passageIds = [...scoredPassageIds, ...fallbackPassageIds]
-    const passageRows = memoryStore.getPassagesByIds && passageIds.length > 0
-      ? await memoryStore.getPassagesByIds(passageIds, { chunksTable, bucketIds: opts.bucketIds, scope: identity })
+    const fallbackChunkIds = chunkSeedRows
+      .map(row => chunkNodeIdFor(row))
+      .filter(id => !scoredChunkIds.includes(id))
+      .slice(0, Math.max(0, count - scoredChunkIds.length))
+    const chunkIds = [...scoredChunkIds, ...fallbackChunkIds]
+    const chunkRefs = chunkIds.map(id => chunkRefById.get(id)).filter((ref): ref is ChunkRef => !!ref)
+    const chunkRows = memoryStore.getChunksByRefs && chunkRefs.length > 0
+      ? await memoryStore.getChunksByRefs(chunkRefs, { chunksTable, bucketIds: opts.bucketIds, scope: identity })
       : []
-    const denseScoreByPassage = new Map(passageSeedRows.map(row => [row.passageId, row.similarity]))
+    const denseScoreByChunk = new Map(chunkSeedRows.map(row => [chunkNodeIdFor(row), row.similarity ?? 0]))
     const selectedFactResults = await hydrateFacts(selectedFacts, identity)
     const factChains = buildFactChains(selectedFactResults, factChainLimit)
-    const evidenceEntityIds = uniqueIds([
-      ...resolvedAnchors.anchors.map(anchor => anchor.id),
-      ...entitySeeds.keys(),
-      ...selectedFactResults.flatMap(fact => [fact.sourceEntityId, fact.targetEntityId]),
-      ...factChains.flatMap(chain => chain.entityIds),
-    ])
+    const evidenceEntityIds = uniqueIds(isEntityScopeFilter
+      ? [
+          ...scopedEntityIdSet,
+          ...selectedFactResults.flatMap(fact => [fact.sourceEntityId, fact.targetEntityId]),
+          ...factChains.flatMap(chain => chain.entityIds),
+        ]
+      : [
+          ...resolvedAnchors.anchors.map(anchor => anchor.id),
+          ...entitySeeds.keys(),
+          ...selectedFactResults.flatMap(fact => [fact.sourceEntityId, fact.targetEntityId]),
+          ...factChains.flatMap(chain => chain.entityIds),
+        ])
     const entityOrder = new Map(evidenceEntityIds.map((id, index) => [id, index]))
     const selectedEntityRows = await graph.getEntitiesBatch(evidenceEntityIds, identity)
     const selectedEntityResults = (await hydrateEntityResults(selectedEntityRows, undefined, identity))
       .sort((a, b) => (entityOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (entityOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER))
-    const passageQueryTokens = queryTokens([
+    const chunkQueryTokens = queryTokens([
       query,
       ...parsed.intent.sourceEntityQueries,
       ...parsed.intent.targetEntityQueries,
     ].join(' '))
-    const results = passageRows
+    const results = chunkRows
+      .filter(row => !isEntityScopeFilter || scopedChunkIds.has(chunkNodeIdFor(row)))
       .map(row => {
-        const pprScore = pprScores.get(row.passageId) ?? ((denseScoreByPassage.get(row.passageId) ?? 0) * passageSeedWeight)
-        const denseScore = denseScoreByPassage.get(row.passageId) ?? 0
-        const lexicalScore = tokenOverlapScore(passageQueryTokens, row.content)
+        const nodeId = chunkNodeIdFor(row)
+        const pprScore = pprScores.get(nodeId) ?? ((denseScoreByChunk.get(nodeId) ?? 0) * chunkSeedWeight)
+        const denseScore = denseScoreByChunk.get(nodeId) ?? 0
+        const lexicalScore = tokenOverlapScore(chunkQueryTokens, row.content)
         return {
-          passageId: row.passageId,
           content: row.content,
           bucketId: row.bucketId,
           documentId: row.documentId,
           chunkIndex: row.chunkIndex,
+          embeddingModel: row.embeddingModel,
+          chunkId: row.chunkId,
           totalChunks: row.totalChunks,
           score: pprScore + denseScore * 0.15 + lexicalScore * 0.12,
           metadata: row.metadata,
@@ -2148,17 +2240,17 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       parser: parsed.parser,
       entitySeedCount: entitySeeds.size,
       factSeedCount: selectedFacts.length,
-      passageSeedCount: passageSeeds.size,
+      chunkSeedCount: chunkSeeds.size,
       graphNodeCount: countGraphNodes(adjacency, seedWeights),
       graphEdgeCount: countGraphEdges(adjacency),
       pprNonzeroCount: pprScores.size,
-      candidatesBeforeMerge: passageRows.length,
+      candidatesBeforeMerge: chunkRows.length,
       candidatesAfterMerge: results.length,
       topGraphScores: results.slice(0, 5).map(result => result.score),
       selectedFactIds: selectedFacts.map(fact => fact.id),
       selectedEntityIds: evidenceEntityIds,
-      selectedPassageIds: [...passageSeeds.keys()].slice(0, 20),
-      finalPassageIds: results.map(result => result.passageId),
+      selectedChunkIds: [...chunkSeeds.keys()].slice(0, 20),
+      finalChunkIds: results.map(result => chunkNodeIdFor(result)),
       selectedFactTexts: selectedFactResults.map(fact => ({ id: fact.id, content: formatFactEvidence(fact) })),
       selectedEntityNames: selectedEntityResults.map(entity => ({ id: entity.id, content: entity.name })),
       selectedFactChains: factChains.map(chain => ({
@@ -2182,7 +2274,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       agentId: opts.agentId,
       conversationId: opts.conversationId,
     }
-    const result = await searchGraphPassages(query, identity, opts)
+    const result = await searchGraphChunks(query, identity, opts)
     return result.trace
   }
 
@@ -2232,8 +2324,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   ): Promise<GraphBackfillResult> {
     const batchSize = Math.max(1, opts.batchSize ?? 500)
     const result: GraphBackfillResult = {
-      passageNodesUpserted: 0,
-      passageEntityEdgesUpserted: 0,
+      entityChunkEdgesUpserted: 0,
       factRecordsUpserted: 0,
       entityProfilesUpdated: 0,
       batches: 0,
@@ -2250,38 +2341,23 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       offset,
     })
 
-    if ((opts.passages ?? true) && memoryStore.listPassageBackfillChunks && memoryStore.upsertPassageNodes) {
+    if ((opts.entityChunkEdges ?? true) && memoryStore.listChunkMentionBackfillRows && memoryStore.upsertGraphEdges) {
       for (let offset = 0; ; offset += batchSize) {
-        const rows = await memoryStore.listPassageBackfillChunks(pageOpts(offset))
-        if (rows.length === 0) break
-        result.batches++
-        await upsertPassageNodes(rows.map(row => ({
-          bucketId: row.bucketId,
-          documentId: row.documentId,
-          chunkIndex: row.chunkIndex,
-          chunkId: row.chunkId,
-          embeddingModel: row.embeddingModel,
-          contentHash: contentHashFor(row.content),
-          metadata: row.metadata,
-          visibility: row.visibility,
-          tenantId: row.tenantId,
-          groupId: row.groupId,
-          userId: row.userId,
-          agentId: row.agentId,
-          conversationId: row.conversationId,
-        })))
-        result.passageNodesUpserted += rows.length
-        if (rows.length < batchSize) break
-      }
-    }
-
-    if ((opts.passageEntityEdges ?? true) && memoryStore.listPassageMentionBackfillRows && memoryStore.upsertPassageEntityEdges) {
-      for (let offset = 0; ; offset += batchSize) {
-        const rows = await memoryStore.listPassageMentionBackfillRows(pageOpts(offset))
+        const rows = await memoryStore.listChunkMentionBackfillRows(pageOpts(offset))
         if (rows.length === 0) break
         result.batches++
 
-        const edgeMap = new Map<string, SemanticPassageEntityEdge>()
+        const edgeMap = new Map<string, {
+          entityId: string
+          chunkRef: ChunkRef
+          weight: number
+          mentionCount: number
+          confidence?: number | undefined
+          surfaceTexts: string[]
+          mentionTypes: SemanticEntityMention['mentionType'][]
+          scope: typegraphIdentity
+          visibility?: import('../types/typegraph-document.js').Visibility | undefined
+        }>()
         for (const row of rows) {
           const scope = mergeScope(defaultScope, {
             tenantId: row.tenantId,
@@ -2290,22 +2366,24 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
             agentId: row.agentId,
             conversationId: row.conversationId,
           })
-          const passageId = passageIdFor({
-            scope,
+          const chunkRef: ChunkRef = {
             bucketId: row.bucketId,
             documentId: row.documentId,
             chunkIndex: row.chunkIndex,
             embeddingModel: row.embeddingModel,
-          })
-          const key = `${passageId}:${row.entityId}`
+            chunkId: row.chunkId,
+          }
+          const key = `${chunkRefKey(chunkRef)}:${row.entityId}`
           const current = edgeMap.get(key) ?? {
-            passageId,
             entityId: row.entityId,
+            chunkRef,
             weight: 0,
             mentionCount: 0,
             confidence: undefined,
             surfaceTexts: [],
             mentionTypes: [],
+            scope,
+            visibility: row.visibility,
           }
           current.mentionCount += 1
           current.confidence = Math.max(current.confidence ?? 0, row.confidence ?? 0)
@@ -2321,9 +2399,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
           edgeMap.set(key, current)
         }
 
-        const edges = [...edgeMap.values()]
-        await memoryStore.upsertPassageEntityEdges(edges)
-        result.passageEntityEdgesUpserted += edges.length
+        const edges = [...edgeMap.values()].map(edge => buildEntityChunkGraphEdge(edge))
+        await memoryStore.upsertGraphEdges(edges)
+        result.entityChunkEdgesUpserted += edges.length
         if (rows.length < batchSize) break
       }
     }
@@ -2607,12 +2685,13 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     upsertFact,
     upsertFacts,
     addEntityMentions,
-    upsertPassageNodes,
     searchEntities,
     searchFacts,
     explore,
-    getPassagesForEntity,
-    searchGraphPassages,
+    resolveEntityScope,
+    searchKnowledge,
+    getChunksForEntity,
+    searchGraphChunks,
     explainQuery,
     backfill,
     getEntity,

@@ -3,6 +3,7 @@ import type { EmbeddingProvider } from '../../embedding/provider.js'
 import type { DocumentFilter } from '../../types/typegraph-document.js'
 import type { typegraphIdentity } from '../../types/identity.js'
 import type { QuerySignals } from '../../types/query.js'
+import type { ChunkRef } from '../../types/document.js'
 import type { RetrievalCandidate } from '../merger.js'
 import type { typegraphEvent, typegraphEventSink } from '../../types/events.js'
 
@@ -26,6 +27,7 @@ export class IndexedRunner {
     traceId?: string,
     spanId?: string,
     temporalAt?: Date,
+    chunkRefs?: ChunkRef[],
   ): Promise<RetrievalCandidate[]> {
     const allResults: RetrievalCandidate[] = []
     const fetchCount = count * 3
@@ -44,6 +46,8 @@ export class IndexedRunner {
         agentId: identity?.agentId,
         conversationId: identity?.conversationId,
         bucketIds: group.bucketIds,
+        chunkRefs: chunkRefs
+          ?.filter(ref => ref.embeddingModel == null || ref.embeddingModel === modelId),
       }
 
       // Prefer searchWithDocuments if available and documentFilter is set

@@ -78,21 +78,27 @@ export function createMemoryBridge(config: CreateMemoryBridgeConfig): MemoryBrid
       category: (opts.category as 'episodic' | 'semantic' | 'procedural' | undefined) ?? 'semantic',
       importance: opts.importance,
       metadata: opts.metadata,
+      subject: opts.subject,
+      relatedEntities: opts.relatedEntities,
+      visibility: opts.visibility,
       traceId: opts.traceId,
       spanId: opts.spanId,
     }) as unknown as Promise<MemoryRecord>
   }
 
   async function forget(id: string, opts: ForgetOpts): Promise<void> {
-    await memoryStore.invalidate(id)
-    // Note: MemoryBridge.forget goes direct to store so no TypegraphMemory.emit fires here.
-    // The telemetry arg is accepted for future symmetry / external event sinks.
-    void opts
+    const mem = getMemory(identityFrom(opts))
+    await mem.forget(id, { traceId: opts.traceId, spanId: opts.spanId })
   }
 
   async function correct(correction: string, opts: CorrectOpts) {
     const mem = getMemory(identityFrom(opts))
-    return mem.correct(correction, { traceId: opts.traceId, spanId: opts.spanId })
+    return mem.correct(correction, {
+      subject: opts.subject,
+      relatedEntities: opts.relatedEntities,
+      traceId: opts.traceId,
+      spanId: opts.spanId,
+    })
   }
 
   async function addConversationTurn(
@@ -101,6 +107,8 @@ export function createMemoryBridge(config: CreateMemoryBridgeConfig): MemoryBrid
   ): Promise<ConversationTurnResult> {
     const mem = getMemory(identityFrom(opts))
     return mem.addConversationTurn(messages as ConversationMessage[], opts.conversationId, {
+      subject: opts.subject,
+      relatedEntities: opts.relatedEntities,
       traceId: opts.traceId,
       spanId: opts.spanId,
     }) as unknown as Promise<ConversationTurnResult>
@@ -115,6 +123,7 @@ export function createMemoryBridge(config: CreateMemoryBridgeConfig): MemoryBrid
       types: opts.types as ('episodic' | 'semantic' | 'procedural')[] | undefined,
       asOf: opts.temporalAt,
       includeInvalidated: opts.includeInvalidated,
+      entityScope: opts.entityScope,
       format: opts.format,
       traceId: opts.traceId,
       spanId: opts.spanId,
@@ -133,6 +142,7 @@ export function createMemoryBridge(config: CreateMemoryBridgeConfig): MemoryBrid
       types: opts.types as ('episodic' | 'semantic' | 'procedural')[] | undefined,
       asOf: opts.temporalAt,
       includeInvalidated: opts.includeInvalidated,
+      entityScope: opts.entityScope,
       format: opts.format,
       traceId: opts.traceId,
       spanId: opts.spanId,

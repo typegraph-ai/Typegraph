@@ -1,11 +1,12 @@
 import type { typegraphIdentity } from './identity.js'
 import type { ConversationTurnResult, MemoryHealthReport } from './memory.js'
 import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
-import type { ChunkRef } from './document.js'
+import type { ChunkRef } from './chunk.js'
+import type { SourceSubject } from './connector.js'
 import type { QueryEntityScope, QuerySignals } from './query.js'
 import type { PaginationOpts } from './pagination.js'
 import type { TelemetryOpts } from './events.js'
-import type { Visibility } from './typegraph-document.js'
+import type { Visibility } from './source.js'
 import type { PredicateTemporalStatus } from '../index-engine/ontology.js'
 
 // ── Memory method opts ──
@@ -193,7 +194,7 @@ export interface MemoryBridge {
 }
 
 /**
- * Knowledge graph bridge — entity-relationship graph for document retrieval.
+ * Knowledge graph bridge — entity-relationship graph for source retrieval.
  * Stores entities and edges extracted during indexing, provides PPR-based retrieval.
  * Independent of conversational memory.
  */
@@ -201,7 +202,27 @@ export interface KnowledgeGraphBridge {
   /** Deploy graph tables (entities, edges). Called by typegraph.deploy() when graph is configured. */
   deploy?(): Promise<void>
 
-  /** Store an extracted triple in the entity graph. Used during document indexing. */
+  /** Materialize the declared source subject and attach deterministic primary-source evidence to every chunk. */
+  addSourceSubject?(input: {
+    subject: SourceSubject
+    bucketId: string
+    sourceId: string
+    embeddingModel: string
+    chunks: Array<{
+      id?: string | undefined
+      chunkIndex: number
+      content: string
+      metadata?: Record<string, unknown> | undefined
+    }>
+    tenantId?: string | undefined
+    groupId?: string | undefined
+    userId?: string | undefined
+    agentId?: string | undefined
+    conversationId?: string | undefined
+    visibility?: Visibility | undefined
+  }): Promise<EntityDetail | null>
+
+  /** Store an extracted triple in the entity graph. Used during source indexing. */
   addTriple?(triple: {
     subject: string
     subjectType?: string
@@ -222,7 +243,7 @@ export interface KnowledgeGraphBridge {
     content: string
     bucketId: string
     chunkIndex?: number
-    documentId?: string
+    sourceId?: string
     tenantId?: string | undefined
     groupId?: string | undefined
     userId?: string | undefined
@@ -247,7 +268,7 @@ export interface KnowledgeGraphBridge {
   /** Merge a duplicate source entity into a surviving target entity and rewrite graph references. */
   mergeEntities?(input: MergeGraphEntitiesInput): Promise<MergeGraphEntitiesResult>
 
-  /** Invalidate or purge an entity and its graph references without deleting chunks/documents/memories. */
+  /** Invalidate or purge an entity and its graph references without deleting chunks/sources/memories. */
   deleteEntity?(entityId: string, opts?: DeleteGraphEntityOpts): Promise<DeleteGraphEntityResult>
 
   /** Create or update a deterministic developer-seeded edge. */
@@ -271,7 +292,7 @@ export interface KnowledgeGraphBridge {
     content: string
     bucketId: string
     chunkIndex?: number | undefined
-    documentId?: string | undefined
+    sourceId?: string | undefined
     tenantId?: string | undefined
     groupId?: string | undefined
     userId?: string | undefined

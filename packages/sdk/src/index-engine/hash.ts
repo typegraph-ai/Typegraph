@@ -1,5 +1,5 @@
 import { createHash } from 'crypto'
-import type { RawDocument } from '../types/connector.js'
+import type { SourceInput } from '../types/connector.js'
 
 export function sha256(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex')
@@ -8,17 +8,17 @@ export function sha256(content: string): string {
 const AUTO_HASH_THRESHOLD = 128
 
 export function resolveIdempotencyKey(
-  doc: RawDocument,
-  spec: string[] | ((doc: RawDocument) => string)
+  source: SourceInput,
+  spec: string[] | ((source: SourceInput) => string)
 ): string {
   const raw = typeof spec === 'function'
-    ? spec(doc)
+    ? spec(source)
     : spec.map(field => {
         if (field.startsWith('metadata.')) {
           const key = field.slice('metadata.'.length)
-          return String(doc.metadata?.[key] ?? '')
+          return String(source.metadata?.[key] ?? '')
         }
-        return String((doc as unknown as Record<string, unknown>)[field] ?? '')
+        return String((source as unknown as Record<string, unknown>)[field] ?? '')
       }).join('::')
 
   // Auto-hash long keys (e.g. when deduplicating by content)

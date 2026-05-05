@@ -1,6 +1,6 @@
 # @typegraph-ai/sdk
 
-The TypeGraph SDK is the main TypeScript API for building an AI context layer: ingest documents, query them with composable retrieval signals, build LLM-ready context, and wire graph or memory features when needed.
+The TypeGraph SDK is the main TypeScript API for building an AI context layer: ingest sources, query them with composable retrieval signals, build LLM-ready context, and wire graph or memory features when needed.
 
 Use this README for the essentials. Use [typegraph.ai/docs](https://typegraph.ai/docs) for complete guides, deployment details, and deeper architecture notes.
 

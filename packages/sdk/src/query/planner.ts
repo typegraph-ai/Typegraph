@@ -6,7 +6,7 @@ import { embeddingModelKey } from '../embedding/provider.js'
 import type { EntityResult, FactResult, GraphSearchTrace, MemoryBridge, KnowledgeGraphBridge } from '../types/graph-bridge.js'
 import type { typegraphEvent, typegraphEventSink } from '../types/events.js'
 import type { typegraphLogger } from '../types/logger.js'
-import type { ChunkRef } from '../types/document.js'
+import type { ChunkRef } from '../types/chunk.js'
 import { ConfigError } from '../types/errors.js'
 import { IndexedRunner } from './runners/indexed.js'
 import { MemoryRunner } from './runners/memory-runner.js'
@@ -36,10 +36,10 @@ export function signalLabel(signals: QuerySignals): string {
 }
 
 /** Compute composite score with eligible/ineligible distinction.
- *  - `undefined` value = ineligible (result can't have this score, e.g. bucket doc has no memory score).
+ *  - `undefined` value = ineligible (result can't have this score, e.g. bucket source has no memory score).
  *    Weight is redistributed proportionally to eligible categories.
  *  - `0` value = eligible but scored poorly. Full penalty proportional to category weight.
- *  This ensures bucket documents aren't penalized for lacking a memory score,
+ *  This ensures bucket sources aren't penalized for lacking a memory score,
  *  while memories that score 0 in keyword search are properly penalized. */
 function compositeScore(
   components: Array<{ weight: number; value: number | undefined }>
@@ -201,19 +201,20 @@ function toChunkResult(r: RetrievalCandidate, scored: ScoredCandidate): QueryChu
     score: scored.score,
     scores: scored.scores,
     sources: scored.sources,
-    document: {
-      id: r.documentId,
+    source: {
+      id: r.sourceId,
       bucketId: r.bucketId,
       title: r.title ?? '',
       url: r.url,
       updatedAt: r.updatedAt ?? new Date(),
-      status: r.documentStatus,
-      visibility: r.documentVisibility,
+      status: r.sourceStatus,
+      visibility: r.sourceVisibility,
       tenantId: r.tenantId,
       userId: r.userId,
       groupId: r.groupId,
       agentId: r.agentId,
       conversationId: r.conversationId,
+      subject: r.sourceSubject,
     },
     chunk: r.chunk ?? { index: 0, total: 1 },
     metadata: r.metadata,
@@ -224,7 +225,7 @@ function toChunkResult(r: RetrievalCandidate, scored: ScoredCandidate): QueryChu
 function fallbackMemoryRecord(r: RetrievalCandidate): Omit<QueryMemoryResult, 'score' | 'scores'> {
   const now = new Date()
   return {
-    id: r.documentId,
+    id: r.sourceId,
     category: 'semantic',
     status: 'active',
     content: r.content,
@@ -308,7 +309,7 @@ function resultCounts(results: QueryResults): {
 
 function boostScopedCandidates(candidates: RetrievalCandidate[], chunkRefs: ChunkRef[]): void {
   if (chunkRefs.length === 0) return
-  const scoped = new Set(chunkRefs.map(ref => `${ref.bucketId}:${ref.documentId}:${ref.chunkIndex}`))
+  const scoped = new Set(chunkRefs.map(ref => `${ref.bucketId}:${ref.sourceId}:${ref.chunkIndex}`))
   for (const candidate of candidates) {
     if (!scoped.has(resultIdentityKey(candidate))) continue
     candidate.normalizedScore = Math.min(1, candidate.normalizedScore * 1.15 + 0.05)
@@ -511,7 +512,7 @@ export class QueryPlanner {
             modelGroups,
             count,
             identity,
-            opts.documentFilter,
+            opts.sourceFilter,
             signals,
             opts.traceId,
             opts.spanId,
@@ -734,8 +735,8 @@ function sourcesForResult(modes: string[], rawScores: RawScores, signals: Requir
 }
 
 function resultIdentityKey(result: RetrievalCandidate): string {
-  if (result.documentId && result.chunk?.index !== undefined && result.bucketId) {
-    return `${result.bucketId}:${result.documentId}:${result.chunk.index}`
+  if (result.sourceId && result.chunk?.index !== undefined && result.bucketId) {
+    return `${result.bucketId}:${result.sourceId}:${result.chunk.index}`
   }
   return result.content
 }

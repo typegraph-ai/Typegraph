@@ -37,7 +37,7 @@ describe('createCloudInstance', () => {
     const [url, init] = fetchMock.mock.calls[0]!
     expect(url).toBe('https://example.test/api/v1/buckets/bkt_novel/ingest')
     const body = JSON.parse((init as RequestInit).body as string)
-    expect(body.docs).toHaveLength(1)
+    expect(body.sources).toHaveLength(1)
     expect(body.opts).toEqual(expect.objectContaining({
       bucketId: 'bkt_novel',
       deduplicateBy: ['content', 'metadata.retryRound'],
@@ -58,7 +58,7 @@ describe('createCloudInstance', () => {
     )
 
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string)
-    expect(body.doc).toEqual(expect.objectContaining({ title: 'Novel chunk' }))
+    expect(body.source).toEqual(expect.objectContaining({ title: 'Novel chunk' }))
     expect(body.chunks).toEqual([{ content: 'Cole Conway met Steve Sharp.', chunkIndex: 0 }])
     expect(body.opts).toEqual(expect.objectContaining({
       bucketId: 'bkt_novel',

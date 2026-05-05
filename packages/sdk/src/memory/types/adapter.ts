@@ -1,5 +1,5 @@
 import type { typegraphIdentity } from '../../types/identity.js'
-import type { Visibility } from '../../types/typegraph-document.js'
+import type { Visibility } from '../../types/source.js'
 import type {
   MemoryRecord,
   MemoryCategory,
@@ -13,7 +13,7 @@ import type {
   SemanticChunkRecord,
   SemanticFactRecord,
 } from './memory.js'
-import type { ChunkRef } from '../../types/document.js'
+import type { ChunkRef } from '../../types/chunk.js'
 import type {
   DeleteGraphEntityOpts,
   DeleteGraphEntityResult,
@@ -66,7 +66,7 @@ export interface GraphBackfillPageOpts {
 export interface ChunkBackfillRecord {
   chunkId: string
   bucketId: string
-  documentId: string
+  sourceId: string
   chunkIndex: number
   embeddingModel: string
   content: string
@@ -204,7 +204,7 @@ export interface MemoryStoreAdapter {
   // lexical entity lookup, provenance/debugging, and edge backfill.
 
   /** Record one or more (entity, chunk, bucket) mentions. Idempotent on
-   *  (entityId, documentId, chunkIndex, mentionType, normalizedSurfaceText). */
+   *  (entityId, sourceId, chunkIndex, mentionType, normalizedSurfaceText). */
   upsertEntityChunkMentions?(
     mentions: SemanticEntityMention[]
   ): Promise<void>

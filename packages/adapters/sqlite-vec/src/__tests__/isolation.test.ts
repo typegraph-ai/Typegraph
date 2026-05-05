@@ -15,7 +15,7 @@ function makeChunk(overrides: Partial<EmbeddedChunk> = {}): EmbeddedChunk {
     userId: overrides.userId,
     agentId: overrides.agentId,
     conversationId: overrides.conversationId,
-    documentId: overrides.documentId ?? 'doc-1',
+    sourceId: overrides.sourceId ?? 'source-1',
     content: overrides.content ?? 'hello world',
     embedding: overrides.embedding ?? [1, 0, 0, 0],
     embeddingModel: MODEL,
@@ -41,9 +41,9 @@ describe('SqliteVecAdapter — identity isolation', () => {
   })
 
   it('search filters by userId within the same tenant', async () => {
-    await adapter.upsertDocument(MODEL, [
-      makeChunk({ idempotencyKey: 'A', userId: 'user-a', documentId: 'doc-a', embedding: [1, 0, 0, 0] }),
-      makeChunk({ idempotencyKey: 'B', userId: 'user-b', documentId: 'doc-b', embedding: [0, 1, 0, 0] }),
+    await adapter.upsertSourceChunks(MODEL, [
+      makeChunk({ idempotencyKey: 'A', userId: 'user-a', sourceId: 'source-a', embedding: [1, 0, 0, 0] }),
+      makeChunk({ idempotencyKey: 'B', userId: 'user-b', sourceId: 'source-b', embedding: [0, 1, 0, 0] }),
     ])
 
     const results = await adapter.search(MODEL, [1, 0, 0, 0], {
@@ -53,11 +53,11 @@ describe('SqliteVecAdapter — identity isolation', () => {
 
     expect(results).toHaveLength(1)
     expect(results[0]!.userId).toBe('user-a')
-    expect(results[0]!.documentId).toBe('doc-a')
+    expect(results[0]!.sourceId).toBe('source-a')
   })
 
   it('search filters by agentId', async () => {
-    await adapter.upsertDocument(MODEL, [
+    await adapter.upsertSourceChunks(MODEL, [
       makeChunk({ idempotencyKey: 'A', agentId: 'agent-a', embedding: [1, 0, 0, 0] }),
       makeChunk({ idempotencyKey: 'B', agentId: 'agent-b', embedding: [1, 0, 0, 0] }),
     ])
@@ -72,7 +72,7 @@ describe('SqliteVecAdapter — identity isolation', () => {
   })
 
   it('search filters by conversationId', async () => {
-    await adapter.upsertDocument(MODEL, [
+    await adapter.upsertSourceChunks(MODEL, [
       makeChunk({ idempotencyKey: 'A', conversationId: 'conv-a', embedding: [1, 0, 0, 0] }),
       makeChunk({ idempotencyKey: 'B', conversationId: 'conv-b', embedding: [1, 0, 0, 0] }),
     ])
@@ -87,7 +87,7 @@ describe('SqliteVecAdapter — identity isolation', () => {
   })
 
   it('search filters by groupId', async () => {
-    await adapter.upsertDocument(MODEL, [
+    await adapter.upsertSourceChunks(MODEL, [
       makeChunk({ idempotencyKey: 'A', groupId: 'group-a', embedding: [1, 0, 0, 0] }),
       makeChunk({ idempotencyKey: 'B', groupId: 'group-b', embedding: [1, 0, 0, 0] }),
     ])
@@ -102,7 +102,7 @@ describe('SqliteVecAdapter — identity isolation', () => {
   })
 
   it('countChunks respects identity filters', async () => {
-    await adapter.upsertDocument(MODEL, [
+    await adapter.upsertSourceChunks(MODEL, [
       makeChunk({ idempotencyKey: 'A', userId: 'user-a' }),
       makeChunk({ idempotencyKey: 'B', userId: 'user-b' }),
       makeChunk({ idempotencyKey: 'C', userId: 'user-a' }),
@@ -113,12 +113,12 @@ describe('SqliteVecAdapter — identity isolation', () => {
     expect(await adapter.countChunks(MODEL, { tenantId: 'tenant-1' })).toBe(3)
   })
 
-  it('updates documentId on idempotency conflict', async () => {
-    await adapter.upsertDocument(MODEL, [
-      makeChunk({ idempotencyKey: 'A', documentId: 'doc-stale' }),
+  it('updates sourceId on idempotency conflict', async () => {
+    await adapter.upsertSourceChunks(MODEL, [
+      makeChunk({ idempotencyKey: 'A', sourceId: 'source-stale' }),
     ])
-    await adapter.upsertDocument(MODEL, [
-      makeChunk({ idempotencyKey: 'A', documentId: 'doc-canonical', content: 'updated content' }),
+    await adapter.upsertSourceChunks(MODEL, [
+      makeChunk({ idempotencyKey: 'A', sourceId: 'source-canonical', content: 'updated content' }),
     ])
 
     const results = await adapter.search(MODEL, [1, 0, 0, 0], {
@@ -127,12 +127,12 @@ describe('SqliteVecAdapter — identity isolation', () => {
     })
 
     expect(results).toHaveLength(1)
-    expect(results[0]!.documentId).toBe('doc-canonical')
+    expect(results[0]!.sourceId).toBe('source-canonical')
     expect(results[0]!.content).toBe('updated content')
   })
 
   it('mapRowToScoredChunk returns all identity fields', async () => {
-    await adapter.upsertDocument(MODEL, [
+    await adapter.upsertSourceChunks(MODEL, [
       makeChunk({
         idempotencyKey: 'A',
         tenantId: 't1',
@@ -212,9 +212,9 @@ describe('SqliteVecAdapter — bucket identity + cascade', () => {
 
   it('deleteBucket cascades to chunks, vec table, and hashes', async () => {
     await adapter.upsertBucket!({ id: 'b1', name: 'b1', status: 'active', tenantId: 't1' })
-    await adapter.upsertDocument(MODEL, [
+    await adapter.upsertSourceChunks(MODEL, [
       makeChunk({ idempotencyKey: 'k1', bucketId: 'b1' }),
-      makeChunk({ idempotencyKey: 'k2', bucketId: 'b1', documentId: 'doc-2' }),
+      makeChunk({ idempotencyKey: 'k2', bucketId: 'b1', sourceId: 'source-2' }),
     ])
     await adapter.hashStore.set('b1:t1:k1', {
       idempotencyKey: 'k1',

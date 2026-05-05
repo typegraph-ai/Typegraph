@@ -1,5 +1,5 @@
-import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from './document.js'
-import type { typegraphDocument, DocumentFilter, DocumentStatus, UpsertDocumentInput, UpsertedDocumentRecord } from './typegraph-document.js'
+import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from './chunk.js'
+import type { typegraphSource, SourceFilter, SourceStatus, UpsertSourceInput, UpsertedSourceRecord } from './source.js'
 import type { Bucket, BucketListFilter } from './bucket.js'
 import type { PaginationOpts, PaginatedResult } from './pagination.js'
 import type { Job, JobFilter, UpsertJobInput, JobStatusPatch } from './job.js'
@@ -38,8 +38,8 @@ export interface HashStoreAdapter {
   deleteByBucket(bucketId: string, tenantId?: string | undefined): Promise<void>
 }
 
-export interface ScoredChunkWithDocument extends ScoredChunk {
-  document?: typegraphDocument | undefined
+export interface ScoredChunkWithSource extends ScoredChunk {
+  source?: typegraphSource | undefined
 }
 
 export interface UndeployResult {
@@ -62,8 +62,8 @@ export interface VectorStoreAdapter {
   /** Ensure a model's storage (e.g., table) exists. Called lazily before first write. */
   ensureModel(model: string, dimensions: number): Promise<void>
 
-  /** Upsert chunks for a document into the vector store. */
-  upsertDocument(model: string, chunks: EmbeddedChunk[]): Promise<void>
+  /** Upsert chunks for a source into the vector store. */
+  upsertSourceChunks(model: string, chunks: EmbeddedChunk[]): Promise<void>
   delete(model: string, filter: ChunkFilter): Promise<void>
 
   search(model: string, embedding: number[], opts: SearchOpts): Promise<ScoredChunk[]>
@@ -72,20 +72,20 @@ export interface VectorStoreAdapter {
 
   hashStore: HashStoreAdapter
 
-  // --- Document record methods (optional - adapters that support documents implement these) ---
+  // --- Source record methods (optional - adapters that support sources implement these) ---
 
-  /** Create or update a document record. Returns the canonical document row. */
-  upsertDocumentRecord?(input: UpsertDocumentInput): Promise<UpsertedDocumentRecord>
-  /** Get a document by UUID. */
-  getDocument?(id: string): Promise<typegraphDocument | null>
-  /** List documents matching a filter. Supports optional pagination. */
-  listDocuments?(filter: DocumentFilter, pagination?: PaginationOpts): Promise<typegraphDocument[] | PaginatedResult<typegraphDocument>>
-  /** Delete documents matching a filter. Returns count deleted. */
-  deleteDocuments?(filter: DocumentFilter): Promise<number>
-  /** Update a document's status and optionally its chunk count. */
-  updateDocumentStatus?(id: string, status: DocumentStatus, chunkCount?: number): Promise<void>
-  /** Update document metadata fields (title, url, visibility, etc.). Returns updated document. */
-  updateDocument?(id: string, input: Partial<Pick<typegraphDocument, 'title' | 'url' | 'visibility' | 'metadata'>>): Promise<typegraphDocument>
+  /** Create or update a source record. Returns the canonical source row. */
+  upsertSourceRecord?(input: UpsertSourceInput): Promise<UpsertedSourceRecord>
+  /** Get a source by UUID. */
+  getSource?(id: string): Promise<typegraphSource | null>
+  /** List sources matching a filter. Supports optional pagination. */
+  listSources?(filter: SourceFilter, pagination?: PaginationOpts): Promise<typegraphSource[] | PaginatedResult<typegraphSource>>
+  /** Delete sources matching a filter. Returns count deleted. */
+  deleteSources?(filter: SourceFilter): Promise<number>
+  /** Update a source's status and optionally its chunk count. */
+  updateSourceStatus?(id: string, status: SourceStatus, chunkCount?: number): Promise<void>
+  /** Update source metadata fields (title, url, visibility, subject, etc.). Returns updated source. */
+  updateSource?(id: string, input: Partial<Pick<typegraphSource, 'title' | 'url' | 'visibility' | 'metadata' | 'subject'>>): Promise<typegraphSource>
 
   // --- Job record methods (optional - adapters that persist job state implement these) ---
 
@@ -100,18 +100,18 @@ export interface VectorStoreAdapter {
   /** Atomically add to a job's progress_processed counter. Safe under concurrent workers. */
   incrementJobProgress?(id: string, processedDelta: number): Promise<void>
 
-  /** Hybrid search with document-level filtering via JOIN to typegraph_documents. */
-  searchWithDocuments?(
+  /** Hybrid search with source-level filtering via JOIN to typegraph_sources. */
+  searchWithSources?(
     model: string,
     embedding: number[],
     query: string,
-    opts: SearchOpts & { documentFilter?: DocumentFilter | undefined }
-  ): Promise<ScoredChunkWithDocument[]>
+    opts: SearchOpts & { sourceFilter?: SourceFilter | undefined }
+  ): Promise<ScoredChunkWithSource[]>
 
-  /** Fetch chunks by document and index range (for neighbor expansion). No vector search. */
+  /** Fetch chunks by source and index range (for neighbor expansion). No vector search. */
   getChunksByRange?(
     model: string,
-    documentId: string,
+    sourceId: string,
     fromIndex: number,
     toIndex: number
   ): Promise<ScoredChunk[]>

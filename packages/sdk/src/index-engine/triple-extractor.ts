@@ -1,7 +1,7 @@
 import { z } from 'zod/v4-mini'
 import type { LLMProvider } from '../types/llm-provider.js'
 import type { KnowledgeGraphBridge } from '../types/graph-bridge.js'
-import type { Visibility } from '../types/typegraph-document.js'
+import type { Visibility } from '../types/source.js'
 import { ENTITY_TYPES, ENTITY_TYPES_LIST, VALID_ENTITY_TYPES, getPredicatesForPrompt } from './ontology.js'
 
 export interface TripleExtractorConfig {
@@ -521,12 +521,12 @@ function postProcessExtraction(
 
 // ── Single-pass prompt (default) ──
 
-function buildSinglePassPrompt(content: string, entityContext?: EntityContext[], documentTitle?: string): string {
+function buildSinglePassPrompt(content: string, entityContext?: EntityContext[], sourceTitle?: string): string {
   const contextSection = entityContext?.length
-    ? `\nPreviously identified entities in this document:\n${entityContext.map(e => `- ${e.name} (${e.type})`).join('\n')}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
+    ? `\nPreviously identified entities in this source:\n${entityContext.map(e => `- ${e.name} (${e.type})`).join('\n')}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
     : ''
-  const titleSection = documentTitle
-    ? `\nThe text string is from a document titled: "${documentTitle}". Entities referenced in the title should be extracted as primary entities using their full formal names.\n`
+  const titleSection = sourceTitle
+    ? `\nThe text string is from a source titled: "${sourceTitle}". Entities referenced in the title should be extracted as primary entities using their full formal names.\n`
     : ''
 
   return `Your task is to extract all named entities, and relationships between them, from a text string.
@@ -544,7 +544,7 @@ For each entity, provide:
   Events: "2024 United States presidential election" not "the election"; "1984 Summer Olympics" not "1984 games"; "CES 2025" not "CES"; "World War II" not "the war"
   Legal/Science: "General Data Protection Regulation" not "GDPR"; "Clean Air Act of 1970" not "Clean Air Act"; "Hubble Space Telescope" not "Hubble"; "CRISPR-Cas9" not "CRISPR"
   Products: "iPhone 16 Pro Max" not "iPhone"; "Tesla Model 3" not "Model 3"; "GPT-4" not "GPT"
-  Artifacts: "Acme master services agreement" not "MSA"; "Q4 architecture review deck" not "deck"; "SOC2 readiness report" not "report"
+  Documents: "Acme master services agreement" not "MSA"; "Q4 architecture review deck" not "deck"; "SOC2 readiness report" not "report"
   Culture: "Naismith Memorial Basketball Hall of Fame" not "Hall of Fame"; "Academy Award for Best Picture" not "Best Picture"; "The Great Gatsby" not "Gatsby"
 - "type": One of: ${ENTITY_TYPES_LIST}
 - "description": A one-sentence description of what this entity IS — its defining attributes, NOT its relationships to other entities
@@ -656,12 +656,12 @@ ${content}`
 
 // ── Two-pass prompts ──
 
-function buildEntityExtractionPrompt(content: string, entityContext?: EntityContext[], documentTitle?: string): string {
+function buildEntityExtractionPrompt(content: string, entityContext?: EntityContext[], sourceTitle?: string): string {
   const contextSection = entityContext?.length
     ? `\nPreviously identified entities in the text string:\n${entityContext.map(e => `- ${e.name} (${e.type})`).join('\n')}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
     : ''
-  const titleSection = documentTitle
-    ? `\nThe text string is from a document titled: "${documentTitle}". Entities referenced in the title should be extracted as primary entities using their full formal and canonical names.\n`
+  const titleSection = sourceTitle
+    ? `\nThe text string is from a source titled: "${sourceTitle}". Entities referenced in the title should be extracted as primary entities using their full formal and canonical names.\n`
     : ''
 
     return `Your task is to extract all named entities from a text string.
@@ -731,7 +731,7 @@ function buildEntityExtractionPrompt(content: string, entityContext?: EntityCont
     - Test: Could you replace one name with the other in any sentence and preserve meaning? If yes → alias. If no → separate entities with a relationship.
     
     ACRONYM / INITIALISM CANONICALIZATION RULES:
-    - Never use an acronym, abbreviation, or initialism as the canonical "name" when a fuller proper name is available in the text, document title, prior entity context, or common domain context.
+    - Never use an acronym, abbreviation, or initialism as the canonical "name" when a fuller proper name is available in the text, source title, prior entity context, or common domain context.
     - Use the expanded full name as "name" and put the acronym/initialism in "aliases".
     - Examples:
       - Use "Time Variance Authority" as name, aliases ["TVA"].
@@ -966,10 +966,10 @@ export class TripleExtractor {
     content: string,
     bucketId: string,
     chunkIndex?: number,
-    documentId?: string,
+    sourceId?: string,
     metadata?: Record<string, unknown>,
     entityContext?: EntityContext[],
-    documentTitle?: string,
+    sourceTitle?: string,
     identity?: {
       tenantId?: string | undefined
       groupId?: string | undefined
@@ -983,7 +983,7 @@ export class TripleExtractor {
     if (!this.graph.addTriple && !this.graph.addEntityMentions) return { entities: [] }
 
     const cleanContent = sanitizeText(content)
-    const cleanTitle = documentTitle ? sanitizeField(documentTitle) : undefined
+    const cleanTitle = sourceTitle ? sanitizeField(sourceTitle) : undefined
     const raw = this.twoPass
       ? await this.extractTwoPass(cleanContent, entityContext, cleanTitle)
       : await this.extractSinglePass(cleanContent, entityContext, cleanTitle)
@@ -998,7 +998,7 @@ export class TripleExtractor {
         content: cleanContent,
         bucketId,
         ...(chunkIndex !== undefined ? { chunkIndex } : {}),
-        ...(documentId ? { documentId } : {}),
+        ...(sourceId ? { sourceId } : {}),
         ...(identity?.tenantId ? { tenantId: identity.tenantId } : {}),
         ...(identity?.groupId ? { groupId: identity.groupId } : {}),
         ...(identity?.userId ? { userId: identity.userId } : {}),
@@ -1041,7 +1041,7 @@ export class TripleExtractor {
           content: cleanContent,
           bucketId,
           ...(chunkIndex !== undefined ? { chunkIndex } : {}),
-          ...(documentId ? { documentId } : {}),
+          ...(sourceId ? { sourceId } : {}),
           ...(identity?.tenantId ? { tenantId: identity.tenantId } : {}),
           ...(identity?.groupId ? { groupId: identity.groupId } : {}),
           ...(identity?.userId ? { userId: identity.userId } : {}),
@@ -1060,9 +1060,9 @@ export class TripleExtractor {
   private async extractSinglePass(
     content: string,
     entityContext?: EntityContext[],
-    documentTitle?: string,
+    sourceTitle?: string,
   ): Promise<ExtractionResult> {
-    const prompt = buildSinglePassPrompt(content, entityContext, documentTitle)
+    const prompt = buildSinglePassPrompt(content, entityContext, sourceTitle)
     const result = await this.llm.generateJSON<ExtractionResult>(
       prompt,
       'You are a precise knowledge graph extractor. Preserve complete named surface forms, model pseudonyms as aliases, reject generic one-token entities, and return only valid JSON.',
@@ -1085,11 +1085,11 @@ export class TripleExtractor {
   private async extractTwoPass(
     content: string,
     entityContext?: EntityContext[],
-    documentTitle?: string,
+    sourceTitle?: string,
   ): Promise<ExtractionResult> {
     // Pass 1: Extract entities
     const rawEntities = await this.llm.generateJSON<ExtractedEntity[]>(
-      buildEntityExtractionPrompt(content, entityContext, documentTitle),
+      buildEntityExtractionPrompt(content, entityContext, sourceTitle),
       'You are a precise named entity extractor. Preserve complete named surface forms, model pseudonyms as aliases, reject generic one-token entities, and return only valid JSON arrays.',
       { schema: entitySchema },
     )

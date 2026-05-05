@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'crypto'
  *
  * Prefixes:
  * - `bkt_`  — Bucket
- * - `doc_`  — Document
+ * - `src_`  — Source
  * - `chk_`  — Chunk
  * - `mem_`  — Memory record (episodic)
  * - `fact_` — Semantic fact

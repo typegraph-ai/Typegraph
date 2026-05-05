@@ -50,7 +50,7 @@ describe('TripleExtractor', () => {
       'At twenty years of age Cousin Cæsar was in Paducah, Kentucky, calling himself Cole Conway, in company with one Steve Sharp.',
       'bucket-1',
       0,
-      'doc-1',
+      'source-1',
       undefined,
       undefined,
       undefined,
@@ -118,7 +118,7 @@ describe('TripleExtractor', () => {
       'When Cousin Cæsar reached Iuka. Cousin Cæsar later appeared in Paducah, Kentucky, calling himself Cole Conway. And Cousin Cæsar met Conway there.',
       'bucket-1',
       0,
-      'doc-1',
+      'source-1',
     )
 
     const mentions = vi.mocked(graph.addEntityMentions).mock.calls[0]![0]
@@ -188,7 +188,7 @@ describe('TripleExtractor', () => {
       'CHAPTER II ELSIE MAUD INGLIS. Elsie Inglis wrote to John Inglis and later mentioned David Inglis while KATHERINE INGLIS remained elsewhere.',
       'bucket-1',
       0,
-      'doc-1',
+      'source-1',
     )
 
     const mentions = vi.mocked(graph.addEntityMentions).mock.calls[0]![0]
@@ -238,7 +238,7 @@ describe('TripleExtractor', () => {
       'Elsie Inglis was a doctor.',
       'bucket-1',
       0,
-      'doc-1',
+      'source-1',
     )
 
     expect(graph.addTriple).toHaveBeenCalledWith(expect.objectContaining({
@@ -258,7 +258,7 @@ describe('TripleExtractor', () => {
     const extractor = new TripleExtractor({
       llm: mockLLM({
         entities: [
-          { name: 'Acme security review deck', type: 'artifact', description: 'A security review artifact.', aliases: ['deck'] },
+          { name: 'Acme security review deck', type: 'document', description: 'A security review document.', aliases: ['deck'] },
           { name: 'SOC2 rollout', type: 'project', description: 'A compliance rollout project.', aliases: [] },
           { name: 'AUTH-123', type: 'issue', description: 'An authentication issue.', aliases: [] },
           { name: 'Acme demo', type: 'meeting', description: 'A sales demo meeting.', aliases: [] },
@@ -275,18 +275,18 @@ describe('TripleExtractor', () => {
       'The Acme security review deck describes the SOC2 rollout after AUTH-123 came up in the Acme demo.',
       'bucket-1',
       0,
-      'doc-1',
+      'source-1',
     )
 
     expect(graph.addEntityMentions).toHaveBeenCalledWith(expect.arrayContaining([
-      expect.objectContaining({ name: 'Acme security review deck', type: 'artifact' }),
+      expect.objectContaining({ name: 'Acme security review deck', type: 'document' }),
       expect.objectContaining({ name: 'SOC2 rollout', type: 'project' }),
       expect.objectContaining({ name: 'AUTH-123', type: 'issue' }),
       expect.objectContaining({ name: 'Acme demo', type: 'meeting' }),
     ]))
     expect(graph.addTriple).toHaveBeenCalledWith(expect.objectContaining({
       predicate: 'DESCRIBES',
-      subjectType: 'artifact',
+      subjectType: 'document',
       objectType: 'project',
     }))
   })
@@ -323,7 +323,7 @@ describe('TripleExtractor', () => {
       'Hi Adarsh Tadimari, please help with the Plotline SDK integration issue.',
       'bucket-1',
       0,
-      'doc-1',
+      'source-1',
     )
 
     const mentions = vi.mocked(graph.addEntityMentions).mock.calls[0]![0]
@@ -351,7 +351,7 @@ describe('TripleExtractor', () => {
       twoPass: false,
     })
 
-    await expect(extractor.extractFromChunk('Alice met Bob.', 'bucket-1', 0, 'doc-1'))
+    await expect(extractor.extractFromChunk('Alice met Bob.', 'bucket-1', 0, 'source-1'))
       .rejects.toThrow('No output generated.')
   })
 })

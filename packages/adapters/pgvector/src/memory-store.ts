@@ -249,16 +249,16 @@ const EDGES_DDL = (t: string) => {
     weight           REAL NOT NULL DEFAULT 1.0,
     properties       JSONB NOT NULL DEFAULT '{}',
     scope            JSONB NOT NULL DEFAULT '{}',
-    source_bucket_id       TEXT,
-    source_document_id     TEXT,
-    source_chunk_index     INTEGER,
-    source_embedding_model TEXT,
-    source_chunk_id        TEXT,
-    target_bucket_id       TEXT,
-    target_document_id     TEXT,
-    target_chunk_index     INTEGER,
-    target_embedding_model TEXT,
-    target_chunk_id        TEXT,
+    from_bucket_id       TEXT,
+    from_source_id     TEXT,
+    from_chunk_index     INTEGER,
+    from_embedding_model TEXT,
+    from_chunk_id        TEXT,
+    to_bucket_id       TEXT,
+    to_source_id     TEXT,
+    to_chunk_index     INTEGER,
+    to_embedding_model TEXT,
+    to_chunk_id        TEXT,
     -- Identity columns
     tenant_id        TEXT,
     group_id         TEXT,
@@ -280,8 +280,8 @@ const EDGES_DDL = (t: string) => {
   CREATE INDEX IF NOT EXISTS ${idx('entity_target_idx')} ON ${t} (target_id) WHERE target_type = 'entity';
   CREATE INDEX IF NOT EXISTS ${idx('memory_source_idx')} ON ${t} (source_id) WHERE source_type = 'memory';
   CREATE INDEX IF NOT EXISTS ${idx('memory_target_idx')} ON ${t} (target_id) WHERE target_type = 'memory';
-  CREATE INDEX IF NOT EXISTS ${idx('target_chunk_ref_idx')} ON ${t} (target_bucket_id, target_document_id, target_chunk_index) WHERE target_type = 'chunk';
-  CREATE INDEX IF NOT EXISTS ${idx('source_chunk_ref_idx')} ON ${t} (source_bucket_id, source_document_id, source_chunk_index) WHERE source_type = 'chunk';
+  CREATE INDEX IF NOT EXISTS ${idx('to_chunk_ref_idx')} ON ${t} (to_bucket_id, to_source_id, to_chunk_index) WHERE target_type = 'chunk';
+  CREATE INDEX IF NOT EXISTS ${idx('from_chunk_ref_idx')} ON ${t} (from_bucket_id, from_source_id, from_chunk_index) WHERE source_type = 'chunk';
   CREATE INDEX IF NOT EXISTS ${idx('relation_idx')} ON ${t} (relation);
   CREATE INDEX IF NOT EXISTS ${idx('invalid_at_idx')} ON ${t} (invalid_at);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')} ON ${t} (tenant_id, user_id);
@@ -303,11 +303,11 @@ const CHUNK_MENTIONS_DDL = (t: string) => {
   CREATE TABLE IF NOT EXISTS ${t} (
     id              TEXT PRIMARY KEY,
     entity_id       TEXT NOT NULL,
-    document_id     TEXT NOT NULL,
+    source_id     TEXT NOT NULL,
     chunk_index     INTEGER NOT NULL,
     bucket_id       TEXT NOT NULL,
     mention_type    TEXT NOT NULL
-                    CHECK (mention_type IN ('subject', 'object', 'co_occurrence', 'entity', 'alias')),
+                    CHECK (mention_type IN ('subject', 'object', 'co_occurrence', 'entity', 'alias', 'source_subject')),
     surface_text    TEXT,
     normalized_surface_text TEXT NOT NULL DEFAULT '',
     confidence      REAL,
@@ -315,11 +315,11 @@ const CHUNK_MENTIONS_DDL = (t: string) => {
   );
 
   CREATE INDEX IF NOT EXISTS ${idx('entity_idx')} ON ${t} (entity_id);
-  CREATE INDEX IF NOT EXISTS ${idx('chunk_idx')} ON ${t} (document_id, chunk_index);
+  CREATE INDEX IF NOT EXISTS ${idx('chunk_idx')} ON ${t} (source_id, chunk_index);
   CREATE INDEX IF NOT EXISTS ${idx('bucket_entity_idx')} ON ${t} (bucket_id, entity_id);
   CREATE INDEX IF NOT EXISTS ${idx('surface_idx')} ON ${t} (normalized_surface_text);
   CREATE UNIQUE INDEX IF NOT EXISTS ${idx('mention_uniq_idx')}
-    ON ${t} (entity_id, document_id, chunk_index, mention_type, normalized_surface_text);
+    ON ${t} (entity_id, source_id, chunk_index, mention_type, normalized_surface_text);
 `
 }
 
@@ -337,7 +337,7 @@ const FACT_RECORDS_DDL = (t: string, dims?: number) => {
     description      TEXT,
     evidence_text    TEXT,
     fact_search_text TEXT NOT NULL,
-    source_chunk_id  TEXT,
+    from_chunk_id  TEXT,
     weight           REAL NOT NULL DEFAULT 1.0,
     evidence_count   INTEGER NOT NULL DEFAULT 1,
     embedding        VECTOR${dims ? `(${dims})` : ''},
@@ -516,13 +516,13 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     await this.sql(
       `ALTER TABLE ${this.chunkMentionsTable}
        ADD CONSTRAINT ${mentionTypeCheck}
-       CHECK (mention_type IN ('subject', 'object', 'co_occurrence', 'entity', 'alias')) NOT VALID`
+       CHECK (mention_type IN ('subject', 'object', 'co_occurrence', 'entity', 'alias', 'source_subject')) NOT VALID`
     )
     await this.sql(`ALTER TABLE ${this.chunkMentionsTable} VALIDATE CONSTRAINT ${mentionTypeCheck}`)
     await this.sql(`CREATE INDEX IF NOT EXISTS ${safeIdx(i, 'surface_idx')} ON ${this.chunkMentionsTable} (normalized_surface_text)`)
     await this.sql(
       `CREATE UNIQUE INDEX IF NOT EXISTS ${safeIdx(i, 'mention_uniq_idx')}
-       ON ${this.chunkMentionsTable} (entity_id, document_id, chunk_index, mention_type, normalized_surface_text)`
+       ON ${this.chunkMentionsTable} (entity_id, source_id, chunk_index, mention_type, normalized_surface_text)`
     )
   }
 
@@ -665,7 +665,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   }
 
   async getHistory(id: string): Promise<MemoryRecord[]> {
-    // Return the record itself — in a full bi-temporal system, we'd
+    // Return the record itself — in a full bi-temporal system, we's
     // query all versions sharing a lineage ID. For now, return the single record.
     const row = await this.get(id)
     return row ? [row] : []
@@ -1161,12 +1161,12 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         JSON.stringify(edge.properties ?? {}),
         JSON.stringify(scope),
         edge.sourceChunkRef?.bucketId ?? null,
-        edge.sourceChunkRef?.documentId ?? null,
+        edge.sourceChunkRef?.sourceId ?? null,
         edge.sourceChunkRef?.chunkIndex ?? null,
         edge.sourceChunkRef?.embeddingModel ?? null,
         edge.sourceChunkRef?.chunkId ?? null,
         edge.targetChunkRef?.bucketId ?? null,
-        edge.targetChunkRef?.documentId ?? null,
+        edge.targetChunkRef?.sourceId ?? null,
         edge.targetChunkRef?.chunkIndex ?? null,
         edge.targetChunkRef?.embeddingModel ?? null,
         edge.targetChunkRef?.chunkId ?? null,
@@ -1186,24 +1186,24 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     await this.sqlWithRetry(
       `INSERT INTO ${this.edgesTable}
         (id, source_type, source_id, target_type, target_id, relation, weight, properties, scope,
-         source_bucket_id, source_document_id, source_chunk_index, source_embedding_model, source_chunk_id,
-         target_bucket_id, target_document_id, target_chunk_index, target_embedding_model, target_chunk_id,
+         from_bucket_id, from_source_id, from_chunk_index, from_embedding_model, from_chunk_id,
+         to_bucket_id, to_source_id, to_chunk_index, to_embedding_model, to_chunk_id,
          tenant_id, group_id, user_id, agent_id, conversation_id, visibility, evidence, valid_at, invalid_at)
        VALUES ${values.join(',')}
        ON CONFLICT (source_type, source_id, target_type, target_id, relation) DO UPDATE SET
          weight = LEAST(5.0, ${tbl}.weight + EXCLUDED.weight),
          properties = ${tbl}.properties || EXCLUDED.properties,
          scope = EXCLUDED.scope,
-         source_bucket_id = COALESCE(EXCLUDED.source_bucket_id, ${tbl}.source_bucket_id),
-         source_document_id = COALESCE(EXCLUDED.source_document_id, ${tbl}.source_document_id),
-         source_chunk_index = COALESCE(EXCLUDED.source_chunk_index, ${tbl}.source_chunk_index),
-         source_embedding_model = COALESCE(EXCLUDED.source_embedding_model, ${tbl}.source_embedding_model),
-         source_chunk_id = COALESCE(EXCLUDED.source_chunk_id, ${tbl}.source_chunk_id),
-         target_bucket_id = COALESCE(EXCLUDED.target_bucket_id, ${tbl}.target_bucket_id),
-         target_document_id = COALESCE(EXCLUDED.target_document_id, ${tbl}.target_document_id),
-         target_chunk_index = COALESCE(EXCLUDED.target_chunk_index, ${tbl}.target_chunk_index),
-         target_embedding_model = COALESCE(EXCLUDED.target_embedding_model, ${tbl}.target_embedding_model),
-         target_chunk_id = COALESCE(EXCLUDED.target_chunk_id, ${tbl}.target_chunk_id),
+         from_bucket_id = COALESCE(EXCLUDED.from_bucket_id, ${tbl}.from_bucket_id),
+         from_source_id = COALESCE(EXCLUDED.from_source_id, ${tbl}.from_source_id),
+         from_chunk_index = COALESCE(EXCLUDED.from_chunk_index, ${tbl}.from_chunk_index),
+         from_embedding_model = COALESCE(EXCLUDED.from_embedding_model, ${tbl}.from_embedding_model),
+         from_chunk_id = COALESCE(EXCLUDED.from_chunk_id, ${tbl}.from_chunk_id),
+         to_bucket_id = COALESCE(EXCLUDED.to_bucket_id, ${tbl}.to_bucket_id),
+         to_source_id = COALESCE(EXCLUDED.to_source_id, ${tbl}.to_source_id),
+         to_chunk_index = COALESCE(EXCLUDED.to_chunk_index, ${tbl}.to_chunk_index),
+         to_embedding_model = COALESCE(EXCLUDED.to_embedding_model, ${tbl}.to_embedding_model),
+         to_chunk_id = COALESCE(EXCLUDED.to_chunk_id, ${tbl}.to_chunk_id),
          tenant_id = EXCLUDED.tenant_id,
          group_id = EXCLUDED.group_id,
          user_id = EXCLUDED.user_id,
@@ -1246,7 +1246,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const table = unqualified(this.factRecordsTable)
     const buildSql = (conflictTarget: 'edge_id' | 'id') => `INSERT INTO ${this.factRecordsTable}
         (id, edge_id, source_entity_id, target_entity_id, relation, fact_text,
-         description, evidence_text, fact_search_text, source_chunk_id, weight,
+         description, evidence_text, fact_search_text, from_chunk_id, weight,
          evidence_count, embedding, scope, tenant_id, group_id, user_id, agent_id,
          conversation_id, visibility, invalid_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::vector,$14,$15,$16,$17,$18,$19,$20,$21,$22)
@@ -1261,7 +1261,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          description = EXCLUDED.description,
          evidence_text = EXCLUDED.evidence_text,
          fact_search_text = EXCLUDED.fact_search_text,
-         source_chunk_id = COALESCE(EXCLUDED.source_chunk_id, ${table}.source_chunk_id),
+         from_chunk_id = COALESCE(EXCLUDED.from_chunk_id, ${table}.from_chunk_id),
          weight = GREATEST(${table}.weight, EXCLUDED.weight),
          evidence_count = GREATEST(${table}.evidence_count, EXCLUDED.evidence_count),
          embedding = COALESCE(EXCLUDED.embedding, ${table}.embedding),
@@ -1351,7 +1351,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     let bucketClause = ''
     if (opts?.bucketIds && opts.bucketIds.length > 0) {
       params.push(opts.bucketIds)
-      bucketClause = `AND e.target_bucket_id = ANY($${params.length}::text[])`
+      bucketClause = `AND e.to_bucket_id = ANY($${params.length}::text[])`
     }
     const edgeIdentity = buildGraphVisibilityWhere(opts?.scope, params.length, 'e')
     params.push(...edgeIdentity.params)
@@ -1386,7 +1386,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     if (chunkRefs.length === 0) return []
     const params: unknown[] = [
       chunkRefs.map(ref => ref.bucketId),
-      chunkRefs.map(ref => ref.documentId),
+      chunkRefs.map(ref => ref.sourceId),
       chunkRefs.map(ref => ref.chunkIndex),
     ]
     let bucketClause = ''
@@ -1398,11 +1398,11 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     params.push(...chunkIdentity.params)
     const chunkScopeClause = chunkIdentity.where ? `AND ${chunkIdentity.where}` : ''
     const rows = await this.sqlWithRetry(
-      `SELECT c.id AS chunk_id, c.content, c.bucket_id, c.document_id, c.chunk_index,
+      `SELECT c.id AS chunk_id, c.content, c.bucket_id, c.source_id, c.chunk_index,
               c.embedding_model, c.total_chunks, c.metadata, c.tenant_id, c.group_id,
               c.user_id, c.agent_id, c.conversation_id
          FROM ${opts.chunksTable} c
-        WHERE (c.bucket_id, c.document_id, c.chunk_index) IN (
+        WHERE (c.bucket_id, c.source_id, c.chunk_index) IN (
           SELECT * FROM unnest($1::text[], $2::text[], $3::int[])
         )
           ${bucketClause}
@@ -1436,11 +1436,11 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       } else {
         params.push(opts.chunkRefs.map(ref => ref.bucketId))
         const bucketParam = `$${params.length}`
-        params.push(opts.chunkRefs.map(ref => ref.documentId))
-        const docParam = `$${params.length}`
+        params.push(opts.chunkRefs.map(ref => ref.sourceId))
+        const sourceParam = `$${params.length}`
         params.push(opts.chunkRefs.map(ref => ref.chunkIndex))
         const chunkParam = `$${params.length}`
-        chunkRefClause = `AND (c.bucket_id, c.document_id, c.chunk_index) IN (SELECT * FROM unnest(${bucketParam}::text[], ${docParam}::text[], ${chunkParam}::int[]))`
+        chunkRefClause = `AND (c.bucket_id, c.source_id, c.chunk_index) IN (SELECT * FROM unnest(${bucketParam}::text[], ${sourceParam}::text[], ${chunkParam}::int[]))`
       }
     }
     const chunkIdentity = buildGraphVisibilityWhere(scope, params.length, 'c')
@@ -1450,7 +1450,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const chunkScopeClause = chunkIdentity.where ? `AND ${chunkIdentity.where}` : ''
 
     const rows = await this.sqlWithRetry(
-      `SELECT c.id AS chunk_id, c.content, c.bucket_id, c.document_id, c.chunk_index,
+      `SELECT c.id AS chunk_id, c.content, c.bucket_id, c.source_id, c.chunk_index,
               c.embedding_model, c.total_chunks, c.metadata, c.tenant_id, c.group_id,
               c.user_id, c.agent_id, c.conversation_id,
               1 - (c.embedding <=> $1::vector) AS similarity
@@ -1659,7 +1659,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
           USING ${this.chunkMentionsTable} tm
          WHERE sm.entity_id = $1
            AND tm.entity_id = $2
-           AND sm.document_id = tm.document_id
+           AND sm.source_id = tm.source_id
            AND sm.chunk_index = tm.chunk_index
            AND sm.mention_type = tm.mention_type
            AND sm.normalized_surface_text = tm.normalized_surface_text
@@ -1974,7 +1974,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       params.push(
         generateId('mention'),
         m.entityId,
-        m.documentId,
+        m.sourceId,
         m.chunkIndex,
         m.bucketId,
         m.mentionType,
@@ -1986,9 +1986,9 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
 
     await this.sqlWithRetry(
       `INSERT INTO ${this.chunkMentionsTable}
-         (id, entity_id, document_id, chunk_index, bucket_id, mention_type, surface_text, normalized_surface_text, confidence)
+         (id, entity_id, source_id, chunk_index, bucket_id, mention_type, surface_text, normalized_surface_text, confidence)
        VALUES ${values.join(',')}
-       ON CONFLICT (entity_id, document_id, chunk_index, mention_type, normalized_surface_text) DO UPDATE SET
+       ON CONFLICT (entity_id, source_id, chunk_index, mention_type, normalized_surface_text) DO UPDATE SET
          surface_text = COALESCE(EXCLUDED.surface_text, ${unqualified(this.chunkMentionsTable)}.surface_text),
          confidence = COALESCE(EXCLUDED.confidence, ${unqualified(this.chunkMentionsTable)}.confidence)`,
       params
@@ -2017,14 +2017,14 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const offsetParam = `$${params.length}`
 
     const rows = await this.sqlWithRetry(
-      `SELECT c.id AS chunk_id, c.bucket_id, c.document_id, c.chunk_index,
+      `SELECT c.id AS chunk_id, c.bucket_id, c.source_id, c.chunk_index,
               c.embedding_model, c.content, c.metadata, c.visibility,
               c.tenant_id, c.group_id, c.user_id, c.agent_id, c.conversation_id
          FROM ${opts.chunksTable} c
         WHERE TRUE
           ${bucketClause}
           ${scopeClause}
-        ORDER BY c.document_id, c.chunk_index
+        ORDER BY c.source_id, c.chunk_index
         LIMIT ${limitParam} OFFSET ${offsetParam}`,
       params
     )
@@ -2053,19 +2053,19 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const offsetParam = `$${params.length}`
 
     const rows = await this.sqlWithRetry(
-      `SELECT c.id AS chunk_id, c.bucket_id, c.document_id, c.chunk_index,
+      `SELECT c.id AS chunk_id, c.bucket_id, c.source_id, c.chunk_index,
               c.embedding_model, c.content, c.metadata, c.visibility,
               c.tenant_id, c.group_id, c.user_id, c.agent_id, c.conversation_id,
               m.entity_id, m.mention_type, m.surface_text, m.normalized_surface_text, m.confidence
          FROM ${this.chunkMentionsTable} m
          JOIN ${opts.chunksTable} c
-           ON m.document_id = c.document_id
+           ON m.source_id = c.source_id
           AND m.chunk_index = c.chunk_index
           AND m.bucket_id = c.bucket_id
         WHERE TRUE
           ${bucketClause}
           ${scopeClause}
-        ORDER BY c.document_id, c.chunk_index, m.entity_id
+        ORDER BY c.source_id, c.chunk_index, m.entity_id
         LIMIT ${limitParam} OFFSET ${offsetParam}`,
       params
     )
@@ -2308,7 +2308,7 @@ function mapRowToFact(row: Record<string, unknown>): SemanticFactRecord {
     description: (row.description as string | null) ?? undefined,
     evidenceText: (row.evidence_text as string | null) ?? undefined,
     factSearchText: (row.fact_search_text as string | null) ?? undefined,
-    sourceChunkId: (row.source_chunk_id as string | null) ?? undefined,
+    sourceChunkId: (row.from_chunk_id as string | null) ?? undefined,
     weight: row.weight as number,
     evidenceCount: row.evidence_count as number,
     embedding: undefined,
@@ -2327,11 +2327,11 @@ function mapRowToEntityChunkEdge(row: Record<string, unknown>): SemanticEntityCh
     id: row.id as string,
     entityId: row.source_id as string,
     chunkRef: {
-      bucketId: row.target_bucket_id as string,
-      documentId: row.target_document_id as string,
-      chunkIndex: row.target_chunk_index as number,
-      embeddingModel: (row.target_embedding_model as string | null) ?? undefined,
-      chunkId: (row.target_chunk_id as string | null) ?? undefined,
+      bucketId: row.to_bucket_id as string,
+      sourceId: row.to_source_id as string,
+      chunkIndex: row.to_chunk_index as number,
+      embeddingModel: (row.to_embedding_model as string | null) ?? undefined,
+      chunkId: (row.to_chunk_id as string | null) ?? undefined,
     },
     weight: row.weight as number,
     mentionCount: Number(props.mentionCount ?? 1),
@@ -2349,7 +2349,7 @@ function mapRowToChunkBackfillRecord(row: Record<string, unknown>): ChunkBackfil
   return {
     chunkId: row.chunk_id as string,
     bucketId: row.bucket_id as string,
-    documentId: row.document_id as string,
+    sourceId: row.source_id as string,
     chunkIndex: row.chunk_index as number,
     embeddingModel: row.embedding_model as string,
     content: row.content as string,
@@ -2368,7 +2368,7 @@ function mapRowToChunkContent(row: Record<string, unknown>): SemanticChunkRecord
     chunkId: (row.chunk_id as string | null) ?? undefined,
     content: row.content as string,
     bucketId: row.bucket_id as string,
-    documentId: row.document_id as string,
+    sourceId: row.source_id as string,
     chunkIndex: row.chunk_index as number,
     embeddingModel: (row.embedding_model as string | null) ?? undefined,
     totalChunks: row.total_chunks as number,
@@ -2441,7 +2441,7 @@ function normalizeExternalIdValue(id: string, type: string, encoding: ExternalId
     return trimmed.toLowerCase()
   }
   if (type === 'phone') {
-    return trimmed.replace(/[^\d+]/g, '')
+    return trimmed.replace(/[^\s+]/g, '')
   }
   return trimmed
 }

@@ -4,8 +4,8 @@ import type { QueryOpts, QueryResponse } from './types/query.js'
 import type { IngestOptions, IndexResult } from './types/index-types.js'
 import type { EmbeddingProvider } from './embedding/provider.js'
 import { embeddingModelKey } from './embedding/provider.js'
-import type { RawDocument, Chunk } from './types/connector.js'
-import type { typegraphDocument, DocumentFilter, UpsertDocumentInput } from './types/typegraph-document.js'
+import type { SourceInput, Chunk, SourceSubject } from './types/connector.js'
+import type { typegraphSource, SourceFilter, UpsertSourceInput } from './types/source.js'
 import type { typegraphHooks } from './types/hooks.js'
 import type { LLMProvider, LLMConfig } from './types/llm-provider.js'
 import type {
@@ -42,15 +42,26 @@ import { generateId } from './utils/id.js'
 
 export const DEFAULT_BUCKET_ID = 'bkt_default'
 export const DEFAULT_BUCKET_NAME = 'Default'
-export const DEFAULT_BUCKET_DESCRIPTION = 'System default bucket. All ingested documents without an explicit bucket assignment are stored here. Cannot be deleted.'
+export const DEFAULT_BUCKET_DESCRIPTION = 'System default bucket. All ingested sources without an explicit bucket assignment are stored here. Cannot be deleted.'
 
 // Fills in defaults for optional fields the engine relies on.
-export function normalizeRawDocument<TMeta extends Record<string, unknown>>(doc: RawDocument<TMeta>): RawDocument<TMeta> {
+export function normalizeSourceInput<TMeta extends Record<string, unknown>>(source: SourceInput<TMeta>): SourceInput<TMeta> {
+  validateSourceSubject(source.subject)
   return {
-    ...doc,
-    url: doc.url ?? undefined,
-    updatedAt: doc.updatedAt ?? new Date(),
-    metadata: doc.metadata ?? ({} as TMeta),
+    ...source,
+    url: source.url ?? undefined,
+    updatedAt: source.updatedAt ?? new Date(),
+    metadata: source.metadata ?? ({} as TMeta),
+  }
+}
+
+function validateSourceSubject(subject?: SourceSubject): void {
+  if (!subject) return
+  const hasEntityId = !!subject.entityId?.trim()
+  const hasExternalId = (subject.externalIds ?? []).some(externalId => !!externalId.id?.trim() && !!externalId.type?.trim())
+  const hasName = !!subject.name?.trim()
+  if (!hasEntityId && !hasExternalId && !hasName) {
+    throw new ConfigError('Source subject requires entityId, at least one externalIds entry, or name.')
   }
 }
 
@@ -152,11 +163,11 @@ export interface BucketsApi {
   delete(bucketId: string, opts?: TelemetryOpts): Promise<void>
 }
 
-export interface DocumentsApi {
-  get(id: string): Promise<typegraphDocument | null>
-  list(filter?: DocumentFilter, pagination?: PaginationOpts): Promise<typegraphDocument[] | PaginatedResult<typegraphDocument>>
-  update(id: string, input: Partial<Pick<typegraphDocument, 'title' | 'url' | 'visibility' | 'metadata'>>, opts?: TelemetryOpts): Promise<typegraphDocument>
-  delete(filter: DocumentFilter, opts?: TelemetryOpts): Promise<number>
+export interface SourcesApi {
+  get(id: string): Promise<typegraphSource | null>
+  list(filter?: SourceFilter, pagination?: PaginationOpts): Promise<typegraphSource[] | PaginatedResult<typegraphSource>>
+  update(id: string, input: Partial<Pick<typegraphSource, 'title' | 'url' | 'visibility' | 'metadata'>>, opts?: TelemetryOpts): Promise<typegraphSource>
+  delete(filter: SourceFilter, opts?: TelemetryOpts): Promise<number>
 }
 
 export interface JobsApi {
@@ -218,7 +229,7 @@ export interface typegraphInstance {
   undeploy(): Promise<UndeployResult>
 
   buckets: BucketsApi
-  documents: DocumentsApi
+  sources: SourcesApi
   jobs: JobsApi
 
   /** Graph exploration API. Requires graph bridge. */
@@ -229,11 +240,11 @@ export interface typegraphInstance {
   getDistinctEmbeddings(bucketIds?: string[]): Map<string, EmbeddingProvider>
   groupBucketsByModel(bucketIds?: string[]): Map<string, string[]>
 
-  /** Ingest documents. Target bucket set via opts.bucketId (defaults to default bucket). */
-  ingest(docs: RawDocument[], opts?: IngestOptions): Promise<IndexResult>
+  /** Ingest sources. Target bucket set via opts.bucketId (defaults to default bucket). */
+  ingest(sources: SourceInput[], opts?: IngestOptions): Promise<IndexResult>
 
-  /** Ingest a document with pre-chunked content. Target bucket set via opts.bucketId. */
-  ingestPreChunked(doc: RawDocument, chunks: Chunk[], opts?: IngestOptions): Promise<IndexResult>
+  /** Ingest a source with pre-chunked content. Target bucket set via opts.bucketId. */
+  ingestPreChunked(source: SourceInput, chunks: Chunk[], opts?: IngestOptions): Promise<IndexResult>
 
   /** Search across buckets. Optionally build an LLM-ready context via opts.context. */
   query(text: string, opts?: QueryOpts): Promise<QueryResponse>
@@ -431,44 +442,44 @@ class TypegraphImpl implements typegraphInstance {
     },
   }
 
-  // ── Documents ──
+  // ── Sources ──
 
-  documents: DocumentsApi = {
-    get: async (id: string): Promise<typegraphDocument | null> => {
+  sources: SourcesApi = {
+    get: async (id: string): Promise<typegraphSource | null> => {
       this.assertConfigured()
-      if (!this.adapter.getDocument) {
-        throw new ConfigError('Adapter does not support document operations.')
+      if (!this.adapter.getSource) {
+        throw new ConfigError('Adapter does not support source operations.')
       }
-      return this.adapter.getDocument(id)
+      return this.adapter.getSource(id)
     },
 
-    list: async (filter?: DocumentFilter, pagination?: PaginationOpts): Promise<typegraphDocument[] | PaginatedResult<typegraphDocument>> => {
+    list: async (filter?: SourceFilter, pagination?: PaginationOpts): Promise<typegraphSource[] | PaginatedResult<typegraphSource>> => {
       this.assertConfigured()
-      if (!this.adapter.listDocuments) {
-        throw new ConfigError('Adapter does not support document operations.')
+      if (!this.adapter.listSources) {
+        throw new ConfigError('Adapter does not support source operations.')
       }
-      return this.adapter.listDocuments(filter ?? {}, pagination)
+      return this.adapter.listSources(filter ?? {}, pagination)
     },
 
-    update: async (id: string, input: Partial<Pick<typegraphDocument, 'title' | 'url' | 'visibility' | 'metadata'>>, opts?: TelemetryOpts): Promise<typegraphDocument> => {
+    update: async (id: string, input: Partial<Pick<typegraphSource, 'title' | 'url' | 'visibility' | 'metadata'>>, opts?: TelemetryOpts): Promise<typegraphSource> => {
       this.assertConfigured()
-      if (!this.adapter.updateDocument) {
-        throw new ConfigError('Adapter does not support document update operations.')
+      if (!this.adapter.updateSource) {
+        throw new ConfigError('Adapter does not support source update operations.')
       }
-      const updated = await this.adapter.updateDocument(id, input)
-      this.emitEvent('document.update', id, { fields: Object.keys(input) }, opts)
+      const updated = await this.adapter.updateSource(id, input)
+      this.emitEvent('source.update', id, { fields: Object.keys(input) }, opts)
       return updated
     },
 
-    delete: async (filter: DocumentFilter, opts?: TelemetryOpts): Promise<number> => {
+    delete: async (filter: SourceFilter, opts?: TelemetryOpts): Promise<number> => {
       this.assertConfigured()
-      if (!this.adapter.deleteDocuments) {
-        throw new ConfigError('Adapter does not support document operations.')
+      if (!this.adapter.deleteSources) {
+        throw new ConfigError('Adapter does not support source operations.')
       }
-      await this.enforcePolicy('document.delete', { tenantId: filter.tenantId ?? this.config.tenantId })
-      const count = await this.adapter.deleteDocuments(filter)
+      await this.enforcePolicy('source.delete', { tenantId: filter.tenantId ?? this.config.tenantId })
+      const count = await this.adapter.deleteSources(filter)
       if (count > 0) {
-        this.emitEvent('document.delete', undefined, { count, filter }, opts)
+        this.emitEvent('source.delete', undefined, { count, filter }, opts)
       }
       return count
     },
@@ -934,7 +945,7 @@ class TypegraphImpl implements typegraphInstance {
     return groups
   }
 
-  async ingest(docs: RawDocument[], opts: IngestOptions = {}): Promise<IndexResult> {
+  async ingest(sources: SourceInput[], opts: IngestOptions = {}): Promise<IndexResult> {
     await this.ensureInitialized()
     await this.ensureBucketsLoaded()
     const resolvedBucketId = opts.bucketId || DEFAULT_BUCKET_ID
@@ -944,11 +955,11 @@ class TypegraphImpl implements typegraphInstance {
     const resolvedOpts = this.resolveIngestOptions(opts, bucket)
     const chunkSize = resolvedOpts.chunkSize ?? 512
     const chunkOverlap = resolvedOpts.chunkOverlap ?? 64
-    const normalizedDocs = docs.map(doc => normalizeRawDocument(doc))
-    const items = await Promise.all(normalizedDocs.map(async doc => ({ doc, chunks: await defaultChunker(doc, { chunkSize, chunkOverlap }) })))
+    const normalizedSources = sources.map(source => normalizeSourceInput(source))
+    const items = await Promise.all(normalizedSources.map(async source => ({ source, chunks: await defaultChunker(source, { chunkSize, chunkOverlap }) })))
     const embedding = await this.resolveEmbeddingForBucket(resolvedBucketId)
     const engine = this.createIndexEngine(embedding)
-    this.logger?.info('Ingesting documents', { bucketId: resolvedBucketId, count: docs.length })
+    this.logger?.info('Ingesting sources', { bucketId: resolvedBucketId, count: sources.length })
     await this.config.hooks?.onIndexStart?.(resolvedBucketId, resolvedOpts)
     const result = await engine.ingestBatch(resolvedBucketId, items, resolvedOpts)
     result.status = 'complete'
@@ -963,7 +974,7 @@ class TypegraphImpl implements typegraphInstance {
     return result
   }
 
-  async ingestPreChunked(doc: RawDocument, chunks: Chunk[], opts: IngestOptions = {}): Promise<IndexResult> {
+  async ingestPreChunked(source: SourceInput, chunks: Chunk[], opts: IngestOptions = {}): Promise<IndexResult> {
     await this.ensureInitialized()
     await this.ensureBucketsLoaded()
     const resolvedBucketId = opts.bucketId || DEFAULT_BUCKET_ID
@@ -975,7 +986,7 @@ class TypegraphImpl implements typegraphInstance {
     const engine = this.createIndexEngine(embedding)
 
     await this.config.hooks?.onIndexStart?.(resolvedBucketId, resolvedOpts)
-    const result = await engine.ingestWithChunks(resolvedBucketId, normalizeRawDocument(doc), chunks, resolvedOpts)
+    const result = await engine.ingestWithChunks(resolvedBucketId, normalizeSourceInput(source), chunks, resolvedOpts)
     result.status = 'complete'
     await this.config.hooks?.onIndexComplete?.(resolvedBucketId, result)
     return result
@@ -1180,8 +1191,8 @@ class TypegraphImpl implements typegraphInstance {
   }
 
   private createIndexEngine(embedding: EmbeddingProvider): IndexEngine {
-    const engine = new IndexEngine(this.adapter, embedding, this.config.eventSink, this.logger)
     const kg = this.graphBridge
+    const engine = new IndexEngine(this.adapter, embedding, this.config.eventSink, this.logger, kg)
     if (this.config.llm && kg) {
       const mainLlm = resolveLLMProvider(this.config.llm)
       const ext = this.config.extraction

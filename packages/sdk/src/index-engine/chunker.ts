@@ -1,5 +1,5 @@
 import type { Chunk, ChunkOpts } from '../types/connector.js'
-import type { RawDocument } from '../types/connector.js'
+import type { SourceInput } from '../types/connector.js'
 
 /** Approximate characters per BPE token (calibrated for GPT/Voyage tokenizers). */
 const CHARS_PER_TOKEN = 4.2
@@ -165,10 +165,10 @@ function takeTrailingAtWordBoundary(text: string, maxChars: number): string {
 
 // ── Public API (token-based wrapper) ──
 
-export async function defaultChunker(doc: RawDocument, opts: ChunkOpts): Promise<Chunk[]> {
-  if (!doc.content || doc.content.trim().length === 0) return []
+export async function defaultChunker(source: SourceInput, opts: ChunkOpts): Promise<Chunk[]> {
+  if (!source.content || source.content.trim().length === 0) return []
 
-  const results = chunkText(doc.content, {
+  const results = chunkText(source.content, {
     maxChars: Math.round(opts.chunkSize * CHARS_PER_TOKEN),
     overlapChars: opts.chunkOverlap ? Math.round(opts.chunkOverlap * CHARS_PER_TOKEN) : 0,
   })

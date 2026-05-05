@@ -10,7 +10,7 @@ export type PolicyAction =
   | 'memory.write'
   | 'memory.read'
   | 'memory.delete'
-  | 'document.delete'
+  | 'source.delete'
   | 'bucket.delete'
 
 export interface PolicyRule {

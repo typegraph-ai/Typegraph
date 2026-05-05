@@ -83,7 +83,7 @@ describe('PgMemoryStoreAdapter', () => {
       scope: { tenantId: 'tenant-1' },
       targetChunkRef: {
         bucketId: 'bucket-1',
-        documentId: 'doc-1',
+        sourceId: 'doc-1',
         chunkIndex: 2,
         embeddingModel: 'mock-embed',
         chunkId: 'chunk_pat',

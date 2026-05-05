@@ -61,7 +61,7 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
     user_id         TEXT,
     agent_id        TEXT,
     conversation_id      TEXT,
-    document_id     TEXT NOT NULL,
+    source_id     TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
     content         TEXT NOT NULL,
     embedding       VECTOR(${dimensions}),
@@ -85,11 +85,11 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
   CREATE INDEX IF NOT EXISTS ${idx('fts_idx')}
     ON ${chunksTable} USING gin (search_vector);
 
-  CREATE INDEX IF NOT EXISTS ${idx('doc_chunk_idx')}
-    ON ${chunksTable} (document_id, chunk_index);
+  CREATE INDEX IF NOT EXISTS ${idx('source_chunk_idx')}
+    ON ${chunksTable} (source_id, chunk_index);
 
-  CREATE INDEX IF NOT EXISTS ${idx('bucket_doc_chunk_idx')}
-    ON ${chunksTable} (bucket_id, document_id, chunk_index);
+  CREATE INDEX IF NOT EXISTS ${idx('bucket_source_chunk_idx')}
+    ON ${chunksTable} (bucket_id, source_id, chunk_index);
 
   CREATE UNIQUE INDEX IF NOT EXISTS ${idx('ikey_chunk_idx')}
     ON ${chunksTable} (idempotency_key, chunk_index, bucket_id);
@@ -160,13 +160,13 @@ export const HASH_TABLE_SQL = (hashesTable: string) => {
 }
 
 /**
- * DDL for the documents table - tracks indexed documents with metadata.
+ * DDL for the sources table - tracks indexed sources with metadata.
  * Created once during initialize().
  */
-export const DOCUMENTS_TABLE_SQL = (documentsTable: string) => {
-  const idx = (suffix: string) => safeIdx(documentsTable, suffix)
+export const SOURCES_TABLE_SQL = (sourcesTable: string) => {
+  const idx = (suffix: string) => safeIdx(sourcesTable, suffix)
   return `
-  CREATE TABLE IF NOT EXISTS ${documentsTable} (
+  CREATE TABLE IF NOT EXISTS ${sourcesTable} (
     id              TEXT PRIMARY KEY,
     bucket_id       TEXT NOT NULL,
     tenant_id       TEXT,
@@ -185,47 +185,48 @@ export const DOCUMENTS_TABLE_SQL = (documentsTable: string) => {
     indexed_at      TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    metadata        JSONB NOT NULL DEFAULT '{}'
+    metadata        JSONB NOT NULL DEFAULT '{}',
+    subject         JSONB
   );
 
   CREATE UNIQUE INDEX IF NOT EXISTS ${idx('source_hash_idx')}
-    ON ${documentsTable} (bucket_id, COALESCE(tenant_id, ''), content_hash);
+    ON ${sourcesTable} (bucket_id, COALESCE(tenant_id, ''), content_hash);
 
   CREATE INDEX IF NOT EXISTS ${idx('bucket_idx')}
-    ON ${documentsTable} (bucket_id, tenant_id);
+    ON ${sourcesTable} (bucket_id, tenant_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('status_idx')}
-    ON ${documentsTable} (status);
+    ON ${sourcesTable} (status);
 
   CREATE INDEX IF NOT EXISTS ${idx('visibility_user_idx')}
-    ON ${documentsTable} (visibility, user_id);
+    ON ${sourcesTable} (visibility, user_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('graph_extracted_idx')}
-    ON ${documentsTable} (graph_extracted);
+    ON ${sourcesTable} (graph_extracted);
 
   CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')}
-    ON ${documentsTable} (tenant_id, user_id);
+    ON ${sourcesTable} (tenant_id, user_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')}
-    ON ${documentsTable} (tenant_id, group_id);
+    ON ${sourcesTable} (tenant_id, group_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')}
-    ON ${documentsTable} (tenant_id, agent_id);
+    ON ${sourcesTable} (tenant_id, agent_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('tenant_conversation_idx')}
-    ON ${documentsTable} (tenant_id, conversation_id);
+    ON ${sourcesTable} (tenant_id, conversation_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('user_idx')}
-    ON ${documentsTable} (user_id);
+    ON ${sourcesTable} (user_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('group_idx')}
-    ON ${documentsTable} (group_id);
+    ON ${sourcesTable} (group_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('agent_idx')}
-    ON ${documentsTable} (agent_id);
+    ON ${sourcesTable} (agent_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('conversation_idx')}
-    ON ${documentsTable} (conversation_id);
+    ON ${sourcesTable} (conversation_id);
 `
 }
 

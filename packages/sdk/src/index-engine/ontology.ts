@@ -16,7 +16,7 @@ export const ENTITY_TYPES = [
   'concept',
   'event',
   'meeting',
-  'artifact',
+  'document',
   'project',
   'issue',
   'role',
@@ -78,16 +78,16 @@ export const ENTITY_TYPE_SPECS: readonly EntityTypeSpec[] = [
   { name: 'location', description: 'A place, region, address, market, or jurisdiction.', examples: ['San Francisco', 'European Union'] },
   { name: 'product', description: 'A commercial product, service, package, SKU, or productized capability.', examples: ['Stripe Billing', 'iPhone 16'] },
   { name: 'technology', description: 'A technical system, framework, language, protocol, platform, or standard.', examples: ['PostgreSQL', 'React Native'] },
-  { name: 'concept', description: 'A named idea, method, topic, category, metric, goal, or abstract domain object.', examples: ['retention', 'zero trust'] },
+  { name: 'concept', description: 'A named idea, method, topic, category, metric, goal, or abstract domain object.', examples: ['Data retention', 'Zero trust'] },
   { name: 'event', description: 'A named occurrence with a time anchor.', examples: ['CES 2025', 'Q4 launch'] },
   { name: 'meeting', description: 'A call, demo, sync, review, interview, or transcript-backed event.', examples: ['weekly pipeline review', 'Acme demo'] },
-  { name: 'artifact', description: 'An authored business material distinct from TypeGraph storage documents.', examples: ['RFP', 'contract', 'architecture spec'] },
+  { name: 'document', description: 'An authored business material distinct from TypeGraph storage sources.', examples: ['RFP', 'contract', 'architecture spec'] },
   { name: 'project', description: 'A bounded initiative, deal, opportunity, migration, program, or body of work.', examples: ['SOC2 rollout', 'Acme renewal'] },
   { name: 'issue', description: 'A ticket, bug, request, story, incident, task, or blocker.', examples: ['AUTH-123', 'billing bug'] },
   { name: 'role', description: 'A title, job, office, function, responsibility, or persona.', examples: ['CTO', 'account owner'] },
   { name: 'law_regulation', description: 'A statute, policy, regulation, contract clause, or formal rule.', examples: ['GDPR', 'SOC2 policy'] },
   { name: 'time_period', description: 'A named period, fiscal window, era, version interval, or date range.', examples: ['Q1 2026', 'Series B stage'] },
-  { name: 'creative_work', description: 'A genuinely creative work such as a novel, poem, song, film, or artwork.', examples: ['Maud', 'Frankenstein'] },
+  { name: 'creative_work', description: 'A genuinely creative work such as a novel, poem, song, film, or artwork.', examples: ['Fear and Loathing in Las Vegas', 'Moby Dick'] },
 ]
 
 const person = ['person'] as const
@@ -95,8 +95,8 @@ const personOrg = ['organization'] as const
 const org = ['organization'] as const
 const loc = ['location'] as const
 const role = ['role'] as const
-const artifact = ['artifact', 'creative_work'] as const
-const workObject = ['artifact', 'creative_work', 'product', 'technology', 'concept'] as const
+const authoredWork = ['document', 'creative_work'] as const
+const workObject = ['document', 'creative_work', 'product', 'technology', 'concept'] as const
 const productTech = ['product', 'technology'] as const
 const issueProject = ['issue', 'project'] as const
 const eventMeeting = ['event', 'meeting'] as const
@@ -179,6 +179,7 @@ export const PREDICATE_SPECS: readonly PredicateSpec[] = [
     aliases: [
       { name: 'JOB_IS' },
       { name: 'OCCUPATION_IS' },
+      { name: 'EMPLOYED_AS' },
       { name: 'ROLE_IS' },
       { name: 'TITLE_IS' },
       { name: 'WORKS_IN_ROLE' },
@@ -229,19 +230,19 @@ export const PREDICATE_SPECS: readonly PredicateSpec[] = [
   { name: 'REPLACES', category: 'Product / technical', description: 'An entity replaces or supersedes another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'SUPERSEDES' }, { name: 'REPLACED_BY', swap: true }, { name: 'DEPRECATED_BY', swap: true }, { name: 'OBSOLETED_BY', swap: true }] },
   { name: 'BASED_ON', category: 'Product / technical', description: 'An entity is based on or derives from another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'DERIVES_FROM' }, { name: 'DERIVED_FROM' }, { name: 'ORIGINATES_FROM' }] },
 
-  // Work / project / issue / artifact
-  { name: 'ASSIGNED_TO', category: 'Work / issue / artifact', description: 'A project, issue, task, account, or artifact is assigned to an owner.', domain: issueProject, range: ['person', 'organization', 'role'], aliases: [{ name: 'OWNER_ASSIGNED' }, { name: 'CLOSED_BY' }, { name: 'REPORTED_BY', swap: true }] },
-  { name: 'BLOCKS', category: 'Work / issue / artifact', description: 'An issue, project, or dependency blocks another work item.', domain: issueProject, range: issueProject, aliases: [{ name: 'BLOCKED_BY', swap: true }] },
-  { name: 'DUPLICATES', category: 'Work / issue / artifact', description: 'An issue duplicates another issue.', domain: ['issue'], range: ['issue'], aliases: [{ name: 'DUPLICATE_OF' }] },
-  { name: 'RESOLVES', category: 'Work / issue / artifact', description: 'An entity resolves, fixes, or closes an issue or project.', domain: ALL_TYPES, range: issueProject, aliases: [{ name: 'FIXES' }, { name: 'FIXED_IN' }, { name: 'CLOSES' }, { name: 'CLOSED' }, { name: 'RESOLVED_BY', swap: true }] },
-  { name: 'CREATED', category: 'Work / issue / artifact', description: 'An entity created, launched, built, announced, or produced another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'BUILT' }, { name: 'DEVELOPED' }, { name: 'LAUNCHED' }, { name: 'ANNOUNCED' }, { name: 'PRODUCED' }, { name: 'MANUFACTURED' }, { name: 'INVENTED' }, { name: 'CREATED_BY', swap: true }] },
-  { name: 'AUTHORED', category: 'Work / issue / artifact', description: 'An entity authored, wrote, composed, or published an artifact or creative work.', domain: ['person', 'organization'], range: artifact, aliases: [{ name: 'WROTE' }, { name: 'COMPOSED' }, { name: 'PENNED' }, { name: 'PUBLISHED' }, { name: 'RELEASED' }, { name: 'WRITTEN_BY', swap: true }, { name: 'AUTHORED_BY', swap: true }, { name: 'COMPOSED_BY', swap: true }, { name: 'PUBLISHED_BY', swap: true }] },
-  { name: 'SIGNED', category: 'Work / issue / artifact', description: 'An entity signed an artifact, agreement, contract, or policy.', domain: ALL_TYPES, range: ['artifact', 'law_regulation'], aliases: [{ name: 'SIGNED_BY', swap: true }] },
-  { name: 'APPROVED', category: 'Work / issue / artifact', description: 'An entity approved an artifact, project, issue, or decision.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'APPROVED_BY', swap: true }] },
-  { name: 'REFERENCES', category: 'Work / issue / artifact', description: 'An entity references another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'REFERS_TO' }, { name: 'CITES' }, { name: 'MENTIONS' }] },
-  { name: 'DESCRIBES', category: 'Work / issue / artifact', description: 'An artifact, report, or entity describes another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'DESCRIBED' }, { name: 'DEPICTS' }, { name: 'PORTRAYS' }, { name: 'CHARACTERIZES' }, { name: 'REPORTED' }, { name: 'DOCUMENTED' }, { name: 'RECORDED' }] },
-  { name: 'SUPPORTS', category: 'Work / issue / artifact', description: 'An entity supports, endorses, or enables another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'SUPPORTED' }, { name: 'ENDORSED' }, { name: 'ENABLES' }, { name: 'FACILITATES' }] },
-  { name: 'OPPOSES', category: 'Work / issue / artifact', description: 'An entity opposes, criticizes, challenges, or contradicts another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'OPPOSED' }, { name: 'RESISTED' }, { name: 'CRITICIZED' }, { name: 'CHALLENGED' }, { name: 'CONTRADICTS' }, { name: 'CONFLICTS_WITH' }] },
+  // Work / project / issue / document
+  { name: 'ASSIGNED_TO', category: 'Work / issue / document', description: 'A project, issue, task, account, or document is assigned to an owner.', domain: issueProject, range: ['person', 'organization', 'role'], aliases: [{ name: 'OWNER_ASSIGNED' }, { name: 'CLOSED_BY' }, { name: 'REPORTED_BY', swap: true }] },
+  { name: 'BLOCKS', category: 'Work / issue / document', description: 'An issue, project, or dependency blocks another work item.', domain: issueProject, range: issueProject, aliases: [{ name: 'BLOCKED_BY', swap: true }] },
+  { name: 'DUPLICATES', category: 'Work / issue / document', description: 'An issue duplicates another issue.', domain: ['issue'], range: ['issue'], aliases: [{ name: 'DUPLICATE_OF' }] },
+  { name: 'RESOLVES', category: 'Work / issue / document', description: 'An entity resolves, fixes, or closes an issue or project.', domain: ALL_TYPES, range: issueProject, aliases: [{ name: 'FIXES' }, { name: 'FIXED_IN' }, { name: 'CLOSES' }, { name: 'CLOSED' }, { name: 'RESOLVED_BY', swap: true }] },
+  { name: 'CREATED', category: 'Work / issue / document', description: 'An entity created, launched, built, announced, or produced another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'BUILT' }, { name: 'DEVELOPED' }, { name: 'LAUNCHED' }, { name: 'ANNOUNCED' }, { name: 'PRODUCED' }, { name: 'MANUFACTURED' }, { name: 'INVENTED' }, { name: 'CREATED_BY', swap: true }] },
+  { name: 'AUTHORED', category: 'Work / issue / document', description: 'An entity authored, wrote, composed, or published a document or creative work.', domain: ['person', 'organization'], range: authoredWork, aliases: [{ name: 'WROTE' }, { name: 'COMPOSED' }, { name: 'PENNED' }, { name: 'PUBLISHED' }, { name: 'RELEASED' }, { name: 'WRITTEN_BY', swap: true }, { name: 'AUTHORED_BY', swap: true }, { name: 'COMPOSED_BY', swap: true }, { name: 'PUBLISHED_BY', swap: true }] },
+  { name: 'SIGNED', category: 'Work / issue / document', description: 'An entity signed a document, agreement, contract, or policy.', domain: ALL_TYPES, range: ['document', 'law_regulation'], aliases: [{ name: 'SIGNED_BY', swap: true }] },
+  { name: 'APPROVED', category: 'Work / issue / document', description: 'An entity approved a document, project, issue, or decision.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'APPROVED_BY', swap: true }] },
+  { name: 'REFERENCES', category: 'Work / issue / document', description: 'An entity references another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'REFERS_TO' }, { name: 'CITES' }, { name: 'MENTIONS' }] },
+  { name: 'DESCRIBES', category: 'Work / issue / document', description: 'A document, report, or entity describes another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'DESCRIBED' }, { name: 'DEPICTS' }, { name: 'PORTRAYS' }, { name: 'CHARACTERIZES' }, { name: 'REPORTED' }, { name: 'DOCUMENTED' }, { name: 'RECORDED' }] },
+  { name: 'SUPPORTS', category: 'Work / issue / document', description: 'An entity supports, endorses, or enables another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'SUPPORTED' }, { name: 'ENDORSED' }, { name: 'ENABLES' }, { name: 'FACILITATES' }] },
+  { name: 'OPPOSES', category: 'Work / issue / document', description: 'An entity opposes, criticizes, challenges, or contradicts another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'OPPOSED' }, { name: 'RESISTED' }, { name: 'CRITICIZED' }, { name: 'CHALLENGED' }, { name: 'CONTRADICTS' }, { name: 'CONFLICTS_WITH' }] },
 
   // Events, meetings, location, legal
   { name: 'ATTENDED', category: 'Event / meeting / location / legal', description: 'An entity attended an event or meeting.', domain: ALL_TYPES, range: eventMeeting, aliases: [{ name: 'PRESENT_AT' }] },
@@ -255,7 +256,7 @@ export const PREDICATE_SPECS: readonly PredicateSpec[] = [
   { name: 'GOVERNS', category: 'Event / meeting / location / legal', description: 'A law, regulation, policy, or organization governs an entity.', domain: ['law_regulation', 'organization'], range: ALL_TYPES, aliases: [{ name: 'CONTROLS' }] },
   { name: 'PROHIBITS', category: 'Event / meeting / location / legal', description: 'A law, regulation, policy, or rule prohibits something.', domain: legal, range: ALL_TYPES, aliases: [{ name: 'BANS' }, { name: 'FORBIDS' }] },
   { name: 'PERMITS', category: 'Event / meeting / location / legal', description: 'A law, regulation, policy, or rule permits something.', domain: legal, range: ALL_TYPES, aliases: [{ name: 'ALLOWS' }, { name: 'AUTHORIZES' }] },
-  { name: 'AMENDS', category: 'Event / meeting / location / legal', description: 'A law, regulation, policy, or artifact amends another law, regulation, policy, or artifact.', domain: ['law_regulation', 'artifact'], range: ['law_regulation', 'artifact'], aliases: [{ name: 'AMENDED' }, { name: 'AMENDED_BY', swap: true }, { name: 'MODIFIED_BY', swap: true }, { name: 'REVISED_BY', swap: true }] },
+  { name: 'AMENDS', category: 'Event / meeting / location / legal', description: 'A law, regulation, policy, or document amends another law, regulation, policy, or document.', domain: ['law_regulation', 'document'], range: ['law_regulation', 'document'], aliases: [{ name: 'AMENDED' }, { name: 'AMENDED_BY', swap: true }, { name: 'MODIFIED_BY', swap: true }, { name: 'REVISED_BY', swap: true }] },
   { name: 'REPEALS', category: 'Event / meeting / location / legal', description: 'A law, regulation, policy, or rule repeals another law, regulation, policy, or rule.', domain: legal, range: legal, aliases: [{ name: 'REPEALED' }, { name: 'REVOKED' }, { name: 'ANNULLED' }, { name: 'RESCINDED' }] },
   { name: 'CAUSED', category: 'Event / meeting / location / legal', description: 'An entity caused or triggered another entity or outcome.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'TRIGGERED' }, { name: 'RESULTED_IN' }, { name: 'LED_TO' }] },
   { name: 'PRECEDED', category: 'Event / meeting / location / legal', description: 'An entity came before another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'CAME_BEFORE' }, { name: 'PRIOR_TO' }, { name: 'SUCCEEDED_BY', swap: true }] },

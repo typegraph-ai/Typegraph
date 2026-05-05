@@ -62,7 +62,7 @@ export class MemoryRunner {
       return {
         content: m.content ?? '',
         bucketId: '__memory__',
-        documentId: m.id ?? `memory-${i}`,
+        sourceId: m.id ?? `memory-${i}`,
         rawScores: {
           memory: compositeMemoryScore,
           semantic: similarity, // Cosine similarity — same algorithm as indexed search

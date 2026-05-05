@@ -1,6 +1,6 @@
 import type { EmbeddingProvider } from '../../embedding/provider.js'
 import type { typegraphIdentity } from '../../types/identity.js'
-import type { Visibility } from '../../types/typegraph-document.js'
+import type { Visibility } from '../../types/source.js'
 import type { ExternalId, SemanticEntity } from '../types/memory.js'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
 import { createTemporal } from '../temporal.js'
@@ -942,8 +942,8 @@ function isLowValueEntityDescription(text: string): boolean {
     'through supported',
     'creator of the task',
     'creator of the record',
-    'creator of the document',
-    'creator in the document',
+    'creator of the source',
+    'creator in the source',
     'identified as the creator',
     'designated as the creator',
     'person identified as the creator',

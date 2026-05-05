@@ -3,7 +3,7 @@ import { typegraphInit } from '../typegraph.js'
 import { createMockAdapter } from './helpers/mock-adapter.js'
 import { createMockEmbedding } from './helpers/mock-embedding.js'
 import { createMockBucket } from './helpers/mock-source.js'
-import { createTestDocument, createTestDocuments } from './helpers/mock-connector.js'
+import { createTestSource, createTestSources } from './helpers/mock-connector.js'
 import type { typegraphInstance } from '../typegraph.js'
 import type { Bucket } from '../types/bucket.js'
 import type { EmbeddingProvider } from '../embedding/provider.js'
@@ -21,11 +21,11 @@ describe('integration', () => {
     const embedding = createMockEmbedding()
     const instance = await typegraphInit({ vectorStore: adapter, embedding })
 
-    const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(3) })
+    const { bucket, sources, ingestOptions } = createMockBucket({ sources: createTestSources(3) })
     registerTestBucket(instance, bucket, embedding)
-    await instance.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
+    await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
 
-    const response = await instance.query('Document 1', { context: { format: 'xml' } })
+    const response = await instance.query('Source 1', { context: { format: 'xml' } })
     expect(response.results.chunks.length).toBeGreaterThan(0)
     expect(response.context).toContain('<context>')
     expect(response.context).toContain('<context_chunks>')
@@ -38,12 +38,12 @@ describe('integration', () => {
     const embedding = createMockEmbedding()
     const instance = await typegraphInit({ vectorStore: adapter, embedding })
 
-    const docs = [createTestDocument({ id: 'doc-1', content: 'Original content for testing' })]
-    const { bucket, ingestOptions } = createMockBucket({ documents: docs })
+    const sources = [createTestSource({ id: 'source-1', content: 'Original content for testing' })]
+    const { bucket, ingestOptions } = createMockBucket({ sources: sources })
     registerTestBucket(instance, bucket, embedding)
-    await instance.ingest(docs, { ...ingestOptions, bucketId: bucket.id })
+    await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
 
-    const updatedDocs = [createTestDocument({ id: 'doc-1', content: 'Updated content with new information' })]
+    const updatedDocs = [createTestSource({ id: 'source-1', content: 'Updated content with new information' })]
     await instance.ingest(updatedDocs, { ...ingestOptions, bucketId: bucket.id })
 
     const response = await instance.query('Updated content')
@@ -56,8 +56,8 @@ describe('integration', () => {
     const embedding = createMockEmbedding()
     const instance = await typegraphInit({ vectorStore: adapter, embedding })
 
-    const { bucket: source1, documents: docs1, ingestOptions: ingestOptions1 } = createMockBucket({ id: 'src-1', documents: createTestDocuments(2, 'Alpha') })
-    const { bucket: source2, documents: docs2, ingestOptions: ingestOptions2 } = createMockBucket({ id: 'src-2', documents: createTestDocuments(2, 'Beta') })
+    const { bucket: source1, sources: docs1, ingestOptions: ingestOptions1 } = createMockBucket({ id: 'src-1', sources: createTestSources(2, 'Alpha') })
+    const { bucket: source2, sources: docs2, ingestOptions: ingestOptions2 } = createMockBucket({ id: 'src-2', sources: createTestSources(2, 'Beta') })
     registerTestBucket(instance, source1, embedding)
     registerTestBucket(instance, source2, embedding)
 
@@ -66,7 +66,7 @@ describe('integration', () => {
 
     const response = await instance.query('content')
     expect(response.results.chunks.length).toBeGreaterThan(0)
-    const bucketIds = new Set(response.results.chunks.map(r => r.document.bucketId))
+    const bucketIds = new Set(response.results.chunks.map(r => r.source.bucketId))
     expect(bucketIds.size).toBeGreaterThanOrEqual(1)
   })
 
@@ -76,8 +76,8 @@ describe('integration', () => {
     const embeddingB = createMockEmbedding({ model: 'model-b', dimensions: 4 })
     const instance = await typegraphInit({ vectorStore: adapter, embedding: embeddingA })
 
-    const { bucket: source1, documents: docs1, ingestOptions: ingestOptions1 } = createMockBucket({ id: 'src-1', documents: createTestDocuments(2, 'Alpha') })
-    const { bucket: source2, documents: docs2, ingestOptions: ingestOptions2 } = createMockBucket({ id: 'src-2', documents: createTestDocuments(2, 'Beta') })
+    const { bucket: source1, sources: docs1, ingestOptions: ingestOptions1 } = createMockBucket({ id: 'src-1', sources: createTestSources(2, 'Alpha') })
+    const { bucket: source2, sources: docs2, ingestOptions: ingestOptions2 } = createMockBucket({ id: 'src-2', sources: createTestSources(2, 'Beta') })
     registerTestBucket(instance, source1, embeddingA)
     registerTestBucket(instance, source2, embeddingB)
 
@@ -93,11 +93,11 @@ describe('integration', () => {
     const embedding = createMockEmbedding()
     const instance = await typegraphInit({ vectorStore: adapter, embedding })
 
-    const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(2) })
+    const { bucket, sources, ingestOptions } = createMockBucket({ sources: createTestSources(2) })
     registerTestBucket(instance, bucket, embedding)
 
-    const result1 = await instance.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
-    const result2 = await instance.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
+    const result1 = await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
+    const result2 = await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
 
     expect(result1.inserted).toBe(2)
     expect(result2.skipped).toBe(2)
@@ -109,14 +109,14 @@ describe('integration', () => {
     const embedding = createMockEmbedding()
     const instance = await typegraphInit({ vectorStore: adapter, embedding })
 
-    const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(2) })
+    const { bucket, sources, ingestOptions } = createMockBucket({ sources: createTestSources(2) })
     registerTestBucket(instance, bucket, embedding)
 
-    await instance.ingest(documents, { ...ingestOptions, bucketId: bucket.id, tenantId: 'tenant-a' })
-    await instance.ingest(documents, { ...ingestOptions, bucketId: bucket.id, tenantId: 'tenant-b' })
+    await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id, tenantId: 'tenant-a' })
+    await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id, tenantId: 'tenant-b' })
 
-    const responseA = await instance.query('Document', { tenantId: 'tenant-a' })
-    const responseB = await instance.query('Document', { tenantId: 'tenant-b' })
+    const responseA = await instance.query('Source', { tenantId: 'tenant-a' })
+    const responseB = await instance.query('Source', { tenantId: 'tenant-b' })
 
     expect(responseA.query.tenantId).toBe('tenant-a')
     expect(responseB.query.tenantId).toBe('tenant-b')
@@ -127,15 +127,15 @@ describe('integration', () => {
     const embedding = createMockEmbedding()
     const instance = await typegraphInit({ vectorStore: adapter, embedding })
 
-    const { bucket } = createMockBucket({ documents: [] })
+    const { bucket } = createMockBucket({ sources: [] })
     registerTestBucket(instance, bucket, embedding)
 
-    const doc = createTestDocument({ content: 'Ingested document content' })
+    const source = createTestSource({ content: 'Ingested source content' })
     const chunks = [
       { content: 'Chunk zero text', chunkIndex: 0 },
       { content: 'Chunk one text', chunkIndex: 1 },
     ]
-    await instance.ingestPreChunked(doc, chunks, { bucketId: bucket.id })
+    await instance.ingestPreChunked(source, chunks, { bucketId: bucket.id })
 
     const response = await instance.query('Chunk zero text')
     expect(response.results.chunks.length).toBeGreaterThan(0)
@@ -146,13 +146,13 @@ describe('integration', () => {
     const embedding = createMockEmbedding()
     const instance = await typegraphInit({ vectorStore: adapter, embedding })
 
-    const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(2) })
+    const { bucket, sources, ingestOptions } = createMockBucket({ sources: createTestSources(2) })
     registerTestBucket(instance, bucket, embedding)
-    await instance.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
+    await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
 
-    const xmlResponse = await instance.query('Document', { context: { format: 'xml' } })
-    const mdResponse = await instance.query('Document', { context: { format: 'markdown' } })
-    const plainResponse = await instance.query('Document', { context: { format: 'plain' } })
+    const xmlResponse = await instance.query('Source', { context: { format: 'xml' } })
+    const mdResponse = await instance.query('Source', { context: { format: 'markdown' } })
+    const plainResponse = await instance.query('Source', { context: { format: 'plain' } })
 
     expect(xmlResponse.context).toContain('<context>')
     expect(mdResponse.context).toContain('# Context')
@@ -172,11 +172,11 @@ describe('integration', () => {
       const embedding = createMockEmbedding()
       const instance = await typegraphInit({ vectorStore: adapter, embedding })
 
-      const docs = createTestDocuments(1, 'PrivateDoc')
-      const { bucket, ingestOptions } = createMockBucket({ documents: docs })
+      const sources = createTestSources(1, 'PrivateDoc')
+      const { bucket, ingestOptions } = createMockBucket({ sources: sources })
       registerTestBucket(instance, bucket, embedding)
 
-      await instance.ingest(docs, {
+      await instance.ingest(sources, {
         ...ingestOptions,
         bucketId: bucket.id,
         tenantId,
@@ -199,13 +199,13 @@ describe('integration', () => {
       const embedding = createMockEmbedding()
       const instance = await typegraphInit({ vectorStore: adapter, embedding })
 
-      const docs = createTestDocuments(1, 'PublicDoc')
-      const { bucket, ingestOptions } = createMockBucket({ documents: docs })
+      const sources = createTestSources(1, 'PublicDoc')
+      const { bucket, ingestOptions } = createMockBucket({ sources: sources })
       registerTestBucket(instance, bucket, embedding)
 
       // No tenantId, no visibility — the basic RAG case where a developer
-      // just wants to index docs and query them without any identity scoping.
-      await instance.ingest(docs, { ...ingestOptions, bucketId: bucket.id })
+      // just wants to index sources and query them without any identity scoping.
+      await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
 
       const unscoped = await instance.query('PublicDoc')
       expect(unscoped.results.chunks.length).toBeGreaterThan(0)
@@ -216,18 +216,18 @@ describe('integration', () => {
       const embedding = createMockEmbedding()
       const instance = await typegraphInit({ vectorStore: adapter, embedding })
 
-      const docs = createTestDocuments(1, 'TenantGated')
-      const { bucket, ingestOptions } = createMockBucket({ documents: docs })
+      const sources = createTestSources(1, 'TenantGated')
+      const { bucket, ingestOptions } = createMockBucket({ sources: sources })
       registerTestBucket(instance, bucket, embedding)
 
-      await instance.ingest(docs, {
+      await instance.ingest(sources, {
         ...ingestOptions,
         bucketId: bucket.id,
         tenantId,
         visibility: 'tenant',
       })
 
-      // No tenantId on the query → blocked, even though the doc is 'tenant' visibility.
+      // No tenantId on the query → blocked, even though the source is 'tenant' visibility.
       const unscoped = await instance.query('TenantGated')
       expect(unscoped.results.chunks).toHaveLength(0)
 
@@ -241,13 +241,13 @@ describe('integration', () => {
       const embedding = createMockEmbedding()
       const instance = await typegraphInit({ vectorStore: adapter, embedding })
 
-      const docs = createTestDocuments(1, 'TenantDoc')
-      const { bucket, ingestOptions } = createMockBucket({ documents: docs })
+      const sources = createTestSources(1, 'TenantDoc')
+      const { bucket, ingestOptions } = createMockBucket({ sources: sources })
       registerTestBucket(instance, bucket, embedding)
 
       // Tenant-visible rows intentionally carry no userId so any tenant-level
       // caller sees them regardless of their own userId.
-      await instance.ingest(docs, {
+      await instance.ingest(sources, {
         ...ingestOptions,
         bucketId: bucket.id,
         tenantId,
@@ -263,11 +263,11 @@ describe('integration', () => {
       const embedding = createMockEmbedding()
       const instance = await typegraphInit({ vectorStore: adapter, embedding })
 
-      const docs = createTestDocuments(1, 'MigratingDoc')
-      const { bucket, ingestOptions } = createMockBucket({ documents: docs })
+      const sources = createTestSources(1, 'MigratingDoc')
+      const { bucket, ingestOptions } = createMockBucket({ sources: sources })
       registerTestBucket(instance, bucket, embedding)
 
-      await instance.ingest(docs, {
+      await instance.ingest(sources, {
         ...ingestOptions,
         bucketId: bucket.id,
         tenantId,
@@ -278,7 +278,7 @@ describe('integration', () => {
       const before = await instance.query('MigratingDoc', { tenantId })
       expect(before.results.chunks.length).toBeGreaterThan(0)
 
-      // Simulate the chunk-level cascade PgVectorAdapter.updateDocument() applies.
+      // Simulate the chunk-level cascade PgVectorAdapter.updateSource() applies.
       for (const chunks of adapter._chunks.values()) {
         for (const c of chunks) c.visibility = 'user'
       }
@@ -304,10 +304,10 @@ describe('integration', () => {
       hooks: { onIndexStart, onIndexComplete, onQueryResults },
     })
 
-    const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(2) })
+    const { bucket, sources, ingestOptions } = createMockBucket({ sources: createTestSources(2) })
     registerTestBucket(instance, bucket, embedding)
 
-    await instance.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
+    await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
     expect(onIndexStart).toHaveBeenCalled()
     expect(onIndexComplete).toHaveBeenCalled()
 

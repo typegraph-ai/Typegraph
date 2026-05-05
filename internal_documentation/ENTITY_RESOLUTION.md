@@ -106,7 +106,7 @@ technology
 concept
 event
 meeting
-artifact
+document
 project
 issue
 role
@@ -115,7 +115,7 @@ time_period
 creative_work
 ```
 
-`artifact` is the graph entity type for authored business materials such as contracts, RFPs, specs, reports, decks, transcripts, and plans. TypeGraph ingested documents remain storage objects and chunks; they are not graph entities.
+`document` is the graph entity type for authored business materials such as contracts, RFPs, specs, reports, decks, transcripts, and plans. TypeGraph ingested sources remain storage objects and chunks; they are not graph entities.
 
 If a developer omits an entity type, TypeGraph uses the central default `concept`. Memory subjects with external IDs whose `identityType` is `user` default to `person`, which supports external-user memory flows where only an email address is known.
 
@@ -540,7 +540,7 @@ Cap:
 `isLowValueEntityDescription(...)` removes boilerplate like:
 
 - creator of the task
-- creator of the document
+- creator of the source
 - assignee responsible
 - primary contact and requester
 - tagged in the
@@ -658,7 +658,7 @@ The target canonical id stays stable.
 - `mode: 'invalidate'`, the default
 - `mode: 'purge'`
 
-`invalidate` marks the entity inactive and invalidates associated graph/fact records while preserving provenance. `purge` physically removes the entity row and graph references. Neither mode deletes chunks, ingested documents, or memory records themselves.
+`invalidate` marks the entity inactive and invalidates associated graph/fact records while preserving provenance. `purge` physically removes the entity row and graph references. Neither mode deletes chunks, ingested sources, or memory records themselves.
 
 Delete mode is called `invalidate`, not `tombstone`.
 

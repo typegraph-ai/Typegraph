@@ -1,12 +1,13 @@
 // Main public API
 export { typegraphInit, typegraphDeploy, resolveEmbeddingProvider, resolveLLMProvider, DEFAULT_BUCKET_ID } from './typegraph.js'
-export type { typegraphConfig, typegraphInstance, BucketsApi, DocumentsApi, JobsApi, GraphApi } from './typegraph.js'
+export type { typegraphConfig, typegraphInstance, BucketsApi, SourcesApi, JobsApi, GraphApi } from './typegraph.js'
 /** @deprecated Use LLMConfig instead. */
 export type { LLMInput } from './typegraph.js'
 
 // Types
 export type {
-  RawDocument,
+  SourceInput,
+  SourceSubject,
   ChunkOpts,
   Chunk,
   Bucket,
@@ -22,7 +23,7 @@ export type {
   HashStoreAdapter,
   VectorStoreAdapter,
   UndeployResult,
-  ScoredChunkWithDocument,
+  ScoredChunkWithSource,
   QuerySignals,
   QueryChunkResult,
   QueryMemoryRecord,
@@ -41,12 +42,12 @@ export type {
   IndexProgressEvent,
   IndexResult,
   ExtractionFailure,
-  typegraphDocument,
-  DocumentStatus,
+  typegraphSource,
+  SourceStatus,
   Visibility,
-  DocumentFilter,
-  UpsertDocumentInput,
-  UpsertedDocumentRecord,
+  SourceFilter,
+  UpsertSourceInput,
+  UpsertedSourceRecord,
   typegraphHooks,
   LLMProvider,
   LLMGenerateOptions,

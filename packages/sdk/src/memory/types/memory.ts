@@ -1,6 +1,6 @@
 import type { typegraphIdentity } from '../../types/identity.js'
-import type { Visibility } from '../../types/typegraph-document.js'
-import type { ChunkRef } from '../../types/document.js'
+import type { Visibility } from '../../types/source.js'
+import type { ChunkRef } from '../../types/chunk.js'
 
 // ── Memory Categories ──
 
@@ -139,11 +139,11 @@ export interface SemanticEntity {
   temporal: TemporalRecord
 }
 
-export type EntityMentionType = 'subject' | 'object' | 'co_occurrence' | 'entity' | 'alias'
+export type EntityMentionType = 'subject' | 'object' | 'co_occurrence' | 'entity' | 'alias' | 'source_subject'
 
 export interface SemanticEntityMention {
   entityId: string
-  documentId: string
+  sourceId: string
   chunkIndex: number
   bucketId: string
   mentionType: EntityMentionType

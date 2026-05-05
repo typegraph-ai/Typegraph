@@ -8,8 +8,8 @@ function makeChunk(overrides: Partial<QueryChunkResult> = {}): QueryChunkResult 
     score: 0.9123,
     scores: { raw: { cosineSimilarity: 0.9123 }, normalized: { semantic: 0.9123 } },
     sources: ['semantic'],
-    document: {
-      id: 'doc-1',
+    source: {
+      id: 'source-1',
       bucketId: 'books',
       title: 'Maud',
       url: 'https://example.com/maud',

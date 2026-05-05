@@ -13,7 +13,7 @@ import type {
 } from './types/memory.js'
 import type { MemorySubject } from '../types/graph-bridge.js'
 import type { QueryEntityScope } from '../types/query.js'
-import type { Visibility } from '../types/typegraph-document.js'
+import type { Visibility } from '../types/source.js'
 import type { LLMProvider } from './extraction/llm-provider.js'
 import type { ExtractionResult, ConversationMessage } from './extraction/extractor.js'
 import { ConfigError } from '../types/errors.js'

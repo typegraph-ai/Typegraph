@@ -60,7 +60,7 @@ describe('ontology registry', () => {
     expect(validatePredicateTypes('WORKS_FOR', 'person', 'organization')).toEqual(expect.objectContaining({
       valid: true,
     }))
-    expect(validatePredicateTypes('WORKS_FOR', 'issue', 'artifact')).toEqual(expect.objectContaining({
+    expect(validatePredicateTypes('WORKS_FOR', 'issue', 'document')).toEqual(expect.objectContaining({
       valid: false,
       reason: 'domain-range-mismatch',
     }))

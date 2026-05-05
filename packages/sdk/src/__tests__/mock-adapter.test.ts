@@ -1,14 +1,14 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { createMockAdapter, createMockHashStore } from './helpers/mock-adapter.js'
 import { createMockEmbedding } from './helpers/mock-embedding.js'
-import type { EmbeddedChunk } from '../types/document.js'
+import type { EmbeddedChunk } from '../types/chunk.js'
 
 function makeChunk(overrides: Partial<EmbeddedChunk> = {}): EmbeddedChunk {
   return {
     id: overrides.id ?? `chunk-${overrides.idempotencyKey ?? 'key-1'}-${overrides.chunkIndex ?? 0}`,
     idempotencyKey: 'key-1',
     bucketId: 'src-1',
-    documentId: 'doc-1',
+    sourceId: 'source-1',
     content: 'Test chunk content',
     embedding: [0.1, 0.2, 0.3, 0.4],
     embeddingModel: 'mock-embed-v1',
@@ -41,16 +41,16 @@ describe('MockAdapter', () => {
     expect(adapter._chunks.has('test-model')).toBe(true)
   })
 
-  it('upsertDocument stores chunks', async () => {
+  it('upsertSourceChunks stores chunks', async () => {
     await adapter.ensureModel('model', 4)
     const chunk = makeChunk()
-    await adapter.upsertDocument('model', [chunk])
+    await adapter.upsertSourceChunks('model', [chunk])
     expect(adapter._chunks.get('model')).toHaveLength(1)
   })
 
   it('search retrieves by cosine similarity', async () => {
     await adapter.ensureModel('model', 4)
-    await adapter.upsertDocument('model', [
+    await adapter.upsertSourceChunks('model', [
       makeChunk({ embedding: [1, 0, 0, 0], content: 'A' }),
       makeChunk({ embedding: [0, 1, 0, 0], content: 'B', idempotencyKey: 'key-2' }),
     ])
@@ -62,7 +62,7 @@ describe('MockAdapter', () => {
 
   it('search sorts by cosine similarity', async () => {
     await adapter.ensureModel('model', 4)
-    await adapter.upsertDocument('model', [
+    await adapter.upsertSourceChunks('model', [
       makeChunk({ embedding: [0, 0, 0, 1], content: 'Far', idempotencyKey: 'k1' }),
       makeChunk({ embedding: [0.9, 0.1, 0, 0], content: 'Close', idempotencyKey: 'k2' }),
       makeChunk({ embedding: [1, 0, 0, 0], content: 'Exact', idempotencyKey: 'k3' }),
@@ -75,7 +75,7 @@ describe('MockAdapter', () => {
 
   it('hybridSearch includes keyword matching', async () => {
     await adapter.ensureModel('model', 4)
-    await adapter.upsertDocument('model', [
+    await adapter.upsertSourceChunks('model', [
       makeChunk({ embedding: [0.5, 0.5, 0, 0], content: 'JavaScript programming', idempotencyKey: 'k1' }),
       makeChunk({ embedding: [0.5, 0.5, 0, 0], content: 'Python scripting', idempotencyKey: 'k2' }),
     ])
@@ -89,16 +89,16 @@ describe('MockAdapter', () => {
   it('upsert replaces existing chunks', async () => {
     await adapter.ensureModel('model', 4)
     const chunk = makeChunk({ content: 'Original' })
-    await adapter.upsertDocument('model', [chunk])
+    await adapter.upsertSourceChunks('model', [chunk])
     const updated = makeChunk({ content: 'Updated' })
-    await adapter.upsertDocument('model', [updated])
+    await adapter.upsertSourceChunks('model', [updated])
     expect(adapter._chunks.get('model')).toHaveLength(1)
     expect(adapter._chunks.get('model')![0]!.content).toBe('Updated')
   })
 
   it('delete by filter', async () => {
     await adapter.ensureModel('model', 4)
-    await adapter.upsertDocument('model', [
+    await adapter.upsertSourceChunks('model', [
       makeChunk({ bucketId: 'src-1', idempotencyKey: 'k1' }),
       makeChunk({ bucketId: 'src-2', idempotencyKey: 'k2' }),
     ])
@@ -109,7 +109,7 @@ describe('MockAdapter', () => {
 
   it('countChunks by filter', async () => {
     await adapter.ensureModel('model', 4)
-    await adapter.upsertDocument('model', [
+    await adapter.upsertSourceChunks('model', [
       makeChunk({ bucketId: 'src-1', idempotencyKey: 'k1' }),
       makeChunk({ bucketId: 'src-1', idempotencyKey: 'k2', chunkIndex: 1 }),
       makeChunk({ bucketId: 'src-2', idempotencyKey: 'k3' }),
@@ -118,46 +118,46 @@ describe('MockAdapter', () => {
     expect(count).toBe(2)
   })
 
-  it('document records: upsert and retrieve', async () => {
-    const doc = await adapter.upsertDocumentRecord!({
+  it('source records: upsert and retrieve', async () => {
+    const source = await adapter.upsertSourceRecord!({
       bucketId: 'src-1',
       title: 'Test',
       contentHash: 'abc',
       chunkCount: 5,
       status: 'complete',
     })
-    expect(doc.id).toBeDefined()
-    expect(doc.title).toBe('Test')
-    expect(doc.status).toBe('complete')
+    expect(source.id).toBeDefined()
+    expect(source.title).toBe('Test')
+    expect(source.status).toBe('complete')
 
-    const retrieved = await adapter.getDocument!(doc.id)
+    const retrieved = await adapter.getSource!(source.id)
     expect(retrieved).toBeDefined()
-    expect(retrieved!.id).toBe(doc.id)
+    expect(retrieved!.id).toBe(source.id)
   })
 
-  it('updateDocumentStatus', async () => {
-    const doc = await adapter.upsertDocumentRecord!({
+  it('updateSourceStatus', async () => {
+    const source = await adapter.upsertSourceRecord!({
       bucketId: 'src-1',
       title: 'Test',
       contentHash: 'abc',
       chunkCount: 0,
       status: 'processing',
     })
-    await adapter.updateDocumentStatus!(doc.id, 'complete', 10)
-    const updated = await adapter.getDocument!(doc.id)
+    await adapter.updateSourceStatus!(source.id, 'complete', 10)
+    const updated = await adapter.getSource!(source.id)
     expect(updated!.status).toBe('complete')
     expect(updated!.chunkCount).toBe(10)
   })
 
   it('getChunksByRange returns chunks in range', async () => {
     await adapter.ensureModel('model', 4)
-    await adapter.upsertDocument('model', [
-      makeChunk({ documentId: 'doc-1', chunkIndex: 0, content: 'C0', idempotencyKey: 'k0' }),
-      makeChunk({ documentId: 'doc-1', chunkIndex: 1, content: 'C1', idempotencyKey: 'k1' }),
-      makeChunk({ documentId: 'doc-1', chunkIndex: 2, content: 'C2', idempotencyKey: 'k2' }),
-      makeChunk({ documentId: 'doc-1', chunkIndex: 3, content: 'C3', idempotencyKey: 'k3' }),
+    await adapter.upsertSourceChunks('model', [
+      makeChunk({ sourceId: 'source-1', chunkIndex: 0, content: 'C0', idempotencyKey: 'k0' }),
+      makeChunk({ sourceId: 'source-1', chunkIndex: 1, content: 'C1', idempotencyKey: 'k1' }),
+      makeChunk({ sourceId: 'source-1', chunkIndex: 2, content: 'C2', idempotencyKey: 'k2' }),
+      makeChunk({ sourceId: 'source-1', chunkIndex: 3, content: 'C3', idempotencyKey: 'k3' }),
     ])
-    const result = await adapter.getChunksByRange!('model', 'doc-1', 1, 2)
+    const result = await adapter.getChunksByRange!('model', 'source-1', 1, 2)
     expect(result).toHaveLength(2)
     expect(result[0]!.chunkIndex).toBe(1)
     expect(result[1]!.chunkIndex).toBe(2)

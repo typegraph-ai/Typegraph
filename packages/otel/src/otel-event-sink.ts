@@ -162,7 +162,7 @@ function buildAttributes(
 
     case 'index.start':
     case 'index.complete':
-    case 'index.document': {
+    case 'index.source': {
       if (typeof payload['bucketId'] === 'string') {
         attrs[ATTR.GEN_AI_DATA_SOURCE_ID] = payload['bucketId']
       }

@@ -1,6 +1,7 @@
 import type { EntityResult, FactResult, GraphSearchOpts, GraphSearchTrace } from './graph-bridge.js'
 import type { MemoryRecord } from '../memory/types/memory.js'
 import type { ExternalId } from '../memory/types/memory.js'
+import type { SourceSubject } from './connector.js'
 
 export type QueryGraphOptions = GraphSearchOpts
 
@@ -77,7 +78,7 @@ export interface QueryChunkResult {
   /** Which retrieval systems contributed to this result (e.g. ["semantic"], ["semantic", "graph"]) */
   sources: string[]
 
-  document: {
+  source: {
     id: string
     bucketId: string
     title: string
@@ -90,6 +91,7 @@ export interface QueryChunkResult {
     userId?: string | undefined
     agentId?: string | undefined
     conversationId?: string | undefined
+    subject?: SourceSubject | undefined
   }
 
   chunk: {
@@ -137,8 +139,8 @@ export interface QueryOpts {
   userId?: string | undefined
   agentId?: string | undefined
   conversationId?: string | undefined
-  /** Filter results by document-level fields (status, scope, type, etc.). */
-  documentFilter?: import('./typegraph-document.js').DocumentFilter | undefined
+  /** Filter results by source-level fields (status, scope, type, etc.). */
+  sourceFilter?: import('./source.js').SourceFilter | undefined
   /** Relevance scope by TypeGraph entity IDs or deterministic external IDs. */
   entityScope?: QueryEntityScope | undefined
 

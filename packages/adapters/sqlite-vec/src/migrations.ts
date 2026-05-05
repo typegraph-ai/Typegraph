@@ -41,7 +41,7 @@ export const MODEL_CHUNKS_SQL = (chunksTable: string) => `
     user_id         TEXT,
     agent_id        TEXT,
     conversation_id TEXT,
-    document_id     TEXT NOT NULL,
+    source_id     TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
     content         TEXT NOT NULL,
     embedding_model TEXT NOT NULL,
@@ -60,8 +60,8 @@ export const MODEL_CHUNKS_SQL = (chunksTable: string) => `
   CREATE INDEX IF NOT EXISTS ${chunksTable}_bucket_tenant_idx
     ON ${chunksTable} (bucket_id, tenant_id);
 
-  CREATE INDEX IF NOT EXISTS ${chunksTable}_doc_chunk_idx
-    ON ${chunksTable} (document_id, chunk_index);
+  CREATE INDEX IF NOT EXISTS ${chunksTable}_source_chunk_idx
+    ON ${chunksTable} (source_id, chunk_index);
 
   CREATE INDEX IF NOT EXISTS ${chunksTable}_tenant_user_idx
     ON ${chunksTable} (tenant_id, user_id);

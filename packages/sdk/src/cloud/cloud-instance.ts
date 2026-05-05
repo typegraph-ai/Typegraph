@@ -1,10 +1,10 @@
-import type { typegraphInstance, typegraphConfig, BucketsApi, DocumentsApi, JobsApi, GraphApi } from '../typegraph.js'
+import type { typegraphInstance, typegraphConfig, BucketsApi, SourcesApi, JobsApi, GraphApi } from '../typegraph.js'
 import type { Bucket, CreateBucketInput, BucketListFilter } from '../types/bucket.js'
 import type { QueryOpts, QueryResponse } from '../types/query.js'
 import type { IngestOptions, IndexResult } from '../types/index-types.js'
 import type { EmbeddingProvider } from '../embedding/provider.js'
-import type { RawDocument, Chunk } from '../types/connector.js'
-import type { typegraphDocument, DocumentFilter } from '../types/typegraph-document.js'
+import type { SourceInput, Chunk } from '../types/connector.js'
+import type { typegraphSource, SourceFilter } from '../types/source.js'
 import type { typegraphIdentity } from '../types/identity.js'
 import type { CreatePolicyInput, UpdatePolicyInput, Policy, PolicyType } from '../types/policy.js'
 import type { UndeployResult } from '../types/adapter.js'
@@ -13,19 +13,19 @@ import type { ConversationTurnResult, MemoryHealthReport } from '../types/memory
 import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
 import type { Job, JobFilter } from '../types/job.js'
 import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult } from '../types/graph-bridge.js'
-import { DEFAULT_BUCKET_ID, normalizeRawDocument } from '../typegraph.js'
+import { DEFAULT_BUCKET_ID, normalizeSourceInput } from '../typegraph.js'
 import { HttpClient } from './http-client.js'
 import type { CloudConfig } from './http-client.js'
 
 /**
  * Extended typegraph instance for cloud mode.
- * Includes document CRUD methods available via the hosted API.
+ * Includes source CRUD methods available via the hosted API.
  */
 export interface typegraphCloudInstance extends typegraphInstance {
-  listDocuments(filter?: DocumentFilter): Promise<typegraphDocument[]>
-  getDocument(documentId: string): Promise<typegraphDocument>
-  updateDocument(documentId: string, update: Partial<typegraphDocument>): Promise<typegraphDocument>
-  deleteDocuments(filter: DocumentFilter): Promise<number>
+  listSources(filter?: SourceFilter): Promise<typegraphSource[]>
+  getSource(sourceId: string): Promise<typegraphSource>
+  updateSource(sourceId: string, update: Partial<typegraphSource>): Promise<typegraphSource>
+  deleteSources(filter: SourceFilter): Promise<number>
 }
 
 /**
@@ -66,21 +66,21 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     },
   }
 
-  const documents: DocumentsApi = {
-    async get(id: string): Promise<typegraphDocument | null> {
-      return client.get<typegraphDocument | null>(`/v1/documents/${e(id)}`)
+  const sources: SourcesApi = {
+    async get(id: string): Promise<typegraphSource | null> {
+      return client.get<typegraphSource | null>(`/v1/sources/${e(id)}`)
     },
-    async list(filter?: DocumentFilter, pagination?: PaginationOpts): Promise<typegraphDocument[] | PaginatedResult<typegraphDocument>> {
+    async list(filter?: SourceFilter, pagination?: PaginationOpts): Promise<typegraphSource[] | PaginatedResult<typegraphSource>> {
       if (pagination) {
-        return client.post<PaginatedResult<typegraphDocument>>('/v1/documents/list', { ...filter, ...pagination })
+        return client.post<PaginatedResult<typegraphSource>>('/v1/sources/list', { ...filter, ...pagination })
       }
-      return client.post<typegraphDocument[]>('/v1/documents/list', filter)
+      return client.post<typegraphSource[]>('/v1/sources/list', filter)
     },
-    async update(id: string, input): Promise<typegraphDocument> {
-      return client.patch<typegraphDocument>(`/v1/documents/${e(id)}`, input)
+    async update(id: string, input): Promise<typegraphSource> {
+      return client.patch<typegraphSource>(`/v1/sources/${e(id)}`, input)
     },
-    async delete(filter: DocumentFilter): Promise<number> {
-      return client.delete<number>('/v1/documents', filter)
+    async delete(filter: SourceFilter): Promise<number> {
+      return client.delete<number>('/v1/sources', filter)
     },
   }
 
@@ -224,7 +224,7 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     },
 
     buckets,
-    documents,
+    sources,
     jobs,
     graph,
 
@@ -266,15 +266,15 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
       return client.post<QueryResponse>('/v1/query', { text, ...opts })
     },
 
-    async ingest(docs: RawDocument[], opts: IngestOptions = {}): Promise<IndexResult> {
+    async ingest(sources: SourceInput[], opts: IngestOptions = {}): Promise<IndexResult> {
       const bucketId = opts.bucketId || DEFAULT_BUCKET_ID
-      const normalizedDocs = docs.map(normalizeRawDocument)
-      return client.post<IndexResult>(`/v1/buckets/${e(bucketId)}/ingest`, { docs: normalizedDocs, opts })
+      const normalizedSources = sources.map(normalizeSourceInput)
+      return client.post<IndexResult>(`/v1/buckets/${e(bucketId)}/ingest`, { sources: normalizedSources, opts })
     },
 
-    async ingestPreChunked(doc: RawDocument, chunks: Chunk[], opts: IngestOptions = {}): Promise<IndexResult> {
+    async ingestPreChunked(source: SourceInput, chunks: Chunk[], opts: IngestOptions = {}): Promise<IndexResult> {
       const bucketId = opts.bucketId || DEFAULT_BUCKET_ID
-      return client.post<IndexResult>(`/v1/buckets/${e(bucketId)}/ingest`, { doc: normalizeRawDocument(doc), chunks, opts })
+      return client.post<IndexResult>(`/v1/buckets/${e(bucketId)}/ingest`, { source: normalizeSourceInput(source), chunks, opts })
     },
 
     async remember(content: string, identity: typegraphIdentity, category?: string, opts?: {
@@ -314,22 +314,22 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
       // No-op in cloud mode
     },
 
-    // ── Document CRUD (cloud-only extensions) ──
+    // ── Source CRUD (cloud-only extensions) ──
 
-    async listDocuments(filter?: DocumentFilter): Promise<typegraphDocument[]> {
-      return client.post<typegraphDocument[]>('/v1/documents/list', filter)
+    async listSources(filter?: SourceFilter): Promise<typegraphSource[]> {
+      return client.post<typegraphSource[]>('/v1/sources/list', filter)
     },
 
-    async getDocument(documentId: string): Promise<typegraphDocument> {
-      return client.get<typegraphDocument>(`/v1/documents/${e(documentId)}`)
+    async getSource(sourceId: string): Promise<typegraphSource> {
+      return client.get<typegraphSource>(`/v1/sources/${e(sourceId)}`)
     },
 
-    async updateDocument(documentId: string, update: Partial<typegraphDocument>): Promise<typegraphDocument> {
-      return client.patch<typegraphDocument>(`/v1/documents/${e(documentId)}`, update)
+    async updateSource(sourceId: string, update: Partial<typegraphSource>): Promise<typegraphSource> {
+      return client.patch<typegraphSource>(`/v1/sources/${e(sourceId)}`, update)
     },
 
-    async deleteDocuments(filter: DocumentFilter): Promise<number> {
-      return client.delete<number>('/v1/documents', filter)
+    async deleteSources(filter: SourceFilter): Promise<number> {
+      return client.delete<number>('/v1/sources', filter)
     },
   }
 

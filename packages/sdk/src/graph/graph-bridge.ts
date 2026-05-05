@@ -7,7 +7,8 @@ import type { LLMConfig, LLMProvider } from '../types/llm-provider.js'
 import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, EntityScopeResolution, KnowledgeSearchOpts, KnowledgeSearchResult, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult } from '../types/graph-bridge.js'
 import { resolveEmbeddingProvider, resolveLLMProvider } from '../typegraph.js'
 import type { ExternalId, MemoryStoreAdapter, SemanticEdge, SemanticEntity, SemanticEntityMention, SemanticEntityChunkEdge, SemanticFactRecord, SemanticGraphEdge } from '../memory/types/index.js'
-import type { ChunkRef } from '../types/document.js'
+import type { ChunkRef } from '../types/chunk.js'
+import type { SourceSubject } from '../types/connector.js'
 import { ConfigError } from '../types/errors.js'
 import { EntityResolver, PredicateNormalizer, createTemporal } from '../memory/index.js'
 import { EmbeddedGraph } from './graph/embedded-graph.js'
@@ -78,7 +79,7 @@ function mergeScope(defaultScope: typegraphIdentity, override?: typegraphIdentit
 function chunkNodeIdFor(input: ChunkRef): string {
   return input.chunkId ?? stableGraphId('chunk', [
     input.bucketId,
-    input.documentId,
+    input.sourceId,
     input.chunkIndex,
     input.embeddingModel,
   ])
@@ -125,7 +126,7 @@ function normalizeSeedScore(value: number): number {
 
 function buildEntityMentions(input: {
   entityId: string
-  documentId: string
+  sourceId: string
   chunkIndex: number
   bucketId: string
   mentionType: SemanticEntityMention['mentionType']
@@ -145,7 +146,7 @@ function buildEntityMentions(input: {
     seen.add(key)
     rows.push({
       entityId: input.entityId,
-      documentId: input.documentId,
+      sourceId: input.sourceId,
       chunkIndex: input.chunkIndex,
       bucketId: input.bucketId,
       mentionType,
@@ -170,7 +171,7 @@ function buildEntityChunkGraphEdge(input: {
   surfaceTexts: string[]
   mentionTypes: SemanticEntityMention['mentionType'][]
   scope: typegraphIdentity
-  visibility?: import('../types/typegraph-document.js').Visibility | undefined
+  visibility?: import('../types/source.js').Visibility | undefined
 }): SemanticGraphEdge {
   const chunkId = chunkNodeIdFor(input.chunkRef)
   return {
@@ -676,6 +677,13 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     return [...byKey.values()]
   }
 
+  function normalizeSubjectExternalIds(subject: SourceSubject): ExternalId[] {
+    return normalizeExternalIds(subject.externalIds?.map(externalId => ({
+      ...externalId,
+      identityType: externalId.identityType ?? 'entity',
+    })))
+  }
+
   function mergeExternalIds(
     existing: ExternalId[] | undefined,
     incoming: ExternalId[] | undefined,
@@ -856,7 +864,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   async function resolveEntityForWrite(
     ref: GraphEntityRef | string,
     parentScope: typegraphIdentity,
-    visibility?: import('../types/typegraph-document.js').Visibility,
+    visibility?: import('../types/source.js').Visibility,
   ): Promise<SemanticEntity> {
     if (typeof ref === 'string') {
       const entity = await graph.getEntity(ref, parentScope)
@@ -907,7 +915,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     target: GraphEntityRef | string
     relation: string
     scope: typegraphIdentity
-    visibility?: import('../types/typegraph-document.js').Visibility | undefined
+    visibility?: import('../types/source.js').Visibility | undefined
     weight?: number | undefined
     properties?: Record<string, unknown> | undefined
     description?: string | undefined
@@ -1088,14 +1096,14 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     aliases?: string[] | undefined
     description?: string | undefined
     bucketId: string
-    documentId?: string | undefined
+    sourceId?: string | undefined
     chunkIndex?: number | undefined
     tenantId?: string | undefined
     groupId?: string | undefined
     userId?: string | undefined
     agentId?: string | undefined
     conversationId?: string | undefined
-    visibility?: import('../types/typegraph-document.js').Visibility | undefined
+    visibility?: import('../types/source.js').Visibility | undefined
     confidence?: number | undefined
     mentionType: SemanticEntityMention['mentionType']
   }): Promise<SemanticEntity> {
@@ -1117,10 +1125,10 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
     await graph.addEntity(result.entity)
 
-    if (memoryStore.upsertEntityChunkMentions && input.documentId && input.chunkIndex !== undefined) {
+    if (memoryStore.upsertEntityChunkMentions && input.sourceId && input.chunkIndex !== undefined) {
       const mentions = buildEntityMentions({
         entityId: result.entity.id,
-        documentId: input.documentId,
+        sourceId: input.sourceId,
         chunkIndex: input.chunkIndex,
         bucketId: input.bucketId,
         mentionType: input.mentionType,
@@ -1131,7 +1139,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       if (mentions.length > 0) await memoryStore.upsertEntityChunkMentions(mentions)
     }
 
-    if (memoryStore.upsertGraphEdges && input.documentId && input.chunkIndex !== undefined) {
+    if (memoryStore.upsertGraphEdges && input.sourceId && input.chunkIndex !== undefined) {
       const surfaceTexts = [input.name, result.entity.name, ...(input.aliases ?? [])]
         .map(value => value.trim())
         .filter(Boolean)
@@ -1140,7 +1148,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         entityId: result.entity.id,
         chunkRef: {
           bucketId: input.bucketId,
-          documentId: input.documentId,
+          sourceId: input.sourceId,
           chunkIndex: input.chunkIndex,
           embeddingModel: embeddingModelKey(embedding),
         },
@@ -1165,13 +1173,13 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     content: string
     bucketId: string
     chunkIndex?: number | undefined
-    documentId?: string | undefined
+    sourceId?: string | undefined
     tenantId?: string | undefined
     groupId?: string | undefined
     userId?: string | undefined
     agentId?: string | undefined
     conversationId?: string | undefined
-    visibility?: import('../types/typegraph-document.js').Visibility | undefined
+    visibility?: import('../types/source.js').Visibility | undefined
     metadata?: Record<string, unknown> | undefined
     confidence?: number | undefined
   }>): Promise<void> {
@@ -1183,7 +1191,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         aliases: mention.aliases,
         description: mention.description,
         bucketId: mention.bucketId,
-        documentId: mention.documentId,
+        sourceId: mention.sourceId,
         chunkIndex: mention.chunkIndex,
         tenantId: mention.tenantId,
         groupId: mention.groupId,
@@ -1195,6 +1203,118 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         mentionType: 'entity',
       })
     }
+  }
+
+  async function addSourceSubject(input: {
+    subject: SourceSubject
+    bucketId: string
+    sourceId: string
+    embeddingModel: string
+    chunks: Array<{
+      id?: string | undefined
+      chunkIndex: number
+      content: string
+      metadata?: Record<string, unknown> | undefined
+    }>
+    tenantId?: string | undefined
+    groupId?: string | undefined
+    userId?: string | undefined
+    agentId?: string | undefined
+    conversationId?: string | undefined
+    visibility?: import('../types/source.js').Visibility | undefined
+  }): Promise<EntityDetail | null> {
+    const scope = mergeScope(defaultScope, {
+      tenantId: input.tenantId,
+      groupId: input.groupId,
+      userId: input.userId,
+      agentId: input.agentId,
+      conversationId: input.conversationId,
+    })
+    const externalIds = normalizeSubjectExternalIds(input.subject)
+    let entity: SemanticEntity | null | undefined
+
+    if (input.subject.entityId) {
+      entity = await graph.getEntity(input.subject.entityId, scope)
+    }
+    entity = entity ?? (await findEntityByExternalIds(externalIds, scope))
+
+    if (entity && (input.subject.name || externalIds.length > 0 || input.subject.aliases?.length || input.subject.description || input.subject.properties)) {
+      entity = await upsertSeedEntity({
+        id: entity.id,
+        name: input.subject.name ?? entity.name,
+        entityType: input.subject.entityType ?? entity.entityType,
+        aliases: [...new Set([...(entity.aliases ?? []), ...(input.subject.aliases ?? [])])],
+        description: input.subject.description ?? (entity.properties.description as string | undefined),
+        properties: input.subject.properties,
+        externalIds,
+        tenantId: scope.tenantId,
+        groupId: scope.groupId,
+        userId: scope.userId,
+        agentId: scope.agentId,
+        conversationId: scope.conversationId,
+        visibility: input.visibility,
+      })
+    }
+
+    if (!entity) {
+      if (!input.subject.name?.trim()) {
+        throw new Error('source.subject.name is required when the subject entity cannot be resolved by entityId or externalIds.')
+      }
+      entity = await upsertSeedEntity({
+        id: input.subject.entityId,
+        name: input.subject.name,
+        entityType: input.subject.entityType,
+        aliases: input.subject.aliases,
+        description: input.subject.description,
+        properties: input.subject.properties,
+        externalIds,
+        tenantId: scope.tenantId,
+        groupId: scope.groupId,
+        userId: scope.userId,
+        agentId: scope.agentId,
+        conversationId: scope.conversationId,
+        visibility: input.visibility,
+      })
+    } else if (externalIds.length > 0) {
+      await linkExternalIdsToEntity(entity.id, externalIds, scope)
+      entity = { ...entity, externalIds: mergeExternalIds(entity.externalIds, externalIds) }
+    }
+
+    const mentions: SemanticEntityMention[] = input.chunks.map(chunk => ({
+      entityId: entity!.id,
+      sourceId: input.sourceId,
+      chunkIndex: chunk.chunkIndex,
+      bucketId: input.bucketId,
+      mentionType: 'source_subject',
+      normalizedSurfaceText: '',
+      confidence: 1.0,
+    }))
+    if (mentions.length > 0 && memoryStore.upsertEntityChunkMentions) {
+      await memoryStore.upsertEntityChunkMentions(mentions)
+    }
+
+    if (input.chunks.length > 0 && memoryStore.upsertGraphEdges) {
+      await memoryStore.upsertGraphEdges(input.chunks.map(chunk => buildEntityChunkGraphEdge({
+        entityId: entity!.id,
+        chunkRef: {
+          bucketId: input.bucketId,
+          sourceId: input.sourceId,
+          chunkIndex: chunk.chunkIndex,
+          embeddingModel: input.embeddingModel,
+          chunkId: chunk.id,
+        },
+        relation: 'PRIMARY_SOURCE_CHUNK',
+        weight: 1.0,
+        mentionCount: 1,
+        confidence: 1.0,
+        surfaceTexts: [],
+        mentionTypes: ['source_subject'],
+        scope,
+        visibility: input.visibility,
+      })))
+    }
+
+    return await getEntity(entity.id, scope) ?? entityResultFromSemanticEntity(entity, 0)
   }
 
   async function addTriple(triple: {
@@ -1217,13 +1337,13 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     content: string
     bucketId: string
     chunkIndex?: number
-    documentId?: string
+    sourceId?: string
     tenantId?: string | undefined
     groupId?: string | undefined
     userId?: string | undefined
     agentId?: string | undefined
     conversationId?: string | undefined
-    visibility?: import('../types/typegraph-document.js').Visibility | undefined
+    visibility?: import('../types/source.js').Visibility | undefined
     metadata?: Record<string, unknown>
   }): Promise<void> {
     const scope = mergeScope(defaultScope, {
@@ -1247,7 +1367,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         aliases,
         description: triple.subjectDescription,
         bucketId: triple.bucketId,
-        documentId: triple.documentId,
+        sourceId: triple.sourceId,
         chunkIndex: triple.chunkIndex,
         tenantId: triple.tenantId,
         groupId: triple.groupId,
@@ -1286,7 +1406,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       aliases: sourceInput.aliases,
       description: sourceInput.description,
       bucketId: triple.bucketId,
-      documentId: triple.documentId,
+      sourceId: triple.sourceId,
       chunkIndex: triple.chunkIndex,
       tenantId: triple.tenantId,
       groupId: triple.groupId,
@@ -1303,7 +1423,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       aliases: targetInput.aliases,
       description: targetInput.description,
       bucketId: triple.bucketId,
-      documentId: triple.documentId,
+      sourceId: triple.sourceId,
       chunkIndex: triple.chunkIndex,
       tenantId: triple.tenantId,
       groupId: triple.groupId,
@@ -1410,7 +1530,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     directEdgePairs.add(pairKey)
 
     // CO_OCCURS edges for disconnected entities
-    const chunkKey = `${triple.bucketId}:${triple.documentId ?? ''}:${triple.chunkIndex ?? 0}`
+    const chunkKey = `${triple.bucketId}:${triple.sourceId ?? ''}:${triple.chunkIndex ?? 0}`
     let chunkEntities = chunkEntityMap.get(chunkKey)
     if (!chunkEntities) {
       chunkEntities = new Set()
@@ -1440,10 +1560,10 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
               evidence: [],
             })
             // Record the co-occurrence mention on the newly-linked entity
-            if (memoryStore.upsertEntityChunkMentions && triple.documentId && triple.chunkIndex !== undefined) {
+            if (memoryStore.upsertEntityChunkMentions && triple.sourceId && triple.chunkIndex !== undefined) {
               await memoryStore.upsertEntityChunkMentions([{
                 entityId: newId,
-                documentId: triple.documentId,
+                sourceId: triple.sourceId,
                 chunkIndex: triple.chunkIndex,
                 bucketId: triple.bucketId,
                 mentionType: 'co_occurrence',
@@ -1903,7 +2023,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   }
 
   function chunkRefKey(ref: ChunkRef): string {
-    return `${ref.bucketId}\u001f${ref.documentId}\u001f${ref.chunkIndex}\u001f${ref.embeddingModel ?? ''}`
+    return `${ref.bucketId}\u001f${ref.sourceId}\u001f${ref.chunkIndex}\u001f${ref.embeddingModel ?? ''}`
   }
 
   async function getChunksForEntity(entityId: string, opts?: {
@@ -1934,7 +2054,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       .map(row => ({
         content: row.content,
         bucketId: row.bucketId,
-        documentId: row.documentId,
+        sourceId: row.sourceId,
         chunkIndex: row.chunkIndex,
         embeddingModel: row.embeddingModel,
         chunkId: row.chunkId,
@@ -2281,7 +2401,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         return {
           content: row.content,
           bucketId: row.bucketId,
-          documentId: row.documentId,
+          sourceId: row.sourceId,
           chunkIndex: row.chunkIndex,
           embeddingModel: row.embeddingModel,
           chunkId: row.chunkId,
@@ -2420,7 +2540,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
           surfaceTexts: string[]
           mentionTypes: SemanticEntityMention['mentionType'][]
           scope: typegraphIdentity
-          visibility?: import('../types/typegraph-document.js').Visibility | undefined
+          visibility?: import('../types/source.js').Visibility | undefined
         }>()
         for (const row of rows) {
           const scope = mergeScope(defaultScope, {
@@ -2432,7 +2552,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
           })
           const chunkRef: ChunkRef = {
             bucketId: row.bucketId,
-            documentId: row.documentId,
+            sourceId: row.sourceId,
             chunkIndex: row.chunkIndex,
             embeddingModel: row.embeddingModel,
             chunkId: row.chunkId,
@@ -2759,6 +2879,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   return {
     deploy,
     addTriple,
+    addSourceSubject,
     upsertEntity,
     upsertEntities,
     resolveEntity,

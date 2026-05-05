@@ -2,13 +2,14 @@ import type { VectorStoreAdapter, HashRecord } from '../types/adapter.js'
 import type { EmbeddingProvider } from '../embedding/provider.js'
 import { embeddingModelKey } from '../embedding/provider.js'
 import type { IngestOptions, IndexResult, ExtractionFailure } from '../types/index-types.js'
-import type { RawDocument, Chunk } from '../types/connector.js'
+import type { SourceInput, Chunk } from '../types/connector.js'
 import { chunkIdFor, generateId } from '../utils/id.js'
 import { sha256, resolveIdempotencyKey, buildHashStoreKey } from './hash.js'
 import { stripMarkdown } from './strip-markdown.js'
 import type { TripleExtractor, EntityContext } from './triple-extractor.js'
 import type { typegraphEventSink } from '../types/events.js'
 import type { typegraphLogger } from '../types/logger.js'
+import type { KnowledgeGraphBridge } from '../types/graph-bridge.js'
 
 /** Race a promise against a timeout. Resolves to undefined on timeout (never rejects). */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
@@ -48,12 +49,12 @@ function sanitizeInvalidSurrogates(value: string): string {
   return out
 }
 
-function sanitizeDocument(doc: RawDocument): RawDocument {
+function sanitizeSource(source: SourceInput): SourceInput {
   return {
-    ...doc,
-    url: doc.url ?? undefined,
-    title: sanitizeText(doc.title),
-    content: sanitizeText(doc.content),
+    ...source,
+    url: source.url ?? undefined,
+    title: sanitizeText(source.title),
+    content: sanitizeText(source.content),
   }
 }
 
@@ -74,22 +75,23 @@ export class IndexEngine {
     private embedding: EmbeddingProvider,
     eventSink?: typegraphEventSink,
     logger?: typegraphLogger,
+    private knowledgeGraph?: KnowledgeGraphBridge,
   ) {
     this.eventSink = eventSink
     this.logger = logger
   }
 
   /**
-   * Ingest a document with pre-built chunks.
+   * Ingest a source with pre-built chunks.
    * Skips the default chunker - uses the provided chunks directly.
    */
   async ingestWithChunks(
     bucketId: string,
-    doc: RawDocument,
+    source: SourceInput,
     chunks: Chunk[],
     opts: IngestOptions = {},
   ): Promise<IndexResult> {
-    const cleanDoc = sanitizeDocument(doc)
+    const cleanSource = sanitizeSource(source)
     const cleanChunks = chunks.map(sanitizeChunk)
     const { tenantId, groupId, userId, agentId, conversationId, visibility, dryRun = false } = opts
     const shouldExtract = !!this.tripleExtractor && !dryRun && !!opts.graphExtraction
@@ -101,39 +103,40 @@ export class IndexEngine {
       await this.adapter.ensureModel(modelId, this.embedding.dimensions)
     }
 
-    const contentHash = sha256(cleanDoc.content)
+    const contentHash = sha256(cleanSource.content)
     const deduplicateBy = opts.deduplicateBy ?? ['url']
-    const ikey = resolveIdempotencyKey(cleanDoc, deduplicateBy)
+    const ikey = resolveIdempotencyKey(cleanSource, deduplicateBy)
 
-    let documentId = cleanDoc.id ?? generateId('doc')
-    let documentWasCreated = true
-    if (this.adapter.upsertDocumentRecord && !dryRun) {
-      const documentRecord = await this.adapter.upsertDocumentRecord({
-        id: documentId,
+    let sourceId = cleanSource.id ?? generateId('src')
+    let sourceWasCreated = true
+    if (this.adapter.upsertSourceRecord && !dryRun) {
+      const sourceRecord = await this.adapter.upsertSourceRecord({
+        id: sourceId,
         bucketId,
         tenantId,
         groupId,
         userId,
         agentId,
         conversationId,
-        title: cleanDoc.title,
-        url: cleanDoc.url ?? undefined,
+        title: cleanSource.title,
+        url: cleanSource.url ?? undefined,
         contentHash,
         chunkCount: cleanChunks.length,
         status: 'processing',
         visibility,
         graphExtracted: shouldExtract,
-        metadata: cleanDoc.metadata ?? {},
+        metadata: cleanSource.metadata ?? {},
+        subject: cleanSource.subject,
       })
-      documentId = documentRecord.id
-      documentWasCreated = documentRecord.wasCreated !== false
+      sourceId = sourceRecord.id
+      sourceWasCreated = sourceRecord.wasCreated !== false
     }
 
     try {
       const textsForEmbedding = cleanChunks.map(c => this.preprocessForEmbedding(c.content, opts))
       const embeddings = await this.embedding.embedBatch(textsForEmbedding)
 
-      const propagated = this.propagateMetadata(cleanDoc, opts.propagateMetadata)
+      const propagated = this.propagateMetadata(cleanSource, opts.propagateMetadata)
 
       const embeddedChunks = cleanChunks.map((chunk, i) => ({
         id: chunkIdFor({
@@ -149,7 +152,7 @@ export class IndexEngine {
         userId,
         agentId,
         conversationId,
-        documentId,
+        sourceId,
         content: chunk.content,
         embedding: embeddings[i]!,
         embeddingModel: modelId,
@@ -161,27 +164,40 @@ export class IndexEngine {
       }))
 
       if (!dryRun) {
-        await this.adapter.upsertDocument(modelId, embeddedChunks)
+        await this.adapter.upsertSourceChunks(modelId, embeddedChunks)
       }
+
+      const initialEntityContext = !dryRun
+        ? await this.materializeSourceSubject(
+            cleanSource,
+            bucketId,
+            sourceId,
+            modelId,
+            embeddedChunks,
+            { tenantId, groupId, userId, agentId, conversationId },
+            visibility,
+          )
+        : []
 
       let extraction: { succeeded: number; failed: number; failedChunks?: ExtractionFailure[] } | undefined
       if (shouldExtract) {
-        const documentTitle = (propagated.title as string | undefined) ?? undefined
+        const sourceTitle = (propagated.title as string | undefined) ?? undefined
         extraction = await this.extractTriplesForChunks(
           bucketId,
-          documentId,
+          sourceId,
           embeddedChunks,
           propagated,
-          documentTitle,
+          sourceTitle,
           { tenantId, groupId, userId, agentId, conversationId },
           visibility,
+          initialEntityContext,
         )
       }
 
       if (!dryRun) {
         if (extraction && extraction.failed > 0) {
-          if (this.adapter.updateDocumentStatus) {
-            await this.adapter.updateDocumentStatus(documentId, 'failed')
+          if (this.adapter.updateSourceStatus) {
+            await this.adapter.updateSourceStatus(sourceId, 'failed')
           }
 
           return {
@@ -198,8 +214,8 @@ export class IndexEngine {
           }
         }
 
-        if (this.adapter.updateDocumentStatus) {
-          await this.adapter.updateDocumentStatus(documentId, 'complete', cleanChunks.length)
+        if (this.adapter.updateSourceStatus) {
+          await this.adapter.updateSourceStatus(sourceId, 'complete', cleanChunks.length)
         }
 
         const storeKey = buildHashStoreKey(tenantId, bucketId, ikey)
@@ -220,31 +236,31 @@ export class IndexEngine {
         mode: 'upsert',
         total: 1,
         skipped: 0,
-        updated: documentWasCreated ? 0 : 1,
-        inserted: documentWasCreated ? 1 : 0,
+        updated: sourceWasCreated ? 0 : 1,
+        inserted: sourceWasCreated ? 1 : 0,
         pruned: 0,
         durationMs: Date.now() - startMs,
         extraction,
       }
     } catch (error) {
-      if (this.adapter.updateDocumentStatus && !dryRun) {
-        await this.adapter.updateDocumentStatus(documentId, 'failed')
+      if (this.adapter.updateSourceStatus && !dryRun) {
+        await this.adapter.updateSourceStatus(sourceId, 'failed')
       }
       throw error
     }
   }
 
   /**
-   * Ingest a batch of documents with pre-built chunks.
-   * All chunks across all documents are embedded in a single embedBatch call.
+   * Ingest a batch of sources with pre-built chunks.
+   * All chunks across all sources are embedded in a single embedBatch call.
    */
   async ingestBatch(
     bucketId: string,
-    items: Array<{ doc: RawDocument; chunks: Chunk[] }>,
+    items: Array<{ source: SourceInput; chunks: Chunk[] }>,
     opts: IngestOptions = {},
   ): Promise<IndexResult> {
-    const cleanItems = items.map(({ doc, chunks }) => ({
-      doc: sanitizeDocument(doc),
+    const cleanItems = items.map(({ source, chunks }) => ({
+      source: sanitizeSource(source),
       chunks: chunks.map(sanitizeChunk),
     }))
     const { tenantId, groupId, userId, agentId, conversationId, visibility, dryRun = false, traceId, spanId } = opts
@@ -256,7 +272,7 @@ export class IndexEngine {
       id: crypto.randomUUID(),
       eventType: 'index.start',
       identity: { tenantId, groupId, userId, agentId, conversationId },
-      payload: { bucketId, documentCount: cleanItems.length },
+      payload: { bucketId, sourceCount: cleanItems.length },
       traceId,
       spanId,
       timestamp: new Date(),
@@ -279,33 +295,33 @@ export class IndexEngine {
       pruned: 0,
       durationMs: 0,
     }
-    // Tracks documents whose whole processItem rejected in the concurrent path
-    // (upsertDocument throw, hashStore failure, etc.). Surfaced in index.complete.
+    // Tracks sources whose whole processItem rejected in the concurrent path
+    // (upsertSourceChunks throw, hashStore failure, etc.). Surfaced in index.complete.
     let processingFailed = 0
 
-    // Phase 1: Prepare all docs and collect all texts for a single embedBatch call
+    // Phase 1: Prepare all sources and collect all texts for a single embedBatch call
     const prepared: Array<{
-      doc: RawDocument
+      source: SourceInput
       chunks: Chunk[]
       ikey: string
       contentHash: string
-      documentId: string
-      documentWasCreated: boolean
+      sourceId: string
+      sourceWasCreated: boolean
       textOffset: number
     }> = []
     const allTexts: string[] = []
 
     // Batch hash store lookup: check all idempotency keys in a single query
-    const docMeta = cleanItems.map(({ doc }) => ({
-      doc,
-      contentHash: sha256(doc.content),
-      ikey: resolveIdempotencyKey(doc, deduplicateBy),
-      storeKey: buildHashStoreKey(tenantId, bucketId, resolveIdempotencyKey(doc, deduplicateBy)),
+    const sourceMeta = cleanItems.map(({ source }) => ({
+      source,
+      contentHash: sha256(source.content),
+      ikey: resolveIdempotencyKey(source, deduplicateBy),
+      storeKey: buildHashStoreKey(tenantId, bucketId, resolveIdempotencyKey(source, deduplicateBy)),
     }))
 
     let hashMap: Map<string, HashRecord> | undefined
     if (!dryRun) {
-      const allStoreKeys = docMeta.map(m => m.storeKey)
+      const allStoreKeys = sourceMeta.map(m => m.storeKey)
       hashMap = this.adapter.hashStore.getMany
         ? await this.adapter.hashStore.getMany(allStoreKeys)
         : undefined
@@ -313,9 +329,9 @@ export class IndexEngine {
 
     for (let i = 0; i < cleanItems.length; i++) {
       const { chunks } = cleanItems[i]!
-      const { doc, contentHash, ikey, storeKey } = docMeta[i]!
+      const { source, contentHash, ikey, storeKey } = sourceMeta[i]!
 
-      // Hash store dedup: skip docs whose content + model haven't changed
+      // Hash store dedup: skip sources whose content + model haven't changed
       if (!dryRun) {
         const stored = hashMap
           ? hashMap.get(storeKey) ?? null
@@ -337,52 +353,53 @@ export class IndexEngine {
         }
       }
 
-      let documentId = doc.id ?? generateId('doc')
-      let documentWasCreated = true
+      let sourceId = source.id ?? generateId('src')
+      let sourceWasCreated = true
 
-      if (this.adapter.upsertDocumentRecord && !dryRun) {
-        const documentRecord = await this.adapter.upsertDocumentRecord({
-          id: documentId,
+      if (this.adapter.upsertSourceRecord && !dryRun) {
+        const sourceRecord = await this.adapter.upsertSourceRecord({
+          id: sourceId,
           bucketId,
           tenantId,
           groupId,
           userId,
           agentId,
           conversationId,
-          title: doc.title,
-          url: doc.url ?? undefined,
+          title: source.title,
+          url: source.url ?? undefined,
           contentHash,
           chunkCount: chunks.length,
           status: 'processing',
           visibility,
-          graphExtracted: shouldExtract,
-          metadata: doc.metadata ?? {},
-        })
-        documentId = documentRecord.id
-        documentWasCreated = documentRecord.wasCreated !== false
+        graphExtracted: shouldExtract,
+        metadata: source.metadata ?? {},
+        subject: source.subject,
+      })
+        sourceId = sourceRecord.id
+        sourceWasCreated = sourceRecord.wasCreated !== false
       }
 
       const textOffset = allTexts.length
       const texts = chunks.map(c => this.preprocessForEmbedding(c.content, opts))
       allTexts.push(...texts)
 
-      prepared.push({ doc, chunks, ikey, contentHash, documentId, documentWasCreated, textOffset })
+      prepared.push({ source, chunks, ikey, contentHash, sourceId, sourceWasCreated, textOffset })
     }
 
-    // Phase 2: Single embedBatch call for all chunks across all documents
+    // Phase 2: Single embedBatch call for all chunks across all sources
     const allEmbeddings = allTexts.length > 0
       ? await this.embedding.embedBatch(allTexts)
       : []
 
-    // Phase 3: Per-document upsert + hash store. Graph writes are serialized
+    // Phase 3: Per-source upsert + hash store. Graph writes are serialized
     // until the graph storage layer is race-safe.
     const { concurrency = 1 } = opts
     const effectiveConcurrency = shouldExtract ? 1 : concurrency
 
     const processItem = async (item: typeof prepared[number]) => {
-      const { doc, chunks, ikey, contentHash, documentId, documentWasCreated, textOffset } = item
+      const { source, chunks, ikey, contentHash, sourceId, sourceWasCreated, textOffset } = item
       const embeddings = allEmbeddings.slice(textOffset, textOffset + chunks.length)
-      const propagated = this.propagateMetadata(doc, opts.propagateMetadata)
+      const propagated = this.propagateMetadata(source, opts.propagateMetadata)
 
       const embeddedChunks = chunks.map((chunk, i) => ({
         id: chunkIdFor({
@@ -398,7 +415,7 @@ export class IndexEngine {
         userId,
         agentId,
         conversationId,
-        documentId,
+        sourceId,
         content: chunk.content,
         embedding: embeddings[i]!,
         embeddingModel: modelId,
@@ -410,20 +427,33 @@ export class IndexEngine {
       }))
 
       if (!dryRun) {
-        await this.adapter.upsertDocument(modelId, embeddedChunks)
+        await this.adapter.upsertSourceChunks(modelId, embeddedChunks)
       }
+
+      const initialEntityContext = !dryRun
+        ? await this.materializeSourceSubject(
+            source,
+            bucketId,
+            sourceId,
+            modelId,
+            embeddedChunks,
+            { tenantId, groupId, userId, agentId, conversationId },
+            visibility,
+          )
+        : []
 
       let extraction: { succeeded: number; failed: number; failedChunks?: ExtractionFailure[] } | undefined
       if (shouldExtract) {
-        const documentTitle = (propagated.title as string | undefined) ?? undefined
+        const sourceTitle = (propagated.title as string | undefined) ?? undefined
         extraction = await this.extractTriplesForChunks(
           bucketId,
-          documentId,
+          sourceId,
           embeddedChunks,
           propagated,
-          documentTitle,
+          sourceTitle,
           { tenantId, groupId, userId, agentId, conversationId },
           visibility,
+          initialEntityContext,
         )
 
         if (!result.extraction) result.extraction = { succeeded: 0, failed: 0 }
@@ -441,16 +471,16 @@ export class IndexEngine {
       if (!dryRun) {
         if (extraction && extraction.failed > 0) {
           processingFailed++
-          if (this.adapter.updateDocumentStatus) {
-            await this.adapter.updateDocumentStatus(documentId, 'failed')
+          if (this.adapter.updateSourceStatus) {
+            await this.adapter.updateSourceStatus(sourceId, 'failed')
           }
 
           this.eventSink?.emit({
             id: crypto.randomUUID(),
-            eventType: 'index.document',
+            eventType: 'index.source',
             identity: { tenantId, groupId, userId, agentId, conversationId },
-            targetId: documentId,
-            targetType: 'document',
+            targetId: sourceId,
+            targetType: 'source',
             payload: { bucketId, chunkCount: chunks.length, status: 'failed', extraction },
             traceId,
             spanId,
@@ -459,8 +489,8 @@ export class IndexEngine {
           return
         }
 
-        if (this.adapter.updateDocumentStatus) {
-          await this.adapter.updateDocumentStatus(documentId, 'complete', chunks.length)
+        if (this.adapter.updateSourceStatus) {
+          await this.adapter.updateSourceStatus(sourceId, 'complete', chunks.length)
         }
 
         const storeKey = buildHashStoreKey(tenantId, bucketId, ikey)
@@ -475,16 +505,16 @@ export class IndexEngine {
         })
       }
 
-      if (documentWasCreated) result.inserted++
+      if (sourceWasCreated) result.inserted++
       else result.updated++
 
       this.eventSink?.emit({
         id: crypto.randomUUID(),
-        eventType: 'index.document',
+        eventType: 'index.source',
         identity: { tenantId, groupId, userId, agentId, conversationId },
-        targetId: documentId,
-        targetType: 'document',
-        payload: { bucketId, chunkCount: chunks.length, status: documentWasCreated ? 'new' : 'updated' },
+        targetId: sourceId,
+        targetType: 'source',
+        payload: { bucketId, chunkCount: chunks.length, status: sourceWasCreated ? 'new' : 'updated' },
         traceId,
         spanId,
         timestamp: new Date(),
@@ -503,13 +533,13 @@ export class IndexEngine {
       const safeProcessItem = (item: typeof prepared[number]) =>
         processItem(item).catch((err) => {
           processingFailed++
-          this.logger?.error?.('[typegraph] Document processing failed:', { documentId: item.documentId, idempotencyKey: item.ikey, error: err instanceof Error ? err.message : String(err) })
+          this.logger?.error?.('[typegraph] Source processing failed:', { sourceId: item.sourceId, idempotencyKey: item.ikey, error: err instanceof Error ? err.message : String(err) })
           this.eventSink?.emit({
             id: crypto.randomUUID(),
-            eventType: 'index.document',
+            eventType: 'index.source',
             identity: { tenantId, groupId, userId, agentId, conversationId },
-            targetId: item.documentId,
-            targetType: 'document',
+            targetId: item.sourceId,
+            targetType: 'source',
             payload: { bucketId, status: 'failed', error: err instanceof Error ? err.message : String(err) },
             traceId,
             spanId,
@@ -535,9 +565,9 @@ export class IndexEngine {
       identity: { tenantId, groupId, userId, agentId, conversationId },
       payload: {
         bucketId,
-        documentsProcessed: result.inserted + result.updated,
-        documentsSkipped: result.skipped,
-        documentsFailed: processingFailed,
+        sourcesProcessed: result.inserted + result.updated,
+        sourcesSkipped: result.skipped,
+        sourcesFailed: processingFailed,
         ...(result.extraction ? { extraction: result.extraction } : {}),
       },
       durationMs: result.durationMs,
@@ -563,10 +593,10 @@ export class IndexEngine {
 
   private async extractTriplesForChunks(
     bucketId: string,
-    documentId: string,
+    sourceId: string,
     chunks: Array<Pick<Chunk, 'content' | 'chunkIndex' | 'metadata'> & { id?: string | undefined }>,
     propagated: Record<string, unknown>,
-    documentTitle?: string,
+    sourceTitle?: string,
     identity?: {
       tenantId?: string | undefined
       groupId?: string | undefined
@@ -575,8 +605,9 @@ export class IndexEngine {
       conversationId?: string | undefined
     },
     visibility?: IngestOptions['visibility'],
+    initialEntityContext: EntityContext[] = [],
   ): Promise<{ succeeded: number; failed: number; failedChunks?: ExtractionFailure[] }> {
-    let entityContext: EntityContext[] = []
+    let entityContext: EntityContext[] = [...initialEntityContext]
     let succeeded = 0
     let failed = 0
     const failedChunks: ExtractionFailure[] = []
@@ -592,10 +623,10 @@ export class IndexEngine {
             chunk.content,
             bucketId,
             chunk.chunkIndex,
-            documentId,
+            sourceId,
             { ...propagated, ...chunk.metadata },
             contextForChunk,
-            documentTitle,
+            sourceTitle,
             identity,
             visibility,
             chunk.id,
@@ -605,8 +636,8 @@ export class IndexEngine {
 
         if (extractionResult === undefined) {
           failed++
-          failedChunks.push({ documentId, chunkIndex: chunk.chunkIndex, reason: 'timeout' })
-          this.logger?.warn?.('[typegraph] Triple extraction timed out', { documentId, chunkIndex: chunk.chunkIndex, bucketId })
+          failedChunks.push({ sourceId, chunkIndex: chunk.chunkIndex, reason: 'timeout' })
+          this.logger?.warn?.('[typegraph] Triple extraction timed out', { sourceId, chunkIndex: chunk.chunkIndex, bucketId })
           continue
         }
 
@@ -620,8 +651,8 @@ export class IndexEngine {
       } catch (err) {
         failed++
         const msg = err instanceof Error ? err.message : String(err)
-        failedChunks.push({ documentId, chunkIndex: chunk.chunkIndex, reason: 'error', message: msg })
-        this.logger?.error?.('[typegraph] Triple extraction failed', { documentId, chunkIndex: chunk.chunkIndex, bucketId, error: msg })
+        failedChunks.push({ sourceId, chunkIndex: chunk.chunkIndex, reason: 'error', message: msg })
+        this.logger?.error?.('[typegraph] Triple extraction failed', { sourceId, chunkIndex: chunk.chunkIndex, bucketId, error: msg })
       }
     }
 
@@ -641,14 +672,15 @@ export class IndexEngine {
   }
 
   private propagateMetadata(
-    doc: RawDocument,
+    source: SourceInput,
     fields?: string[]
   ): Record<string, unknown> {
     if (!fields) {
       return {
-        title: doc.title,
-        url: doc.url,
-        updatedAt: doc.updatedAt,
+        title: source.title,
+        url: source.url,
+        updatedAt: source.updatedAt,
+        ...(source.subject ? { subject: source.subject } : {}),
       }
     }
 
@@ -656,11 +688,48 @@ export class IndexEngine {
     for (const field of fields) {
       if (field.startsWith('metadata.')) {
         const key = field.slice('metadata.'.length)
-        out[key] = doc.metadata?.[key]
+        out[key] = source.metadata?.[key]
       } else {
-        out[field] = (doc as unknown as Record<string, unknown>)[field]
+        out[field] = (source as unknown as Record<string, unknown>)[field]
       }
     }
     return out
+  }
+
+  private async materializeSourceSubject(
+    source: SourceInput,
+    bucketId: string,
+    sourceId: string,
+    embeddingModel: string,
+    chunks: Array<Pick<Chunk, 'content' | 'chunkIndex' | 'metadata'> & { id?: string | undefined }>,
+    identity: {
+      tenantId?: string | undefined
+      groupId?: string | undefined
+      userId?: string | undefined
+      agentId?: string | undefined
+      conversationId?: string | undefined
+    },
+    visibility?: IngestOptions['visibility'],
+  ): Promise<EntityContext[]> {
+    if (!source.subject) return []
+    if (!this.knowledgeGraph) return []
+    if (!this.knowledgeGraph.addSourceSubject) {
+      throw new Error('KnowledgeGraphBridge must implement addSourceSubject() to ingest source.subject.')
+    }
+
+    const entity = await this.knowledgeGraph.addSourceSubject({
+      subject: source.subject,
+      bucketId,
+      sourceId,
+      embeddingModel,
+      chunks,
+      ...identity,
+      visibility,
+    })
+    const name = entity?.name ?? source.subject.name
+    const type = entity?.entityType ?? source.subject.entityType
+    return name
+      ? [{ name, type: type ?? 'concept' }]
+      : []
   }
 }

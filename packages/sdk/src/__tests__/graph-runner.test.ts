@@ -9,7 +9,7 @@ describe('GraphRunner', () => {
         chunkId: 'chunk-1',
         content: 'Adarsh Tadimari is debugging Plotline SDK initialization.',
         bucketId: 'bucket-1',
-        documentId: 'doc-1',
+        sourceId: 'source-1',
         chunkIndex: 2,
         totalChunks: 5,
         score: 0.42,
@@ -84,7 +84,7 @@ describe('GraphRunner', () => {
       expect.objectContaining({
         content: 'Adarsh Tadimari is debugging Plotline SDK initialization.',
         bucketId: 'bucket-1',
-        documentId: 'doc-1',
+        sourceId: 'source-1',
         rawScores: { graph: 0.42 },
         mode: 'graph',
         chunk: { index: 2, total: 5 },

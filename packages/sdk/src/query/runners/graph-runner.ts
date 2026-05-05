@@ -72,7 +72,7 @@ export class GraphRunner {
       results: graphResult.results.map(result => ({
         content: result.content,
         bucketId: result.bucketId,
-        documentId: result.documentId,
+        sourceId: result.sourceId,
         rawScores: { graph: result.score },
         normalizedScore: result.score,
         mode: 'graph' as const,
@@ -81,6 +81,9 @@ export class GraphRunner {
           chunkId: result.chunkId,
         },
         chunk: { index: result.chunkIndex, total: result.totalChunks ?? 1 },
+        title: result.metadata?.title as string | undefined,
+        url: result.metadata?.url as string | undefined,
+        sourceSubject: result.metadata?.subject as import('../../types/connector.js').SourceSubject | undefined,
         tenantId: result.tenantId ?? identity.tenantId,
         groupId: result.groupId,
         userId: result.userId,

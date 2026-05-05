@@ -1,5 +1,5 @@
-import type { RawDocument } from './connector.js'
-import type { Visibility } from './typegraph-document.js'
+import type { SourceInput } from './connector.js'
+import type { Visibility } from './source.js'
 
 /**
  * Options for an ingest() call.
@@ -32,12 +32,12 @@ export interface IngestOptions {
   chunkSize?: number | undefined
   chunkOverlap?: number | undefined
 
-  // Document properties (bucket-mergeable)
-  /** Access visibility for documents from this ingest call. */
+  // Source properties (bucket-mergeable)
+  /** Access visibility for sources from this ingest call. */
   visibility?: Visibility | undefined
 
   // Processing (bucket-mergeable)
-  deduplicateBy?: string[] | ((doc: RawDocument) => string) | undefined
+  deduplicateBy?: string[] | ((source: SourceInput) => string) | undefined
   propagateMetadata?: string[] | undefined
   /** If true, strip markdown syntax from chunk content before embedding. Original content is stored as-is. */
   stripMarkdownForEmbedding?: boolean | undefined
@@ -56,15 +56,15 @@ export interface IngestOptions {
   removeDeleted?: boolean | undefined
   dryRun?: boolean | undefined
   /**
-   * Controls inter-document parallelism inside a single `ingest()` call.
-   * A semaphore bounds how many documents run their storage phase concurrently.
+   * Controls inter-source parallelism inside a single `ingest()` call.
+   * A semaphore bounds how many sources run their storage phase concurrently.
    * Graph extraction is currently serialized even when this value is higher.
    *
    * Does NOT affect:
    * - Embedding batching. All chunks in the batch are sent to `embedBatch`
    *   in a single call regardless of this value.
-   * - Intra-document chunk processing. Chunks are always sequential within
-   *   a single document so cross-chunk entity context can accumulate.
+   * - Intra-source chunk processing. Chunks are always sequential within
+   *   a single source so cross-chunk entity context can accumulate.
    *
    * Default: 1 (sequential). Raise it to speed up vector-only indexing at the
    * cost of provider/database pressure.
@@ -127,7 +127,7 @@ export interface IndexResult {
 }
 
 export interface ExtractionFailure {
-  documentId: string
+  sourceId: string
   chunkIndex: number
   reason: 'timeout' | 'error'
   message?: string

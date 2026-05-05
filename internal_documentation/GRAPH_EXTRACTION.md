@@ -52,12 +52,12 @@ Embedding calls happen later when:
 
 ### Chunk
 
-A stored piece of document text in the vector index.
+A stored piece of source text in the vector index.
 
 Chunk identity is:
 
 - `bucketId`
-- `documentId`
+- `sourceId`
 - `chunkIndex`
 - optional `embeddingModel`
 - optional `chunkId`
@@ -79,7 +79,7 @@ technology
 concept
 event
 meeting
-artifact
+document
 project
 issue
 role
@@ -88,7 +88,7 @@ time_period
 creative_work
 ```
 
-`artifact` is the graph entity type for authored business materials such as contracts, RFPs, specs, reports, decks, transcripts, and plans. TypeGraph ingested documents remain storage objects with `documentId`; they are not graph entity types.
+`document` is the graph entity type for authored business materials such as contracts, RFPs, specs, reports, decks, transcripts, and plans. TypeGraph ingested sources remain storage objects with `sourceId`; they are not graph entity types.
 
 ### Fact
 
@@ -148,7 +148,7 @@ The canonical predicate vocabulary is compact on purpose:
 - People/roles/orgs: `WORKS_FOR`, `WORKS_AS`, `REPORTS_TO`, `MANAGES`, `FOUNDED`, `LEADS`, `ADVISES`, `MEMBER_OF`, `REPRESENTS`, `INVESTED_IN`, `MARRIED`, `DIVORCED`, `PARENT_OF`, `CHILD_OF`, `SIBLING_OF`, `MENTORED`
 - Business/org: `ACQUIRED`, `MERGED_WITH`, `PARTNERED_WITH`, `COMPETES_WITH`, `FUNDED`, `SUPPLIED`, `SUED`, `REGULATED_BY`, `OWNS`
 - Product/technical: `USES`, `IMPLEMENTS`, `INTEGRATES_WITH`, `REQUIRES`, `COMPATIBLE_WITH`, `MIGRATED_FROM`, `DEPLOYED_AT`, `REPLACES`, `BASED_ON`
-- Work/project/issue/artifact: `ASSIGNED_TO`, `BLOCKS`, `DUPLICATES`, `RESOLVES`, `CREATED`, `AUTHORED`, `SIGNED`, `APPROVED`, `REFERENCES`, `DESCRIBES`, `SUPPORTS`, `OPPOSES`
+- Work/project/issue/document: `ASSIGNED_TO`, `BLOCKS`, `DUPLICATES`, `RESOLVES`, `CREATED`, `AUTHORED`, `SIGNED`, `APPROVED`, `REFERENCES`, `DESCRIBES`, `SUPPORTS`, `OPPOSES`
 - Event/location/legal: `ATTENDED`, `ORGANIZED`, `SPOKE_AT`, `OCCURRED_AT`, `OCCURRED_IN`, `LOCATED_IN`, `OPERATES_IN`, `HEADQUARTERED_IN`, `GOVERNS`, `PROHIBITS`, `PERMITS`, `AMENDS`, `REPEALS`, `CAUSED`, `PRECEDED`, `FOLLOWED`
 - Historical/narrative: `KILLED`, `BETRAYED`, `RESCUED`, `EXILED_TO`, `RULED`, `CONQUERED`, `IMPRISONED_IN`, `FOUGHT_IN`
 
@@ -181,7 +181,7 @@ sequenceDiagram
     participant S as MemoryStore
 
     U->>E: ingest / ingestWithChunks
-    E->>E: sanitize document and chunks
+    E->>E: sanitize source and chunks
     E->>E: preprocess text for embeddings
     E->>E: embed chunk batch
     E->>V: upsert chunk rows
@@ -205,11 +205,11 @@ sequenceDiagram
 
 ## Step-by-Step Flow
 
-### 1. Document and chunks are sanitized
+### 1. Source and chunks are sanitized
 
 The engine sanitizes:
 
-- document fields
+- source fields
 - chunk text
 - chunk metadata
 
@@ -238,11 +238,11 @@ The engine iterates chunks in order and calls:
 TripleExtractor.extractFromChunk(...)
 ```
 
-It passes forward `entityContext` built from earlier successful chunks in the same document.
+It passes forward `entityContext` built from earlier successful chunks in the same source.
 
 ### 5. Entity context is carried across chunks
 
-`entityContext` is a bounded list of previously extracted canonical entities from the same document.
+`entityContext` is a bounded list of previously extracted canonical entities from the same source.
 
 It helps later chunks avoid duplicate entity creation when they refer to earlier entities with:
 
@@ -251,7 +251,7 @@ It helps later chunks avoid duplicate entity creation when they refer to earlier
 - shortened forms
 - pseudonyms
 
-This is not global memory. It is per-document contextual carry-forward.
+This is not global memory. It is per-source contextual carry-forward.
 
 ### 6. The extractor runs one-pass or two-pass LLM extraction
 
@@ -305,7 +305,7 @@ These rows are detailed evidence:
 
 - `entityId`
 - `bucketId`
-- `documentId`
+- `sourceId`
 - `chunkIndex`
 - `mentionType`
 - `surfaceText`
@@ -486,7 +486,7 @@ Important fields:
 
 - `entity_id`
 - `bucket_id`
-- `document_id`
+- `source_id`
 - `chunk_index`
 - `mention_type`
 - `surface_text`
@@ -591,7 +591,7 @@ await typegraph.graph.deleteEntity('ent_bad', {
 
 `mergeEntities` transactionally moves source aliases, properties, external IDs, facts, entity edges, typed graph edges, entity-chunk mentions, and memory/entity associations onto the target. It collapses duplicate records, invalidates self-edges created by the merge, and marks the source entity as `status: 'merged'` with `mergedIntoEntityId`.
 
-`deleteEntity(..., { mode: 'invalidate' })` marks the entity invalid and invalidates associated facts/edges while preserving provenance. `mode: 'purge'` physically removes entity rows and graph references. Delete never removes chunks, ingested documents, or memory records themselves.
+`deleteEntity(..., { mode: 'invalidate' })` marks the entity invalid and invalidates associated facts/edges while preserving provenance. `mode: 'purge'` physically removes entity rows and graph references. Delete never removes chunks, ingested sources, or memory records themselves.
 
 ## Latency Guardrails
 
@@ -601,7 +601,7 @@ Extraction and query performance depend on these invariants:
 - graph edges store chunk refs, not chunk content
 - external ID lookup is exact and indexed
 - graph traversal reads `typegraph_graph_edges`, not raw mention rows
-- chunk filtering uses `(bucket_id, document_id, chunk_index)`
+- chunk filtering uses `(bucket_id, source_id, chunk_index)`
 - direct semantic/keyword knowledge search does not fetch chunk content
 
 ## Cloud Backend Checklist

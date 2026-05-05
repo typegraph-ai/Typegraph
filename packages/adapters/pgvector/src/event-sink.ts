@@ -37,7 +37,7 @@ export class PgEventSink implements typegraphEventSink {
       this.flush().catch((err) => console.error('[typegraph] Event flush failed:', err instanceof Error ? err.message : err))
     }, this.flushIntervalMs)
 
-    // Start unref'd — an idle sink should never block process exit. We only
+    // Start unref's — an idle sink should never block process exit. We only
     // ref() the timer while the buffer is non-empty (see setTimerRef below),
     // so Node will wait for pending writes to drain but not for nothing.
     this.unrefTimer()

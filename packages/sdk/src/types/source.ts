@@ -1,18 +1,20 @@
-export type DocumentStatus = 'pending' | 'processing' | 'complete' | 'failed'
+import type { SourceSubject } from './connector.js'
+
+export type SourceStatus = 'pending' | 'processing' | 'complete' | 'failed'
 
 /** Who can access this record. Defines the narrowest identity level that grants access. */
 export type Visibility = 'tenant' | 'group' | 'user' | 'agent' | 'conversation'
 
-export interface typegraphDocument {
+export interface typegraphSource {
   /** UUID primary key. */
   id: string
-  /** The typegraph source that produced this document. */
+  /** The bucket that owns this source. */
   bucketId: string
   /** Multi-tenant isolation. Maps to organization_id in many apps. */
   tenantId?: string | undefined
   /** Team, channel, or project. */
   groupId?: string | undefined
-  /** Owner/creator of the document. */
+  /** Owner/creator of the source. */
   userId?: string | undefined
   /** Specific agent instance. */
   agentId?: string | undefined
@@ -23,16 +25,16 @@ export interface typegraphDocument {
   /** SHA256 of raw content at index time. Used for change detection. */
   contentHash: string
   chunkCount: number
-  status: DocumentStatus
+  status: SourceStatus
   /**
-   * Access visibility. Controls which queries can see this document.
+   * Access visibility. Controls which queries can see this source.
    * `undefined`/NULL means public — visible to any query, including unscoped ones.
    * A value of `'tenant' | 'group' | 'user' | 'agent' | 'conversation'` restricts
    * access to queries that supply a matching identity at that level.
    */
   visibility?: Visibility | undefined
   /**
-   * Whether triple extraction was run against this document during ingestion.
+   * Whether triple extraction was run against this source during ingestion.
    * Reflects "we ran extraction", not "extraction found entities" — partial failures
    * still count as true. See IndexResult.extraction for success/failure breakdown.
    */
@@ -41,29 +43,31 @@ export interface typegraphDocument {
   createdAt: Date
   updatedAt: Date
   metadata: Record<string, unknown>
+  /** Optional semantic entity this source is primary evidence for. */
+  subject?: SourceSubject | undefined
 }
 
-export interface UpsertedDocumentRecord extends typegraphDocument {
-  /** True when the document row was inserted, false when an existing canonical row was updated. */
+export interface UpsertedSourceRecord extends typegraphSource {
+  /** True when the source row was inserted, false when an existing canonical row was updated. */
   wasCreated?: boolean | undefined
 }
 
-export interface DocumentFilter {
+export interface SourceFilter {
   bucketId?: string | undefined
   tenantId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
   conversationId?: string | undefined
-  status?: DocumentStatus | DocumentStatus[] | undefined
+  status?: SourceStatus | SourceStatus[] | undefined
   visibility?: Visibility | Visibility[] | undefined
-  documentIds?: string[] | undefined
-  /** Filter documents by whether triple extraction ran during ingestion. */
+  sourceIds?: string[] | undefined
+  /** Filter sources by whether triple extraction ran during ingestion. */
   graphExtracted?: boolean | undefined
 }
 
-export interface UpsertDocumentInput {
-  /** Prefixed document ID (e.g. doc_550e8400...). Must be provided by caller. */
+export interface UpsertSourceInput {
+  /** Prefixed source ID (e.g. src_550e8400...). Must be provided by caller. */
   id: string
   bucketId: string
   tenantId?: string | undefined
@@ -75,9 +79,10 @@ export interface UpsertDocumentInput {
   url?: string | undefined
   contentHash: string
   chunkCount: number
-  status: DocumentStatus
+  status: SourceStatus
   visibility?: Visibility | undefined
-  /** Whether triple extraction ran against this document. Defaults to false. */
+  /** Whether triple extraction ran against this source. Defaults to false. */
   graphExtracted?: boolean | undefined
   metadata?: Record<string, unknown> | undefined
+  subject?: SourceSubject | undefined
 }

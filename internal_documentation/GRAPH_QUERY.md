@@ -85,7 +85,7 @@ technology
 concept
 event
 meeting
-artifact
+document
 project
 issue
 role
@@ -94,16 +94,16 @@ time_period
 creative_work
 ```
 
-`artifact` is used for extracted business materials. TypeGraph ingested documents are storage records and chunks, not graph entities.
+`document` is used for extracted business materials. TypeGraph ingested sources are storage records and chunks, not graph entities.
 
 ### Chunk
 
-A stored piece of document text in the vector adapter. Chunks are the only text readout surface for query results.
+A stored piece of source text in the vector adapter. Chunks are the only text readout surface for query results.
 
 Chunk identity is:
 
 - `bucketId`
-- `documentId`
+- `sourceId`
 - `chunkIndex`
 - optional `embeddingModel`
 - optional stable `chunkId`
@@ -115,7 +115,7 @@ A lightweight pointer to a chunk:
 ```ts
 interface ChunkRef {
   bucketId: string
-  documentId: string
+  sourceId: string
   chunkIndex: number
   embeddingModel?: string
   chunkId?: string
@@ -432,7 +432,7 @@ The graph bridge does not own chunk content.
 `GraphRunner` converts graph chunks into retrieval candidates. The planner merges graph, semantic, keyword, and memory candidates by stable chunk identity:
 
 ```txt
-bucketId + documentId + chunkIndex
+bucketId + sourceId + chunkIndex
 ```
 
 ## Trace Fields
@@ -469,7 +469,7 @@ Query latency depends on keeping scope and chunk operations exact and indexed:
 - resolved entity IDs are deduped
 - entity status/invalidity filters should be applied before traversal or direct fact search
 - chunk filtering happens before vector/keyword ranking through `ChunkFilter.chunkRefs`
-- pgvector has an index on `(bucket_id, document_id, chunk_index)`
+- pgvector has an index on `(bucket_id, source_id, chunk_index)`
 - graph traversal reads aggregated `typegraph_graph_edges`, not raw mention rows
 - graph APIs never fetch chunk content for direct knowledge search
 

@@ -1,5 +1,6 @@
 export type {
-  RawDocument,
+  SourceInput,
+  SourceSubject,
   ChunkOpts,
   Chunk,
 } from './connector.js'
@@ -18,7 +19,7 @@ export type {
   ChunkRef,
   ChunkFilter,
   ScoredChunk,
-} from './document.js'
+} from './chunk.js'
 
 export type {
   SearchOpts,
@@ -26,7 +27,7 @@ export type {
   HashStoreAdapter,
   VectorStoreAdapter,
   UndeployResult,
-  ScoredChunkWithDocument,
+  ScoredChunkWithSource,
 } from './adapter.js'
 
 export type {
@@ -56,13 +57,13 @@ export type {
 export { IndexError } from './index-types.js'
 
 export type {
-  typegraphDocument,
-  DocumentStatus,
+  typegraphSource,
+  SourceStatus,
   Visibility,
-  DocumentFilter,
-  UpsertDocumentInput,
-  UpsertedDocumentRecord,
-} from './typegraph-document.js'
+  SourceFilter,
+  UpsertSourceInput,
+  UpsertedSourceRecord,
+} from './source.js'
 
 export type { typegraphHooks } from './hooks.js'
 

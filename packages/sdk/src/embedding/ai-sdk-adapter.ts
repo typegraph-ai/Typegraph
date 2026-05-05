@@ -20,7 +20,7 @@ import type { EmbeddingProvider } from './provider.js'
  * const embedding: AISDKEmbeddingInput = {
  *   model: gateway.embeddingModel('voyage/voyage-4-large'),
  *   dimensions: 512,
- *   providerOptions: { voyage: { outputDimension: 512, inputType: 'document' } },
+ *   providerOptions: { voyage: { outputDimension: 512, inputType: 'source' } },
  * }
  * ```
  */

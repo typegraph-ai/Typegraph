@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { sha256, resolveIdempotencyKey, buildHashStoreKey } from '../index-engine/hash.js'
-import { createTestDocument } from './helpers/mock-connector.js'
+import { createTestSource } from './helpers/mock-connector.js'
 
 describe('sha256', () => {
   it('returns 64-char hex string', () => {
@@ -20,33 +20,33 @@ describe('sha256', () => {
 
 describe('resolveIdempotencyKey', () => {
   it('resolves field-based spec', () => {
-    const doc = createTestDocument({ url: 'https://example.com/page' })
-    const key = resolveIdempotencyKey(doc, ['url'])
+    const source = createTestSource({ url: 'https://example.com/page' })
+    const key = resolveIdempotencyKey(source, ['url'])
     expect(key).toBe('https://example.com/page')
   })
 
   it('resolves multi-field spec joined by ::', () => {
-    const doc = createTestDocument({ id: 'doc-1', url: 'https://example.com/page' })
-    const key = resolveIdempotencyKey(doc, ['id', 'url'])
-    expect(key).toBe('doc-1::https://example.com/page')
+    const source = createTestSource({ id: 'source-1', url: 'https://example.com/page' })
+    const key = resolveIdempotencyKey(source, ['id', 'url'])
+    expect(key).toBe('source-1::https://example.com/page')
   })
 
   it('resolves metadata fields', () => {
-    const doc = createTestDocument({ metadata: { category: 'tech' } })
-    const key = resolveIdempotencyKey(doc, ['metadata.category'])
+    const source = createTestSource({ metadata: { category: 'tech' } })
+    const key = resolveIdempotencyKey(source, ['metadata.category'])
     expect(key).toBe('tech')
   })
 
   it('returns empty string for missing fields', () => {
-    const doc = createTestDocument({ metadata: {} })
-    const key = resolveIdempotencyKey(doc, ['metadata.nonexistent'])
+    const source = createTestSource({ metadata: {} })
+    const key = resolveIdempotencyKey(source, ['metadata.nonexistent'])
     expect(key).toBe('')
   })
 
   it('supports function-based spec', () => {
-    const doc = createTestDocument({ id: 'doc-1' })
-    const key = resolveIdempotencyKey(doc, (d) => `custom-${d.id}`)
-    expect(key).toBe('custom-doc-1')
+    const source = createTestSource({ id: 'source-1' })
+    const key = resolveIdempotencyKey(source, (d) => `custom-${d.id}`)
+    expect(key).toBe('custom-source-1')
   })
 })
 

@@ -2,7 +2,7 @@
 
 Postgres + [pgvector](https://github.com/pgvector/pgvector) storage for TypeGraph.
 
-This adapter provides document/chunk storage, vector search, BM25 keyword search, hybrid retrieval, jobs, events, policies, and the memory/graph backing store used by TypeGraph graph and memory features.
+This adapter provides source/chunk storage, vector search, BM25 keyword search, hybrid retrieval, jobs, events, policies, and the memory/graph backing store used by TypeGraph graph and memory features.
 
 For complete setup instructions, see [Self-Hosted Initialization](https://typegraph.ai/docs/guides/self-hosted-initialization).
 
@@ -115,7 +115,7 @@ new PgVectorAdapter({
   schema: 'public',
   tablePrefix: 'typegraph_chunks',
   hashesTable: 'typegraph_hashes',
-  documentsTable: 'typegraph_documents',
+  sourcesTable: 'typegraph_sources',
   bucketsTable: 'typegraph_buckets',
   jobsTable: 'typegraph_jobs',
 })
@@ -130,7 +130,7 @@ Most projects only need `sql`. Use `schema` or table overrides when sharing a da
 | `PgVectorAdapter` | Main Postgres + pgvector adapter |
 | `PgMemoryStoreAdapter` | Persistent memory/entity/fact/passage backing store |
 | `PgHashStore` | Content-hash deduplication store |
-| `PgDocumentStore` | Document CRUD store |
+| `PgSourceStore` | Source CRUD store |
 | `PgJobStore` | Job tracking store |
 | `PgEventSink` | Event sink for query/index telemetry |
 | `PgPolicyStore` | Policy storage |

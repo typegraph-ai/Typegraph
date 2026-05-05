@@ -16,7 +16,7 @@ export type typegraphEventType =
   // Indexing
   | 'index.start'
   | 'index.complete'
-  | 'index.document'
+  | 'index.source'
   // Extraction
   | 'extraction.facts'
   | 'extraction.contradiction'
@@ -27,9 +27,9 @@ export type typegraphEventType =
   | 'bucket.create'
   | 'bucket.update'
   | 'bucket.delete'
-  // Document lifecycle
-  | 'document.update'
-  | 'document.delete'
+  // Source lifecycle
+  | 'source.update'
+  | 'source.delete'
   // Governance
   | 'policy.create'
   | 'policy.update'
@@ -43,10 +43,10 @@ export interface typegraphEvent {
   eventType: typegraphEventType
   /** Identity context for who/what triggered the event. */
   identity: typegraphIdentity
-  /** ID of the target object (memory, entity, edge, document, bucket). */
+  /** ID of the target object (memory, entity, edge, source, bucket). */
   targetId?: string | undefined
   /** Type of the target object. */
-  targetType?: 'memory' | 'entity' | 'edge' | 'document' | 'bucket' | undefined
+  targetType?: 'memory' | 'entity' | 'edge' | 'source' | 'bucket' | undefined
   /** Arbitrary event payload (scores, counts, error messages, etc.). */
   payload: Record<string, unknown>
   /** Duration of the operation in milliseconds. */

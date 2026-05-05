@@ -1,6 +1,6 @@
 import type { VectorStoreAdapter, HashStoreAdapter, SearchOpts, HashRecord, UndeployResult } from '../../types/adapter.js'
-import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '../../types/document.js'
-import type { typegraphDocument, DocumentStatus, DocumentFilter, UpsertDocumentInput, UpsertedDocumentRecord } from '../../types/typegraph-document.js'
+import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '../../types/chunk.js'
+import type { typegraphSource, SourceStatus, SourceFilter, UpsertSourceInput, UpsertedSourceRecord } from '../../types/source.js'
 import { createHash } from 'crypto'
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -23,7 +23,7 @@ function matchesFilter(chunk: EmbeddedChunk, filter: ChunkFilter): boolean {
     if (filter.chunkRefs.length === 0) return false
     const matched = filter.chunkRefs.some(ref =>
       ref.bucketId === chunk.bucketId &&
-      ref.documentId === chunk.documentId &&
+      ref.sourceId === chunk.sourceId &&
       ref.chunkIndex === chunk.chunkIndex &&
       (ref.embeddingModel == null || ref.embeddingModel === chunk.embeddingModel)
     )
@@ -34,7 +34,7 @@ function matchesFilter(chunk: EmbeddedChunk, filter: ChunkFilter): boolean {
   if (filter.userId && chunk.userId !== filter.userId) return false
   if (filter.agentId && chunk.agentId !== filter.agentId) return false
   if (filter.conversationId && chunk.conversationId !== filter.conversationId) return false
-  if (filter.documentId && chunk.documentId !== filter.documentId) return false
+  if (filter.sourceId && chunk.sourceId !== filter.sourceId) return false
   if (filter.idempotencyKey && chunk.idempotencyKey !== filter.idempotencyKey) return false
   if (filter.metadata) {
     for (const [k, v] of Object.entries(filter.metadata)) {
@@ -114,21 +114,21 @@ export interface MockAdapterCall {
 export function createMockAdapter(): VectorStoreAdapter & {
   calls: MockAdapterCall[]
   _chunks: Map<string, EmbeddedChunk[]>
-  _documents: Map<string, typegraphDocument>
+  _sources: Map<string, typegraphSource>
 } {
   const chunks = new Map<string, EmbeddedChunk[]>()
-  const documents = new Map<string, typegraphDocument>()
+  const sources = new Map<string, typegraphSource>()
   const calls: MockAdapterCall[] = []
   const hashStore = createMockHashStore()
 
   const adapter: VectorStoreAdapter & {
     calls: MockAdapterCall[]
     _chunks: Map<string, EmbeddedChunk[]>
-    _documents: Map<string, typegraphDocument>
+    _sources: Map<string, typegraphSource>
   } = {
     calls,
     _chunks: chunks,
-    _documents: documents,
+    _sources: sources,
     hashStore,
 
     async deploy() {
@@ -155,8 +155,8 @@ export function createMockAdapter(): VectorStoreAdapter & {
       }
     },
 
-    async upsertDocument(model: string, newChunks: EmbeddedChunk[]) {
-      calls.push({ method: 'upsertDocument', args: [model, newChunks] })
+    async upsertSourceChunks(model: string, newChunks: EmbeddedChunk[]) {
+      calls.push({ method: 'upsertSourceChunks', args: [model, newChunks] })
       if (!chunks.has(model)) {
         chunks.set(model, [])
       }
@@ -245,19 +245,19 @@ export function createMockAdapter(): VectorStoreAdapter & {
       return store.filter(c => matchesFilter(c, filter)).length
     },
 
-    async upsertDocumentRecord(input: UpsertDocumentInput): Promise<UpsertedDocumentRecord> {
-      calls.push({ method: 'upsertDocumentRecord', args: [input] })
-      const existing = [...documents.values()].find(doc =>
-        doc.bucketId === input.bucketId &&
-        doc.tenantId === input.tenantId &&
-        doc.contentHash === input.contentHash
+    async upsertSourceRecord(input: UpsertSourceInput): Promise<UpsertedSourceRecord> {
+      calls.push({ method: 'upsertSourceRecord', args: [input] })
+      const existing = [...sources.values()].find(source =>
+        source.bucketId === input.bucketId &&
+        source.tenantId === input.tenantId &&
+        source.contentHash === input.contentHash
       )
       const id = existing?.id ?? input.id ?? createHash('sha256')
         .update(`${input.bucketId}::${input.tenantId ?? ''}::${input.contentHash}`)
         .digest('hex')
         .slice(0, 16)
       const now = new Date()
-      const doc: typegraphDocument = {
+      const source: typegraphSource = {
         id,
         bucketId: input.bucketId,
         tenantId: input.tenantId,
@@ -271,23 +271,25 @@ export function createMockAdapter(): VectorStoreAdapter & {
         userId: input.userId,
         agentId: input.agentId,
         conversationId: input.conversationId,
+        graphExtracted: input.graphExtracted ?? false,
         indexedAt: now,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
         metadata: input.metadata ?? {},
+        subject: input.subject,
       }
-      documents.set(id, doc)
-      return { ...doc, wasCreated: !existing }
+      sources.set(id, source)
+      return { ...source, wasCreated: !existing }
     },
 
-    async getDocument(id: string): Promise<typegraphDocument | null> {
-      calls.push({ method: 'getDocument', args: [id] })
-      return documents.get(id) ?? null
+    async getSource(id: string): Promise<typegraphSource | null> {
+      calls.push({ method: 'getSource', args: [id] })
+      return sources.get(id) ?? null
     },
 
-    async listDocuments(filter: DocumentFilter): Promise<typegraphDocument[]> {
-      calls.push({ method: 'listDocuments', args: [filter] })
-      return [...documents.values()].filter(d => {
+    async listSources(filter: SourceFilter): Promise<typegraphSource[]> {
+      calls.push({ method: 'listSources', args: [filter] })
+      return [...sources.values()].filter(d => {
         if (filter.bucketId && d.bucketId !== filter.bucketId) return false
         if (filter.tenantId && d.tenantId !== filter.tenantId) return false
         if (filter.status) {
@@ -298,41 +300,41 @@ export function createMockAdapter(): VectorStoreAdapter & {
       })
     },
 
-    async deleteDocuments(filter: DocumentFilter): Promise<number> {
-      calls.push({ method: 'deleteDocuments', args: [filter] })
+    async deleteSources(filter: SourceFilter): Promise<number> {
+      calls.push({ method: 'deleteSources', args: [filter] })
       let count = 0
-      for (const [id, d] of documents) {
+      for (const [id, d] of sources) {
         let match = true
         if (filter.bucketId && d.bucketId !== filter.bucketId) match = false
         if (filter.tenantId && d.tenantId !== filter.tenantId) match = false
         if (match) {
-          documents.delete(id)
+          sources.delete(id)
           count++
         }
       }
       return count
     },
 
-    async updateDocumentStatus(id: string, status: DocumentStatus, chunkCount?: number) {
-      calls.push({ method: 'updateDocumentStatus', args: [id, status, chunkCount] })
-      const doc = documents.get(id)
-      if (doc) {
-        doc.status = status
-        if (chunkCount !== undefined) doc.chunkCount = chunkCount
-        doc.updatedAt = new Date()
+    async updateSourceStatus(id: string, status: SourceStatus, chunkCount?: number) {
+      calls.push({ method: 'updateSourceStatus', args: [id, status, chunkCount] })
+      const source = sources.get(id)
+      if (source) {
+        source.status = status
+        if (chunkCount !== undefined) source.chunkCount = chunkCount
+        source.updatedAt = new Date()
       }
     },
 
     async getChunksByRange(
       model: string,
-      documentId: string,
+      sourceId: string,
       fromIndex: number,
       toIndex: number
     ): Promise<ScoredChunk[]> {
-      calls.push({ method: 'getChunksByRange', args: [model, documentId, fromIndex, toIndex] })
+      calls.push({ method: 'getChunksByRange', args: [model, sourceId, fromIndex, toIndex] })
       const store = chunks.get(model) ?? []
       return store
-        .filter(c => c.documentId === documentId && c.chunkIndex >= fromIndex && c.chunkIndex <= toIndex)
+        .filter(c => c.sourceId === sourceId && c.chunkIndex >= fromIndex && c.chunkIndex <= toIndex)
         .map(c => ({ ...c, scores: { semantic: 0 } }))
         .sort((a, b) => a.chunkIndex - b.chunkIndex)
     },

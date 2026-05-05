@@ -7,7 +7,7 @@ import { createTestDocument, createTestDocuments } from './helpers/mock-connecto
 import type { typegraphInstance } from '../typegraph.js'
 import type { Bucket } from '../types/bucket.js'
 import type { EmbeddingProvider } from '../embedding/provider.js'
-import type { EntityResult, GraphExploreResult, KnowledgeGraphBridge } from '../types/graph-bridge.js'
+import type { EntityDetail, EntityResult, GraphExploreResult, KnowledgeGraphBridge } from '../types/graph-bridge.js'
 
 /** Register a pre-built Bucket + embedding on an instance (bypasses buckets.create UUID generation). */
 function registerTestBucket(instance: typegraphInstance, bucket: Bucket, embedding: EmbeddingProvider) {
@@ -97,6 +97,39 @@ describe('typegraphInit', () => {
     })
   })
 
+  describe('graph seeding', () => {
+    it('forwards entity seeding to the knowledge graph bridge', async () => {
+      const seeded: EntityDetail = {
+        id: 'ent_alice',
+        name: 'Alice',
+        entityType: 'person',
+        aliases: [],
+        externalIds: [{ id: 'alice@example.com', type: 'email', identityType: 'user', encoding: 'none' }],
+        edgeCount: 0,
+        properties: {},
+        createdAt: new Date(),
+        topEdges: [],
+      }
+      const knowledgeGraph: KnowledgeGraphBridge = {
+        upsertEntity: vi.fn().mockResolvedValue(seeded),
+      }
+      const inst = await typegraphInit({ vectorStore: adapter, embedding, knowledgeGraph })
+
+      const result = await inst.graph.upsertEntity({
+        name: 'Alice',
+        entityType: 'person',
+        externalIds: [{ id: 'alice@example.com', type: 'email', identityType: 'user' }],
+      })
+
+      expect(knowledgeGraph.upsertEntity).toHaveBeenCalledWith({
+        name: 'Alice',
+        entityType: 'person',
+        externalIds: [{ id: 'alice@example.com', type: 'email', identityType: 'user' }],
+      })
+      expect(result).toEqual(seeded)
+    })
+  })
+
   describe('graph.searchEntities', () => {
     it('preserves bridge-provided aliases and edge counts', async () => {
       const identity = { userId: 'test-user' }
@@ -181,9 +214,9 @@ describe('typegraphInit', () => {
             name: 'WORKS_FOR',
             confidence: 0.95,
           }],
-          answerSide: 'source',
           subqueries: ['plotline employees'],
           mode: 'relationship',
+          strictness: 'soft',
         },
         anchors: [{
           id: 'ent_plotline',

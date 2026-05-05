@@ -4,9 +4,9 @@ import { embeddingModelKey } from '../embedding/provider.js'
 import type { typegraphIdentity } from '../types/identity.js'
 import type { EmbeddingConfig } from '../types/bucket.js'
 import type { LLMConfig, LLMProvider } from '../types/llm-provider.js'
-import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, PassageResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent } from '../types/graph-bridge.js'
+import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, PassageResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput } from '../types/graph-bridge.js'
 import { resolveEmbeddingProvider, resolveLLMProvider } from '../typegraph.js'
-import type { MemoryStoreAdapter, SemanticEdge, SemanticEntity, SemanticEntityMention, SemanticFactRecord, SemanticPassageEntityEdge } from '../memory/types/index.js'
+import type { ExternalId, MemoryStoreAdapter, SemanticEdge, SemanticEntity, SemanticEntityMention, SemanticFactRecord, SemanticPassageEntityEdge } from '../memory/types/index.js'
 import { EntityResolver, PredicateNormalizer, createTemporal } from '../memory/index.js'
 import { EmbeddedGraph } from './graph/embedded-graph.js'
 import { parseGraphQueryIntent } from './query-intent.js'
@@ -377,13 +377,21 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     ]).join('\n')
   }
 
+  function passageIntentSearchText(intent: GraphQueryIntent, fallbackQuery: string): string {
+    return uniqueIds([
+      fallbackQuery,
+      ...intent.sourceEntityQueries,
+      ...intent.targetEntityQueries,
+    ]).join('\n')
+  }
+
   function graphIntentIsEmpty(intent: GraphQueryIntent): boolean {
     return (
       intent.sourceEntityQueries.length === 0 &&
       intent.targetEntityQueries.length === 0 &&
       intent.predicates.length === 0 &&
       intent.subqueries.length === 0 &&
-      intent.answerSide === 'none'
+      intent.strictness === 'none'
     )
   }
 
@@ -512,6 +520,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         name: entity.name,
         entityType: entity.entityType,
         aliases: entity.aliases,
+        externalIds: entity.externalIds,
         ...(typeof (similarityById?.get(entity.id) ?? inlineSimilarity) === 'number'
           ? { similarity: similarityById?.get(entity.id) ?? inlineSimilarity }
           : {}),
@@ -580,6 +589,386 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   // Track entities per chunk for co-occurrence edge creation
   const chunkEntityMap = new Map<string, Set<string>>()
   const directEdgePairs = new Set<string>()
+
+  function scopeFrom(input?: typegraphIdentity): typegraphIdentity {
+    return mergeScope(defaultScope, {
+      tenantId: input?.tenantId,
+      groupId: input?.groupId,
+      userId: input?.userId,
+      agentId: input?.agentId,
+      conversationId: input?.conversationId,
+    })
+  }
+
+  function mergeSeedScope(parent: typegraphIdentity | undefined, child?: typegraphIdentity): typegraphIdentity {
+    return mergeScope(parent ? scopeFrom(parent) : defaultScope, {
+      tenantId: child?.tenantId,
+      groupId: child?.groupId,
+      userId: child?.userId,
+      agentId: child?.agentId,
+      conversationId: child?.conversationId,
+    })
+  }
+
+  function normalizeExternalId(input: ExternalId): ExternalId | undefined {
+    const type = input.type.trim().toLowerCase()
+    const id = normalizeExternalIdValue(input.id, type, input.encoding ?? 'none')
+    if (!id || !type) return undefined
+    return {
+      ...input,
+      id,
+      type,
+      encoding: input.encoding ?? 'none',
+    }
+  }
+
+  function normalizeExternalIdValue(id: string, type: string, encoding: ExternalId['encoding']): string {
+    const trimmed = id.trim()
+    if (encoding === 'sha256') return trimmed.toLowerCase()
+    if (type === 'email' || type.endsWith('_email') || type === 'github_handle') return trimmed.toLowerCase()
+    if (type === 'phone') return trimmed.replace(/[^\d+]/g, '')
+    return trimmed
+  }
+
+  function externalIdKey(externalId: ExternalId): string {
+    return [
+      externalId.identityType,
+      externalId.type.trim().toLowerCase(),
+      externalId.id.trim(),
+      externalId.encoding ?? 'none',
+    ].join('|')
+  }
+
+  function normalizeExternalIds(externalIds: ExternalId[] | undefined): ExternalId[] {
+    const byKey = new Map<string, ExternalId>()
+    for (const externalId of externalIds ?? []) {
+      const normalized = normalizeExternalId(externalId)
+      if (!normalized) continue
+      byKey.set(externalIdKey(normalized), normalized)
+    }
+    return [...byKey.values()]
+  }
+
+  function mergeExternalIds(
+    existing: ExternalId[] | undefined,
+    incoming: ExternalId[] | undefined,
+  ): ExternalId[] | undefined {
+    const merged = new Map<string, ExternalId>()
+    for (const externalId of normalizeExternalIds(existing)) {
+      merged.set(externalIdKey(externalId), externalId)
+    }
+    for (const externalId of normalizeExternalIds(incoming)) {
+      merged.set(externalIdKey(externalId), externalId)
+    }
+    return merged.size > 0 ? [...merged.values()] : undefined
+  }
+
+  function refExternalIds(ref: GraphEntityRef): ExternalId[] {
+    return normalizeExternalIds([
+      ...(ref.externalId ? [ref.externalId] : []),
+      ...(ref.externalIds ?? []),
+    ])
+  }
+
+  async function findEntityByExternalIds(
+    externalIds: ExternalId[],
+    scope: typegraphIdentity,
+  ): Promise<SemanticEntity | undefined> {
+    if (!memoryStore.findEntityByExternalId || externalIds.length === 0) return undefined
+    let found: SemanticEntity | undefined
+    for (const externalId of externalIds) {
+      const entity = await memoryStore.findEntityByExternalId(externalId, scope)
+      if (!entity) continue
+      if (found && found.id !== entity.id) {
+        throw new Error(`External IDs resolve to multiple entities: ${found.id} and ${entity.id}`)
+      }
+      found = entity
+    }
+    return found
+  }
+
+  async function linkExternalIdsToEntity(
+    entityId: string,
+    externalIds: ExternalId[],
+    scope: typegraphIdentity,
+  ): Promise<void> {
+    const normalized = normalizeExternalIds(externalIds)
+    if (normalized.length === 0) return
+    if (!memoryStore.upsertEntityExternalIds) {
+      throw new Error('MemoryStoreAdapter does not support deterministic entity external IDs')
+    }
+    if (memoryStore.findEntityByExternalId) {
+      for (const externalId of normalized) {
+        const existing = await memoryStore.findEntityByExternalId(externalId, scope)
+        if (existing && existing.id !== entityId) {
+          throw new Error(
+            `External ID ${externalId.identityType}:${externalId.type}:${externalId.id} is already linked to entity ${existing.id}`,
+          )
+        }
+      }
+    }
+    await memoryStore.upsertEntityExternalIds(entityId, normalized, scope)
+  }
+
+  function entityResultFromSemanticEntity(entity: SemanticEntity, edgeCount: number): EntityDetail {
+    return {
+      id: entity.id,
+      name: entity.name,
+      entityType: entity.entityType,
+      aliases: entity.aliases,
+      externalIds: entity.externalIds,
+      edgeCount,
+      properties: entity.properties,
+      description: entity.properties.description as string | undefined,
+      createdAt: entity.temporal.createdAt,
+      validAt: entity.temporal.validAt,
+      invalidAt: entity.temporal.invalidAt,
+      topEdges: [],
+    }
+  }
+
+  async function upsertSeedEntity(input: UpsertGraphEntityInput): Promise<SemanticEntity> {
+    if (!input.name?.trim()) throw new Error('upsertEntity requires a non-empty name')
+    const scope = scopeFrom(input)
+    const externalIds = normalizeExternalIds(input.externalIds)
+    let entity: SemanticEntity | undefined
+
+    if (input.id) {
+      entity = await graph.getEntity(input.id, scope) ?? undefined
+      const externalMatch = await findEntityByExternalIds(externalIds, scope)
+      if (externalMatch && externalMatch.id !== input.id) {
+        throw new Error(`External IDs resolve to entity ${externalMatch.id}, not requested entity ${input.id}`)
+      }
+      entity = entity ?? externalMatch
+    } else {
+      entity = await findEntityByExternalIds(externalIds, scope)
+    }
+
+    if (entity) {
+      entity = await resolver.merge(entity, {
+        name: input.name,
+        entityType: input.entityType ?? 'entity',
+        aliases: input.aliases ?? [],
+        description: input.description,
+        externalIds,
+      })
+    } else if (input.id) {
+      const embeddingVector = await embedding.embed(input.name)
+      const descriptionEmbedding = input.description
+        ? await embedding.embed(input.description)
+        : undefined
+      entity = {
+        id: input.id,
+        name: input.name,
+        entityType: input.entityType ?? 'entity',
+        aliases: input.aliases ?? [],
+        externalIds,
+        properties: input.description ? { description: input.description } : {},
+        embedding: embeddingVector,
+        descriptionEmbedding,
+        scope,
+        visibility: input.visibility,
+        temporal: createTemporal(),
+      }
+    } else {
+      const resolved = await resolver.resolve(
+        input.name,
+        input.entityType ?? 'entity',
+        input.aliases ?? [],
+        scope,
+        input.description,
+        input.visibility,
+        externalIds,
+      )
+      entity = resolved.entity
+    }
+
+    entity = {
+      ...entity,
+      externalIds: mergeExternalIds(entity.externalIds, externalIds),
+      properties: {
+        ...entity.properties,
+        ...(input.properties ?? {}),
+      },
+      scope,
+      visibility: input.visibility ?? entity.visibility,
+    }
+    if (input.description && !entity.properties.description) {
+      entity.properties.description = input.description
+    }
+
+    await graph.addEntity(entity)
+    await linkExternalIdsToEntity(entity.id, externalIds, scope)
+    return entity
+  }
+
+  async function resolveEntityForRead(
+    ref: GraphEntityRef | string,
+    identity?: typegraphIdentity,
+  ): Promise<SemanticEntity | null> {
+    const scope = scopeFrom(identity)
+    if (typeof ref === 'string') return graph.getEntity(ref, scope)
+    const refScope = mergeSeedScope(scope, ref)
+    if (ref.id) {
+      const byId = await graph.getEntity(ref.id, refScope)
+      if (byId) return byId
+    }
+    const byExternalId = await findEntityByExternalIds(refExternalIds(ref), refScope)
+    if (byExternalId) return byExternalId
+    if (!ref.name?.trim()) return null
+    if (memoryStore.findEntities) {
+      const candidates = await memoryStore.findEntities(ref.name, refScope, 10)
+      return candidates.find(candidate =>
+        candidate.name.toLowerCase() === ref.name!.toLowerCase()
+        && (!ref.entityType || candidate.entityType === ref.entityType)
+      ) ?? null
+    }
+    return null
+  }
+
+  async function resolveEntityForWrite(
+    ref: GraphEntityRef | string,
+    parentScope: typegraphIdentity,
+    visibility?: import('../types/typegraph-document.js').Visibility,
+  ): Promise<SemanticEntity> {
+    if (typeof ref === 'string') {
+      const entity = await graph.getEntity(ref, parentScope)
+      if (entity) return entity
+      return upsertSeedEntity({
+        name: ref,
+        entityType: 'entity',
+        tenantId: parentScope.tenantId,
+        groupId: parentScope.groupId,
+        userId: parentScope.userId,
+        agentId: parentScope.agentId,
+        conversationId: parentScope.conversationId,
+        visibility,
+      })
+    }
+    const refScope = mergeSeedScope(parentScope, ref)
+    if (ref.id && !ref.name) {
+      const existing = await graph.getEntity(ref.id, refScope)
+      if (!existing) throw new Error(`Entity not found: ${ref.id}`)
+      const externalIds = refExternalIds(ref)
+      await linkExternalIdsToEntity(existing.id, externalIds, refScope)
+      return { ...existing, externalIds: mergeExternalIds(existing.externalIds, externalIds) }
+    }
+    if (!ref.name?.trim()) {
+      const resolved = await resolveEntityForRead(ref, refScope)
+      if (!resolved) throw new Error('Entity reference requires id, externalId, or name')
+      return resolved
+    }
+    return upsertSeedEntity({
+      id: ref.id,
+      name: ref.name,
+      entityType: ref.entityType,
+      aliases: ref.aliases,
+      description: ref.description,
+      properties: ref.properties,
+      externalIds: refExternalIds(ref),
+      tenantId: refScope.tenantId,
+      groupId: refScope.groupId,
+      userId: refScope.userId,
+      agentId: refScope.agentId,
+      conversationId: refScope.conversationId,
+      visibility: ref.visibility ?? visibility,
+    })
+  }
+
+  async function upsertRelation(input: {
+    source: GraphEntityRef | string
+    target: GraphEntityRef | string
+    relation: string
+    scope: typegraphIdentity
+    visibility?: import('../types/typegraph-document.js').Visibility | undefined
+    weight?: number | undefined
+    properties?: Record<string, unknown> | undefined
+    description?: string | undefined
+    evidenceText?: string | undefined
+    sourceChunkId?: string | undefined
+    factText?: string | undefined
+  }): Promise<{ edge: SemanticEdge; fact?: SemanticFactRecord | undefined; source: SemanticEntity; target: SemanticEntity }> {
+    const normalizedRelation = predicateNormalizer.normalizeWithDirection(input.relation)
+    if (!normalizedRelation.valid || GENERIC_PREDICATES.has(normalizedRelation.predicate)) {
+      throw new Error(`Invalid or too-generic graph relation: ${input.relation}`)
+    }
+
+    let sourceRef = input.source
+    let targetRef = input.target
+    if (normalizedRelation.swapSubjectObject) {
+      ;[sourceRef, targetRef] = [targetRef, sourceRef]
+    }
+    let source = await resolveEntityForWrite(sourceRef, input.scope, input.visibility)
+    let target = await resolveEntityForWrite(targetRef, input.scope, input.visibility)
+    if (source.id === target.id) throw new Error(`Refusing to create self-edge for entity ${source.id}`)
+
+    const relation = normalizedRelation.predicate
+    if (normalizedRelation.symmetric) {
+      const sourceKey = normalizeSurfaceText(source.id || source.name)
+      const targetKey = normalizeSurfaceText(target.id || target.name)
+      if (sourceKey > targetKey) {
+        ;[source, target] = [target, source]
+      }
+    }
+
+    const relationshipDescription = cleanOptionalText(input.description)
+    const evidenceText = cleanOptionalText(input.evidenceText)
+    const sourceChunkId = cleanOptionalText(input.sourceChunkId)
+    const edge: SemanticEdge = {
+      id: stableGraphId('edge', [source.id, relation, target.id]),
+      sourceEntityId: source.id,
+      targetEntityId: target.id,
+      relation,
+      weight: input.weight ?? 1,
+      properties: {
+        ...(relationshipDescription ? { relationshipDescription } : {}),
+        ...(evidenceText ? { evidenceText } : {}),
+        ...(sourceChunkId ? { sourceChunkId } : {}),
+        ...(input.properties ?? {}),
+      },
+      scope: input.scope,
+      visibility: input.visibility,
+      temporal: createTemporal(),
+      evidence: [],
+    }
+
+    const storedEdge = await graph.addEdge(edge)
+    let storedFact: SemanticFactRecord | undefined
+    if (memoryStore.upsertFactRecord) {
+      const factText = cleanOptionalText(input.factText) ?? factTextFor(source.name, relation, target.name)
+      const factSearchText = buildFactSearchText({
+        factText,
+        description: relationshipDescription,
+        evidenceText,
+      })
+      const factEmbedding = await embedding.embed(factSearchText)
+      storedFact = await memoryStore.upsertFactRecord({
+        id: stableGraphId('fact', [storedEdge.sourceEntityId, storedEdge.relation, storedEdge.targetEntityId]),
+        edgeId: storedEdge.id,
+        sourceEntityId: storedEdge.sourceEntityId,
+        targetEntityId: storedEdge.targetEntityId,
+        relation: storedEdge.relation,
+        factText,
+        description: relationshipDescription,
+        evidenceText,
+        factSearchText,
+        sourceChunkId,
+        weight: storedEdge.weight,
+        evidenceCount: Math.max(1, Math.round(storedEdge.weight)),
+        embedding: factEmbedding,
+        scope: input.scope,
+        visibility: storedEdge.visibility,
+        createdAt: storedEdge.temporal.createdAt,
+        updatedAt: new Date(),
+      })
+    }
+
+    if (memoryStore.upsertEntity) {
+      await updateProfilesFromFact(source, target, storedEdge.relation, storedEdge.weight)
+    }
+
+    return { edge: storedEdge, fact: storedFact, source, target }
+  }
 
   async function updateProfilesFromFact(
     source: SemanticEntity,
@@ -991,6 +1380,117 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     }
   }
 
+  async function upsertEntity(input: UpsertGraphEntityInput): Promise<EntityDetail> {
+    const entity = await upsertSeedEntity(input)
+    return await getEntity(entity.id, scopeFrom(input))
+      ?? entityResultFromSemanticEntity(entity, 0)
+  }
+
+  async function upsertEntities(inputs: UpsertGraphEntityInput[]): Promise<EntityDetail[]> {
+    const results: EntityDetail[] = []
+    for (const input of inputs) {
+      results.push(await upsertEntity(input))
+    }
+    return results
+  }
+
+  async function resolveEntity(
+    ref: GraphEntityRef | string,
+    identity?: typegraphIdentity,
+  ): Promise<EntityDetail | null> {
+    const entity = await resolveEntityForRead(ref, identity)
+    if (!entity) return null
+    return await getEntity(entity.id, scopeFrom(identity))
+      ?? entityResultFromSemanticEntity(entity, 0)
+  }
+
+  async function linkExternalIds(
+    entityId: string,
+    externalIds: ExternalId[],
+    identity?: typegraphIdentity,
+  ): Promise<EntityDetail> {
+    const scope = scopeFrom(identity)
+    const entity = await graph.getEntity(entityId, scope)
+    if (!entity) throw new Error(`Entity not found: ${entityId}`)
+    const normalized = normalizeExternalIds(externalIds)
+    await linkExternalIdsToEntity(entityId, normalized, scope)
+    const updated: SemanticEntity = {
+      ...entity,
+      externalIds: mergeExternalIds(entity.externalIds, normalized),
+    }
+    await graph.addEntity(updated)
+    return await getEntity(entityId, scope)
+      ?? entityResultFromSemanticEntity(updated, 0)
+  }
+
+  async function upsertEdge(input: UpsertGraphEdgeInput): Promise<EdgeResult> {
+    const scope = scopeFrom(input)
+    const result = await upsertRelation({
+      source: input.source,
+      target: input.target,
+      relation: input.relation,
+      scope,
+      visibility: input.visibility,
+      weight: input.weight,
+      properties: input.properties,
+      description: input.description,
+      evidenceText: input.evidenceText,
+      sourceChunkId: input.sourceChunkId,
+    })
+    return edgeResultFromSemanticEdge(
+      result.edge,
+      new Map([
+        [result.source.id, result.source.name],
+        [result.target.id, result.target.name],
+      ]),
+    )
+  }
+
+  async function upsertEdges(inputs: UpsertGraphEdgeInput[]): Promise<EdgeResult[]> {
+    const results: EdgeResult[] = []
+    for (const input of inputs) {
+      results.push(await upsertEdge(input))
+    }
+    return results
+  }
+
+  async function upsertFact(input: UpsertGraphFactInput): Promise<FactResult> {
+    const scope = scopeFrom(input)
+    const result = await upsertRelation({
+      source: input.subject,
+      target: input.object,
+      relation: input.predicate,
+      scope,
+      visibility: input.visibility,
+      weight: input.confidence,
+      properties: input.properties,
+      description: input.description,
+      evidenceText: input.evidenceText,
+      sourceChunkId: input.sourceChunkId,
+      factText: input.factText,
+    })
+    if (result.fact) {
+      const [fact] = await hydrateFacts([result.fact], scope)
+      if (fact) return fact
+    }
+    return factResultFromEdge(
+      result.edge,
+      new Map([
+        [result.source.id, result.source.name],
+        [result.target.id, result.target.name],
+      ]),
+      0,
+    )
+  }
+
+  async function upsertFacts(inputs: UpsertGraphFactInput[]): Promise<FactResult[]> {
+    const results: FactResult[] = []
+    for (const input of inputs) {
+      results.push(await upsertFact(input))
+    }
+    return results
+  }
+
   async function searchEntities(
     query: string,
     identity: typegraphIdentity,
@@ -1193,6 +1693,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
     const parsed = await parseGraphQueryIntent({
       query,
+      mode: opts.intentParser,
       llm: explorationLlm,
     })
     const predicateConfidenceByName = new Map(parsed.intent.predicates.map(predicate => [predicate.name, predicate.confidence]))
@@ -1200,13 +1701,15 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
     const trace: GraphExploreTrace = {
       parser: parsed.parser,
-      fallbackUsed: parsed.fallbackUsed,
       mode: parsed.intent.mode,
-      answerSide: parsed.intent.answerSide,
+      strictness: parsed.intent.strictness,
       selectedPredicates: [...selectedPredicates],
       sourceEntityQueries: parsed.intent.sourceEntityQueries,
       targetEntityQueries: parsed.intent.targetEntityQueries,
       subqueries: parsed.intent.subqueries,
+      intentParseMs: parsed.parseMs,
+      intentMatchedPatterns: parsed.matchedPatterns,
+      rejectedPredicates: parsed.rejectedPredicates,
       anchorCandidates: [],
       selectedAnchorIds: [],
       matchedEdgeIds: [],
@@ -1216,7 +1719,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       droppedByType: 0,
     }
 
-    const resolvedAnchors = parsed.parser === 'llm' && !graphIntentIsEmpty(parsed.intent)
+    const resolvedAnchors = parsed.parser !== 'none' && !graphIntentIsEmpty(parsed.intent)
       ? await resolveIntentAnchors(parsed.intent, identity, anchorLimit)
       : {
           sourceAnchors: [],
@@ -1424,6 +1927,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
     const parsed = await parseGraphQueryIntent({
       query,
+      mode: opts.intentParser,
       llm: explorationLlm,
     })
 
@@ -1446,35 +1950,49 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       selectedFactTexts: [],
       selectedEntityNames: [],
       selectedFactChains: [],
+      intentParseMs: parsed.parseMs,
+      intentMatchedPatterns: parsed.matchedPatterns,
+      rejectedPredicates: parsed.rejectedPredicates,
     })
 
     if (!config.resolveChunksTable) {
       return { results: [], facts: [], entities: [], factChains: [], trace: emptyTrace() }
     }
 
-    if (parsed.parser !== 'llm' || graphIntentIsEmpty(parsed.intent)) {
+    if (parsed.parser === 'none' || graphIntentIsEmpty(parsed.intent)) {
       return { results: [], facts: [], entities: [], factChains: [], trace: emptyTrace() }
     }
 
-    const querySearchText = intentSearchText(parsed.intent, query)
-    const queryEmbedding = await embedding.embed(querySearchText)
+    const needsFactSearch = parsed.intent.strictness === 'strict'
+    const factSearchText = intentSearchText(parsed.intent, query)
+    const passageSearchText = passageIntentSearchText(parsed.intent, query)
+    const [factEmbedding, passageEmbedding] = needsFactSearch
+      ? (factSearchText === passageSearchText
+          ? await embedding.embed(factSearchText).then(value => [value, value] as const)
+          : await Promise.all([
+              embedding.embed(factSearchText),
+              embedding.embed(passageSearchText),
+            ]))
+      : [undefined, await embedding.embed(passageSearchText)] as const
     const chunksTable = await config.resolveChunksTable(embeddingModelKey(embedding))
 
-    const factCandidates = memoryStore.searchFacts
-      ? await memoryStore.searchFacts(queryEmbedding, identity, factCandidateLimit)
+    const factCandidates = needsFactSearch && factEmbedding && memoryStore.searchFacts
+      ? await memoryStore.searchFacts(factEmbedding, identity, factCandidateLimit)
       : []
     const candidateEntityIds = uniqueIds(factCandidates.flatMap(fact => [fact.sourceEntityId, fact.targetEntityId]))
     const candidateEntities = candidateEntityIds.length > 0
       ? await graph.getEntitiesBatch(candidateEntityIds, identity)
       : []
     const entityNameById = new Map(candidateEntities.map(entity => [entity.id, entity.name]))
-    const rankedFactCandidates = rerankFactRecords(factCandidates, querySearchText, entityNameById)
+    const rankedFactCandidates = rerankFactRecords(factCandidates, factSearchText, entityNameById)
     const resolvedAnchors = await resolveIntentAnchors(parsed.intent, identity, 5)
-    let selectedFacts = rankedFactCandidates.filter(fact => factMatchesIntent(fact, {
-      intent: parsed.intent,
-      sourceAnchorIds: resolvedAnchors.sourceAnchorIds,
-      targetAnchorIds: resolvedAnchors.targetAnchorIds,
-    }).match)
+    let selectedFacts = needsFactSearch
+      ? rankedFactCandidates.filter(fact => factMatchesIntent(fact, {
+          intent: parsed.intent,
+          sourceAnchorIds: resolvedAnchors.sourceAnchorIds,
+          targetAnchorIds: resolvedAnchors.targetAnchorIds,
+        }).match)
+      : []
     if (opts.factFilter && config.factRelevanceFilter && selectedFacts.length > 0) {
       const filterInput = await hydrateFacts(selectedFacts.slice(0, Math.max(factFilterInputLimit, selectedFacts.length)), identity)
       try {
@@ -1498,7 +2016,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
     const passageSeeds = new Map<string, number>()
     const passageSeedRows = memoryStore.searchPassageNodes
-      ? await memoryStore.searchPassageNodes(queryEmbedding, identity, {
+      ? await memoryStore.searchPassageNodes(passageEmbedding, identity, {
           chunksTable,
           bucketIds: opts.bucketIds,
           limit: passageSeedLimit,
@@ -1597,7 +2115,6 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       .sort((a, b) => (entityOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (entityOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER))
     const passageQueryTokens = queryTokens([
       query,
-      ...parsed.intent.subqueries,
       ...parsed.intent.sourceEntityQueries,
       ...parsed.intent.targetEntityQueries,
     ].join(' '))
@@ -1649,6 +2166,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         score: chain.score,
         factIds: chain.facts.map(fact => fact.id),
       })),
+      intentParseMs: parsed.parseMs,
+      intentMatchedPatterns: parsed.matchedPatterns,
+      rejectedPredicates: parsed.rejectedPredicates,
     }
 
     return { results, facts: selectedFactResults, entities: selectedEntityResults, factChains, trace }
@@ -1909,6 +2429,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       name: entity.name,
       entityType: entity.entityType,
       aliases: entity.aliases,
+      externalIds: entity.externalIds,
       edgeCount: edges.length,
       properties: entity.properties,
       description: entity.properties.description as string | undefined,
@@ -2077,6 +2598,14 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   return {
     deploy,
     addTriple,
+    upsertEntity,
+    upsertEntities,
+    resolveEntity,
+    linkExternalIds,
+    upsertEdge,
+    upsertEdges,
+    upsertFact,
+    upsertFacts,
     addEntityMentions,
     upsertPassageNodes,
     searchEntities,

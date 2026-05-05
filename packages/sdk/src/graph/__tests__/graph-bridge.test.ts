@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createKnowledgeGraphBridge } from '../graph-bridge.js'
-import type { MemoryStoreAdapter, SemanticEntity, SemanticEdge, SemanticFactRecord } from '../../memory/types/index.js'
+import type { ExternalId, MemoryStoreAdapter, SemanticEntity, SemanticEdge, SemanticFactRecord } from '../../memory/types/index.js'
 import { buildScope } from '../../memory/index.js'
 
 const testScope = buildScope({ userId: 'test-user' })
@@ -49,11 +49,49 @@ interface MockMention {
   confidence?: number | undefined
 }
 
+function externalIdKey(externalId: ExternalId): string {
+  return [
+    externalId.identityType,
+    externalId.type.trim().toLowerCase(),
+    externalId.id.trim(),
+    externalId.encoding ?? 'none',
+  ].join('|')
+}
+
 function mockStore(
   entities: Map<string, SemanticEntity> = new Map(),
   edges: SemanticEdge[] = [],
   mentions: MockMention[] = [],
 ) {
+  const externalEntityIdByKey = new Map<string, string>()
+  const externalIdsByEntity = new Map<string, ExternalId[]>()
+
+  const attachExternalIds = (entity: SemanticEntity): SemanticEntity => ({
+    ...entity,
+    externalIds: externalIdsByEntity.get(entity.id) ?? entity.externalIds,
+  })
+
+  const linkExternalIds = (entityId: string, externalIds: ExternalId[]) => {
+    const existing = externalIdsByEntity.get(entityId) ?? []
+    const byKey = new Map(existing.map(externalId => [externalIdKey(externalId), externalId]))
+    for (const externalId of externalIds) {
+      const normalized: ExternalId = {
+        ...externalId,
+        type: externalId.type.trim().toLowerCase(),
+        id: externalId.id.trim(),
+        encoding: externalId.encoding ?? 'none',
+      }
+      const key = externalIdKey(normalized)
+      const currentEntityId = externalEntityIdByKey.get(key)
+      if (currentEntityId && currentEntityId !== entityId) {
+        throw new Error(`external ID conflict for ${key}`)
+      }
+      externalEntityIdByKey.set(key, entityId)
+      byKey.set(key, normalized)
+    }
+    externalIdsByEntity.set(entityId, [...byKey.values()])
+  }
+
   const store: MemoryStoreAdapter = {
     initialize: vi.fn(),
     upsert: vi.fn().mockImplementation(async (r) => r),
@@ -65,16 +103,35 @@ function mockStore(
     getHistory: vi.fn().mockResolvedValue([]),
     search: vi.fn().mockResolvedValue([]),
     upsertEntity: vi.fn().mockImplementation(async (e: SemanticEntity) => {
+      if (e.externalIds?.length) linkExternalIds(e.id, e.externalIds)
       entities.set(e.id, e)
-      return e
+      return attachExternalIds(e)
     }),
-    getEntity: vi.fn().mockImplementation(async (id: string) => entities.get(id) ?? null),
+    getEntity: vi.fn().mockImplementation(async (id: string) => {
+      const entity = entities.get(id)
+      return entity ? attachExternalIds(entity) : null
+    }),
     findEntities: vi.fn().mockImplementation(async (query: string) => {
       return [...entities.values()].filter(e =>
         e.name.toLowerCase().includes(query.toLowerCase()),
-      )
+      ).map(attachExternalIds)
     }),
-    searchEntities: vi.fn().mockImplementation(async () => [...entities.values()]),
+    upsertEntityExternalIds: vi.fn().mockImplementation(async (entityId: string, externalIds: ExternalId[]) => {
+      linkExternalIds(entityId, externalIds)
+      const entity = entities.get(entityId)
+      if (entity) entities.set(entityId, attachExternalIds(entity))
+    }),
+    findEntityByExternalId: vi.fn().mockImplementation(async (externalId: ExternalId) => {
+      const entityId = externalEntityIdByKey.get(externalIdKey({
+        ...externalId,
+        type: externalId.type.trim().toLowerCase(),
+        id: externalId.id.trim(),
+        encoding: externalId.encoding ?? 'none',
+      }))
+      const entity = entityId ? entities.get(entityId) : undefined
+      return entity ? attachExternalIds(entity) : null
+    }),
+    searchEntities: vi.fn().mockImplementation(async () => [...entities.values()].map(attachExternalIds)),
     searchEntitiesHybrid: vi.fn().mockImplementation(async (query: string) => {
       const normalized = query
         .replace(/[Ææ]/g, 'ae')
@@ -90,17 +147,20 @@ function mockStore(
           || e.aliases.some(a => a.toLowerCase() === query.toLowerCase())
           || mentions.some(m => m.entityId === e.id && m.normalizedSurfaceText === normalized)
         )
-        .map(e => ({ ...e, properties: { ...e.properties, _similarity: 1 } }))
+        .map(e => ({ ...attachExternalIds(e), properties: { ...e.properties, _similarity: 1 } }))
       return exact.length > 0
         ? exact
-        : [...entities.values()].map(e => ({ ...e, properties: { ...e.properties, _similarity: 0.5 } }))
+        : [...entities.values()].map(e => ({ ...attachExternalIds(e), properties: { ...e.properties, _similarity: 0.5 } }))
     }),
     upsertEdge: vi.fn().mockImplementation(async (e: SemanticEdge) => {
       edges.push(e)
       return e
     }),
     getEntitiesBatch: vi.fn().mockImplementation(async (ids: string[]) => {
-      return ids.map(id => entities.get(id)).filter(Boolean) as SemanticEntity[]
+      return ids
+        .map(id => entities.get(id))
+        .filter((entity): entity is SemanticEntity => !!entity)
+        .map(attachExternalIds)
     }),
     getEdges: vi.fn().mockImplementation(async (entityId: string, direction: string = 'both') => {
       return edges.filter(e => {
@@ -150,6 +210,107 @@ function mockEmbedding() {
 }
 
 describe('createKnowledgeGraphBridge', () => {
+  describe('developer seeding', () => {
+    it('upserts and resolves entities by deterministic external ID', async () => {
+      const entities = new Map<string, SemanticEntity>()
+      const store = mockStore(entities)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+      const externalId: ExternalId = {
+        id: 'ryan@example.com',
+        type: 'email',
+        identityType: 'user',
+      }
+
+      const seeded = await bridge.upsertEntity!({
+        name: 'Ryan Musser',
+        entityType: 'person',
+        externalIds: [externalId],
+      })
+      const resolved = await bridge.resolveEntity!({ externalId }, testScope)
+
+      expect(seeded.externalIds).toEqual([expect.objectContaining({
+        id: 'ryan@example.com',
+        type: 'email',
+        identityType: 'user',
+        encoding: 'none',
+      })])
+      expect(resolved?.id).toBe(seeded.id)
+      expect(store.findEntityByExternalId).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'ryan@example.com', type: 'email', identityType: 'user' }),
+        testScope,
+      )
+    })
+
+    it('uses external IDs before fuzzy entity creation when seeding facts', async () => {
+      const entities = new Map<string, SemanticEntity>()
+      const edges: SemanticEdge[] = []
+      const store = mockStore(entities, edges)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+      const slackId: ExternalId = {
+        id: 'U123',
+        type: 'slack_user_id',
+        identityType: 'user',
+      }
+
+      const jane = await bridge.upsertEntity!({
+        name: 'Jane Doe',
+        entityType: 'person',
+        externalIds: [slackId],
+      })
+
+      const fact = await bridge.upsertFact!({
+        subject: { name: 'J. Doe', entityType: 'person', externalId: slackId },
+        predicate: 'works at',
+        object: { name: 'TypeGraph', entityType: 'organization' },
+        evidenceText: 'J. Doe works at TypeGraph.',
+      })
+
+      const people = [...entities.values()].filter(entity => entity.entityType === 'person')
+      expect(people).toHaveLength(1)
+      expect(people[0]?.id).toBe(jane.id)
+      expect(people[0]?.aliases).toContain('J. Doe')
+      expect(fact.sourceEntityId).toBe(jane.id)
+      expect(fact.relation).toBe('WORKS_FOR')
+    })
+
+    it('rejects external ID conflicts instead of reassigning identity', async () => {
+      const entities = new Map<string, SemanticEntity>()
+      const store = mockStore(entities)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+      const email: ExternalId = {
+        id: 'alice@example.com',
+        type: 'email',
+        identityType: 'user',
+      }
+
+      await bridge.upsertEntity!({
+        id: 'ent_alice',
+        name: 'Alice',
+        entityType: 'person',
+        externalIds: [email],
+      })
+
+      await expect(bridge.upsertEntity!({
+        id: 'ent_bob',
+        name: 'Bob',
+        entityType: 'person',
+        externalIds: [email],
+      })).rejects.toThrow(/External IDs resolve to entity ent_alice/)
+    })
+  })
+
   describe('addTriple', () => {
 	    it('creates entities, edge, and entity↔chunk mentions from a triple', async () => {
       const entities = new Map<string, SemanticEntity>()
@@ -746,17 +907,6 @@ describe('createKnowledgeGraphBridge', () => {
         embedding: mockEmbedding(),
         scope: testScope,
         resolveChunksTable: () => 'typegraph_chunks_mock',
-        explorationLlm: {
-          generateText: vi.fn().mockResolvedValue(''),
-          generateJSON: vi.fn().mockResolvedValue({
-            sourceEntityQueries: ['Adarsh'],
-            targetEntityQueries: [],
-            predicates: [],
-            answerSide: 'none',
-            subqueries: ['Adarsh'],
-            mode: 'summary',
-          }),
-        },
       })
 
       const result = await bridge.searchGraphPassages!('Adarsh', testScope, { count: 5 })
@@ -833,20 +983,9 @@ describe('createKnowledgeGraphBridge', () => {
         embedding: mockEmbedding(),
         scope: testScope,
         resolveChunksTable: () => 'typegraph_chunks_mock',
-        explorationLlm: {
-          generateText: vi.fn().mockResolvedValue(''),
-          generateJSON: vi.fn().mockResolvedValue({
-            sourceEntityQueries: [],
-            targetEntityQueries: ['Maud'],
-            predicates: [{ name: 'WROTE', confidence: 0.95 }],
-            answerSide: 'source',
-            subqueries: ['who wrote Maud'],
-            mode: 'fact',
-          }),
-        },
       })
 
-      const result = await bridge.searchGraphPassages!('Who moralised Maud?', testScope, { count: 5 })
+      const result = await bridge.searchGraphPassages!('Who wrote Maud?', testScope, { count: 5 })
 
       expect(result.facts).toEqual([expect.objectContaining({ id: 'fact-1', factText: 'Tennyson wrote Maud' })])
       expect(result.facts[0]!.properties?.relevanceScore).toEqual(expect.any(Number))
@@ -979,17 +1118,6 @@ describe('createKnowledgeGraphBridge', () => {
         embedding: mockEmbedding(),
         scope: testScope,
         resolveChunksTable: () => 'typegraph_chunks_mock',
-        explorationLlm: {
-          generateText: vi.fn().mockResolvedValue(''),
-          generateJSON: vi.fn().mockResolvedValue({
-            sourceEntityQueries: [],
-            targetEntityQueries: ['Maud'],
-            predicates: [{ name: 'WROTE', confidence: 0.95 }],
-            answerSide: 'source',
-            subqueries: ['who wrote Maud'],
-            mode: 'fact',
-          }),
-        },
       })
 
       const result = await bridge.searchGraphPassages!('Who wrote Maud?', testScope, {
@@ -1008,7 +1136,7 @@ describe('createKnowledgeGraphBridge', () => {
   })
 
   describe('explore graph intent V2', () => {
-    it('uses LLM source/target intent to keep only matching killer facts', async () => {
+    it('uses deterministic source/target intent to keep only matching killer facts', async () => {
       const entities = new Map<string, SemanticEntity>([
         ['aac', makeEntity('aac', 'Aac', 'person')],
         ['chaacmol', makeEntity('chaacmol', 'Chaacmol', 'person')],
@@ -1020,29 +1148,18 @@ describe('createKnowledgeGraphBridge', () => {
         makeEdge('edge-married', 'chaacmol', 'moo', 'MARRIED'),
       ]
       const store = mockStore(entities, edges)
-      const explorationLlm = {
-        generateText: vi.fn().mockResolvedValue(''),
-        generateJSON: vi.fn().mockResolvedValue({
-          sourceEntityQueries: [],
-          targetEntityQueries: ['Chaacmol'],
-          predicates: [{ name: 'KILLED', confidence: 0.98 }],
-          answerSide: 'source',
-          subqueries: ['who killed Chaacmol'],
-          mode: 'fact',
-        }),
-      }
       const bridge = createKnowledgeGraphBridge({
         memoryStore: store,
         embedding: mockEmbedding(),
         scope: testScope,
-        explorationLlm,
       })
 
       const result = await bridge.explore!('Who killed Chaacmol?', { userId: 'test-user', explain: true })
 
-      expect(result.trace?.parser).toBe('llm')
+      expect(result.trace?.parser).toBe('deterministic')
       expect(result.intent.targetEntityQueries).toEqual(['Chaacmol'])
       expect(result.intent.predicates.map(predicate => predicate.name)).toEqual(['KILLED'])
+      expect(result.intent.strictness).toBe('strict')
       expect(result.facts.map(fact => fact.edgeId)).toEqual(['edge-killed'])
       expect(result.entities.map(entity => entity.name).sort()).toEqual(['Aac', 'Chaacmol'])
     })
@@ -1059,22 +1176,10 @@ describe('createKnowledgeGraphBridge', () => {
         makeEdge('edge-married', 'moo', 'chaacmol', 'MARRIED'),
       ]
       const store = mockStore(entities, edges)
-      const explorationLlm = {
-        generateText: vi.fn().mockResolvedValue(''),
-        generateJSON: vi.fn().mockResolvedValue({
-          sourceEntityQueries: ['Chaacmol'],
-          targetEntityQueries: [],
-          predicates: [{ name: 'WIFE_OF', confidence: 0.98 }],
-          answerSide: 'target',
-          subqueries: ['Chaacmol wife spouse married'],
-          mode: 'fact',
-        }),
-      }
       const bridge = createKnowledgeGraphBridge({
         memoryStore: store,
         embedding: mockEmbedding(),
         scope: testScope,
-        explorationLlm,
       })
 
       const result = await bridge.explore!('Who is Chaacmol wife?', { userId: 'test-user', explain: true })

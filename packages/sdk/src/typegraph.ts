@@ -11,7 +11,7 @@ import type { LLMProvider, LLMConfig } from './types/llm-provider.js'
 import type {
   MemoryBridge, KnowledgeGraphBridge,
   EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchTrace, PassageResult,
-  SubgraphOpts, SubgraphResult, GraphStats,
+  SubgraphOpts, SubgraphResult, GraphStats, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput,
   RememberOpts, ForgetOpts, CorrectOpts, AddConversationTurnOpts,
   RecallOpts, HealthCheckOpts,
 } from './types/graph-bridge.js'
@@ -20,7 +20,7 @@ import type { typegraphIdentity } from './types/identity.js'
 import type { typegraphEventSink, typegraphEventType, TelemetryOpts } from './types/events.js'
 import type { PolicyStoreAdapter, CreatePolicyInput, UpdatePolicyInput, Policy, PolicyType, PolicyAction } from './types/policy.js'
 import type { ConversationTurnResult, MemoryHealthReport } from './types/memory.js'
-import type { MemoryRecord } from './memory/types/memory.js'
+import type { ExternalId, MemoryRecord } from './memory/types/memory.js'
 import type { typegraphLogger } from './types/logger.js'
 import type { Job, JobFilter, UpsertJobInput, JobStatusPatch } from './types/job.js'
 import type { PaginationOpts, PaginatedResult } from './types/pagination.js'
@@ -170,6 +170,14 @@ export interface JobsApi {
 }
 
 export interface GraphApi {
+  upsertEntity(input: UpsertGraphEntityInput, opts?: TelemetryOpts): Promise<EntityDetail>
+  upsertEntities(inputs: UpsertGraphEntityInput[], opts?: TelemetryOpts): Promise<EntityDetail[]>
+  resolveEntity(ref: GraphEntityRef | string, identity?: typegraphIdentity, opts?: TelemetryOpts): Promise<EntityDetail | null>
+  linkExternalIds(entityId: string, externalIds: ExternalId[], identity?: typegraphIdentity & TelemetryOpts): Promise<EntityDetail>
+  upsertEdge(input: UpsertGraphEdgeInput, opts?: TelemetryOpts): Promise<EdgeResult>
+  upsertEdges(inputs: UpsertGraphEdgeInput[], opts?: TelemetryOpts): Promise<EdgeResult[]>
+  upsertFact(input: UpsertGraphFactInput, opts?: TelemetryOpts): Promise<FactResult>
+  upsertFacts(inputs: UpsertGraphFactInput[], opts?: TelemetryOpts): Promise<FactResult[]>
   searchEntities(query: string, identity: typegraphIdentity, opts?: {
     limit?: number
     entityType?: string
@@ -503,6 +511,76 @@ class TypegraphImpl implements typegraphInstance {
   // ── Graph Exploration ──
 
   graph: GraphApi = {
+    upsertEntity: async (input: UpsertGraphEntityInput, opts?: TelemetryOpts): Promise<EntityDetail> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.upsertEntity) throw new ConfigError('Knowledge graph bridge does not support entity seeding.')
+      const result = await kg.upsertEntity(input)
+      this.emitEvent('graph.entity.upsert' as typegraphEventType, result.id, { name: result.name }, opts)
+      return result
+    },
+
+    upsertEntities: async (inputs: UpsertGraphEntityInput[], opts?: TelemetryOpts): Promise<EntityDetail[]> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.upsertEntities) throw new ConfigError('Knowledge graph bridge does not support entity seeding.')
+      const results = await kg.upsertEntities(inputs)
+      this.emitEvent('graph.entity.upsert' as typegraphEventType, undefined, { count: results.length }, opts)
+      return results
+    },
+
+    resolveEntity: async (
+      ref: GraphEntityRef | string,
+      identity?: typegraphIdentity,
+      _opts?: TelemetryOpts,
+    ): Promise<EntityDetail | null> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.resolveEntity) throw new ConfigError('Knowledge graph bridge does not support entity resolution.')
+      return kg.resolveEntity(ref, identity)
+    },
+
+    linkExternalIds: async (
+      entityId: string,
+      externalIds: ExternalId[],
+      identity?: typegraphIdentity & TelemetryOpts,
+    ): Promise<EntityDetail> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.linkExternalIds) throw new ConfigError('Knowledge graph bridge does not support deterministic entity external IDs.')
+      const result = await kg.linkExternalIds(entityId, externalIds, identity)
+      this.emitEvent('graph.entity.external_ids.link' as typegraphEventType, entityId, { count: externalIds.length }, identity)
+      return result
+    },
+
+    upsertEdge: async (input: UpsertGraphEdgeInput, opts?: TelemetryOpts): Promise<EdgeResult> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.upsertEdge) throw new ConfigError('Knowledge graph bridge does not support edge seeding.')
+      const result = await kg.upsertEdge(input)
+      this.emitEvent('graph.edge.upsert' as typegraphEventType, result.id, { relation: result.relation }, opts)
+      return result
+    },
+
+    upsertEdges: async (inputs: UpsertGraphEdgeInput[], opts?: TelemetryOpts): Promise<EdgeResult[]> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.upsertEdges) throw new ConfigError('Knowledge graph bridge does not support edge seeding.')
+      const results = await kg.upsertEdges(inputs)
+      this.emitEvent('graph.edge.upsert' as typegraphEventType, undefined, { count: results.length }, opts)
+      return results
+    },
+
+    upsertFact: async (input: UpsertGraphFactInput, opts?: TelemetryOpts): Promise<FactResult> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.upsertFact) throw new ConfigError('Knowledge graph bridge does not support fact seeding.')
+      const result = await kg.upsertFact(input)
+      this.emitEvent('graph.fact.upsert' as typegraphEventType, result.id, { relation: result.relation }, opts)
+      return result
+    },
+
+    upsertFacts: async (inputs: UpsertGraphFactInput[], opts?: TelemetryOpts): Promise<FactResult[]> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.upsertFacts) throw new ConfigError('Knowledge graph bridge does not support fact seeding.')
+      const results = await kg.upsertFacts(inputs)
+      this.emitEvent('graph.fact.upsert' as typegraphEventType, undefined, { count: results.length }, opts)
+      return results
+    },
+
     searchEntities: async (query: string, identity: typegraphIdentity, opts?: {
       limit?: number
       entityType?: string

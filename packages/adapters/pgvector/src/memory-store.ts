@@ -11,6 +11,7 @@ import type {
   MemoryFilter,
   MemorySearchOpts,
   MemoryRecord,
+  ExternalId,
   PassageBackfillChunk,
   PassageMentionBackfillRow,
   SemanticEntity,
@@ -45,6 +46,7 @@ export interface PgMemoryAdapterConfig {
   memoriesTable?: string | undefined
   entitiesTable?: string | undefined
   edgesTable?: string | undefined
+  entityExternalIdsTable?: string | undefined
   chunkMentionsTable?: string | undefined
   passageNodesTable?: string | undefined
   passageEntityEdgesTable?: string | undefined
@@ -177,6 +179,50 @@ const ENTITIES_DDL = (t: string, dims?: number) => {
   CREATE INDEX IF NOT EXISTS ${idx('agent_idx')} ON ${t} (agent_id);
   CREATE INDEX IF NOT EXISTS ${idx('conversation_idx')} ON ${t} (conversation_id);
   CREATE INDEX IF NOT EXISTS ${idx('visibility_idx')} ON ${t} (visibility);
+`
+}
+
+const ENTITY_EXTERNAL_IDS_DDL = (t: string, entitiesTable: string) => {
+  const i = idxPrefix(t)
+  const idx = (suffix: string) => safeIdx(i, suffix)
+  return `
+  CREATE TABLE IF NOT EXISTS ${t} (
+    id               TEXT PRIMARY KEY,
+    entity_id        TEXT NOT NULL REFERENCES ${entitiesTable}(id) ON DELETE CASCADE,
+    identity_type    TEXT NOT NULL CHECK (identity_type IN ('tenant', 'group', 'user', 'agent', 'conversation', 'entity')),
+    type             TEXT NOT NULL,
+    id_value         TEXT NOT NULL,
+    normalized_value TEXT NOT NULL,
+    encoding         TEXT NOT NULL DEFAULT 'none' CHECK (encoding IN ('none', 'sha256')),
+    metadata         JSONB NOT NULL DEFAULT '{}',
+    scope            JSONB NOT NULL DEFAULT '{}',
+    tenant_id        TEXT,
+    group_id         TEXT,
+    user_id          TEXT,
+    agent_id         TEXT,
+    conversation_id  TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS ${idx('entity_idx')} ON ${t} (entity_id);
+  CREATE INDEX IF NOT EXISTS ${idx('lookup_idx')} ON ${t} (identity_type, type, normalized_value, encoding);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')} ON ${t} (tenant_id, user_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')} ON ${t} (tenant_id, group_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')} ON ${t} (tenant_id, agent_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_conversation_idx')} ON ${t} (tenant_id, conversation_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS ${idx('scoped_external_id_uniq_idx')}
+    ON ${t} (
+      identity_type,
+      type,
+      normalized_value,
+      encoding,
+      COALESCE(tenant_id, ''),
+      COALESCE(group_id, ''),
+      COALESCE(user_id, ''),
+      COALESCE(agent_id, ''),
+      COALESCE(conversation_id, '')
+    );
 `
 }
 
@@ -368,6 +414,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   private sql: SqlExecutor
   private memoriesTable: string
   private entitiesTable: string
+  private entityExternalIdsTable: string
   private edgesTable: string
   private chunkMentionsTable: string
   private passageNodesTable: string
@@ -384,6 +431,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const prefix = config.schema ? `"${config.schema}".` : ''
     this.memoriesTable = config.memoriesTable ?? `${prefix}typegraph_memories`
     this.entitiesTable = config.entitiesTable ?? `${prefix}typegraph_semantic_entities`
+    this.entityExternalIdsTable = config.entityExternalIdsTable ?? `${prefix}typegraph_entity_external_ids`
     this.edgesTable = config.edgesTable ?? `${prefix}typegraph_semantic_edges`
     this.chunkMentionsTable = config.chunkMentionsTable ?? `${prefix}typegraph_entity_chunk_mentions`
     this.passageNodesTable = config.passageNodesTable ?? `${prefix}typegraph_passage_nodes`
@@ -404,6 +452,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       MEMORIES_DDL(this.memoriesTable),
 
       ENTITIES_DDL(this.entitiesTable, this.embeddingDimensions),
+      ENTITY_EXTERNAL_IDS_DDL(this.entityExternalIdsTable, this.entitiesTable),
       EDGES_DDL(this.edgesTable),
       CHUNK_MENTIONS_DDL(this.chunkMentionsTable),
       PASSAGE_NODES_DDL(this.passageNodesTable),
@@ -770,6 +819,35 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
 
   // ── Entity Storage ──
 
+  private async attachExternalIds(entities: SemanticEntity[]): Promise<SemanticEntity[]> {
+    if (entities.length === 0) return entities
+    const rows = await this.sqlWithRetry(
+      `SELECT entity_id, identity_type, type, id_value, encoding, metadata
+         FROM ${this.entityExternalIdsTable}
+        WHERE entity_id = ANY($1::text[])
+        ORDER BY created_at ASC`,
+      [entities.map(entity => entity.id)]
+    )
+    const byEntity = new Map<string, ExternalId[]>()
+    for (const row of rows) {
+      const entityId = row.entity_id as string
+      const externalId: ExternalId = {
+        identityType: row.identity_type as ExternalId['identityType'],
+        type: row.type as string,
+        id: row.id_value as string,
+        encoding: (row.encoding as ExternalId['encoding']) ?? 'none',
+        metadata: parseJson(row.metadata),
+      }
+      const list = byEntity.get(entityId) ?? []
+      list.push(externalId)
+      byEntity.set(entityId, list)
+    }
+    return entities.map(entity => ({
+      ...entity,
+      externalIds: byEntity.get(entity.id) ?? entity.externalIds,
+    }))
+  }
+
   async upsertEntity(entity: SemanticEntity): Promise<SemanticEntity> {
     const embeddingStr = entity.embedding ? `[${entity.embedding.join(',')}]` : null
     const descEmbeddingStr = entity.descriptionEmbedding ? `[${entity.descriptionEmbedding.join(',')}]` : null
@@ -815,7 +893,101 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       await this.ensureHnswIndex('entity')
     }
 
-    return mapRowToEntity(rows[0]!)
+    if (entity.externalIds && entity.externalIds.length > 0) {
+      await this.upsertEntityExternalIds(entity.id, entity.externalIds, entity.scope)
+    }
+
+    const [mapped] = await this.attachExternalIds([mapRowToEntity(rows[0]!)])
+    return mapped!
+  }
+
+  async upsertEntityExternalIds(entityId: string, externalIds: ExternalId[], scope: typegraphIdentity): Promise<void> {
+    if (externalIds.length === 0) return
+
+    const values: string[] = []
+    const params: unknown[] = []
+    for (const externalId of externalIds) {
+      const normalized = normalizeExternalId(externalId)
+      if (!normalized) continue
+      const base = params.length
+      values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14})`)
+      params.push(
+        generateId('xid'),
+        entityId,
+        normalized.identityType,
+        normalized.type,
+        normalized.id,
+        normalized.normalizedValue,
+        normalized.encoding,
+        JSON.stringify(normalized.metadata ?? {}),
+        JSON.stringify(scope),
+        scope.tenantId ?? null,
+        scope.groupId ?? null,
+        scope.userId ?? null,
+        scope.agentId ?? null,
+        scope.conversationId ?? null,
+      )
+    }
+    if (values.length === 0) return
+
+    const tbl = unqualified(this.entityExternalIdsTable)
+    const rows = await this.sqlWithRetry(
+      `INSERT INTO ${this.entityExternalIdsTable}
+        (id, entity_id, identity_type, type, id_value, normalized_value, encoding, metadata,
+         scope, tenant_id, group_id, user_id, agent_id, conversation_id)
+       VALUES ${values.join(',')}
+       ON CONFLICT (
+         identity_type,
+         type,
+         normalized_value,
+         encoding,
+         COALESCE(tenant_id, ''),
+         COALESCE(group_id, ''),
+         COALESCE(user_id, ''),
+         COALESCE(agent_id, ''),
+         COALESCE(conversation_id, '')
+       ) DO UPDATE SET
+         id_value = EXCLUDED.id_value,
+         metadata = EXCLUDED.metadata,
+         updated_at = NOW()
+       WHERE ${tbl}.entity_id = EXCLUDED.entity_id
+       RETURNING id`,
+      params
+    )
+    if (rows.length !== values.length) {
+      throw new Error('One or more external IDs are already linked to a different entity')
+    }
+  }
+
+  async findEntityByExternalId(externalId: ExternalId, scope?: typegraphIdentity): Promise<SemanticEntity | null> {
+    const normalized = normalizeExternalId(externalId)
+    if (!normalized) return null
+    const identity = buildGraphVisibilityWhere(scope, 5, 'e')
+    const scopeClause = identity.where ? `AND ${identity.where}` : ''
+    const rows = await this.sqlWithRetry(
+      `SELECT e.id, e.name, e.entity_type, e.aliases, e.properties, e.scope,
+              e.tenant_id, e.group_id, e.user_id, e.agent_id, e.conversation_id, e.visibility,
+              e.valid_at, e.invalid_at, e.created_at, e.updated_at
+         FROM ${this.entityExternalIdsTable} xid
+         JOIN ${this.entitiesTable} e ON e.id = xid.entity_id
+        WHERE xid.identity_type = $1
+          AND xid.type = $2
+          AND xid.normalized_value = $3
+          AND xid.encoding = $4
+          ${scopeClause}
+          AND e.invalid_at IS NULL
+        LIMIT 1`,
+      [
+        normalized.identityType,
+        normalized.type,
+        normalized.normalizedValue,
+        normalized.encoding,
+        ...identity.params,
+      ]
+    )
+    if (rows.length === 0) return null
+    const [mapped] = await this.attachExternalIds([mapRowToEntity(rows[0]!)])
+    return mapped!
   }
 
   async getEntity(id: string, scope?: typegraphIdentity): Promise<SemanticEntity | null> {
@@ -830,7 +1002,9 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          ${scopeClause}`,
       [id, ...identity.params]
     )
-    return rows.length > 0 ? mapRowToEntity(rows[0]!) : null
+    if (rows.length === 0) return null
+    const [mapped] = await this.attachExternalIds([mapRowToEntity(rows[0]!)])
+    return mapped!
   }
 
   async getEntitiesBatch(ids: string[], scope?: typegraphIdentity): Promise<SemanticEntity[]> {
@@ -846,7 +1020,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          ${scopeClause}`,
       [ids, ...identity.params]
     )
-    return rows.map(mapRowToEntity)
+    return this.attachExternalIds(rows.map(mapRowToEntity))
   }
 
   async findEntities(query: string, scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]> {
@@ -874,7 +1048,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
        LIMIT ${limitParam}`,
       params
     )
-    return rows.map(mapRowToEntity)
+    return this.attachExternalIds(rows.map(mapRowToEntity))
   }
 
   async searchEntities(embedding: number[], scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]> {
@@ -893,7 +1067,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
        LIMIT ${limitParam}`,
       [vectorStr, ...params]
     )
-    return rows.map(mapRowToEntity)
+    return this.attachExternalIds(rows.map(mapRowToEntity))
   }
 
   async searchEntitiesHybrid(query: string, embedding: number[], scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]> {
@@ -970,9 +1144,10 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       }
     }
 
-    return [...byId.values()]
+    const merged = [...byId.values()]
       .sort((a, b) => ((b.properties._similarity as number | undefined) ?? 0) - ((a.properties._similarity as number | undefined) ?? 0))
       .slice(0, maxRows)
+    return this.attachExternalIds(merged)
   }
 
   // ── Passage + Fact Graph Storage ──
@@ -1855,6 +2030,34 @@ function normalizeEntityText(value: string): string {
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
     .replace(/\s+/g, ' ')
+}
+
+function normalizeExternalIdValue(id: string, type: string, encoding: ExternalId['encoding']): string {
+  const trimmed = id.trim()
+  if (encoding === 'sha256') return trimmed.toLowerCase()
+  if (type === 'email' || type.endsWith('_email') || type === 'github_handle') {
+    return trimmed.toLowerCase()
+  }
+  if (type === 'phone') {
+    return trimmed.replace(/[^\d+]/g, '')
+  }
+  return trimmed
+}
+
+function normalizeExternalId(
+  externalId: ExternalId,
+): (ExternalId & { normalizedValue: string; encoding: NonNullable<ExternalId['encoding']> }) | undefined {
+  const type = externalId.type.trim().toLowerCase()
+  const id = externalId.id.trim()
+  if (!id || !type) return undefined
+  const encoding = externalId.encoding ?? 'none'
+  return {
+    ...externalId,
+    id,
+    type,
+    encoding,
+    normalizedValue: normalizeExternalIdValue(id, type, encoding),
+  }
 }
 
 function escapeLike(value: string): string {

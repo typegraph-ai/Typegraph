@@ -4,6 +4,7 @@ import type {
   MemoryRecord,
   MemoryCategory,
   MemoryStatus,
+  ExternalId,
   SemanticEntity,
   SemanticEntityMention,
   SemanticEdge,
@@ -122,6 +123,8 @@ export interface MemoryStoreAdapter {
   getEntity?(id: string, scope?: typegraphIdentity): Promise<SemanticEntity | null>
   getEntitiesBatch?(ids: string[], scope?: typegraphIdentity): Promise<SemanticEntity[]>
   findEntities?(query: string, scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]>
+  upsertEntityExternalIds?(entityId: string, externalIds: ExternalId[], scope: typegraphIdentity): Promise<void>
+  findEntityByExternalId?(externalId: ExternalId, scope?: typegraphIdentity): Promise<SemanticEntity | null>
   searchEntities?(embedding: number[], scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]>
   searchEntitiesHybrid?(query: string, embedding: number[], scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]>
 

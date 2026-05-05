@@ -63,7 +63,8 @@ const SYNONYM_GROUPS: readonly string[][] = [
   // ── Person → Organization ──
   ['WORKS_FOR', 'EMPLOYED_AT', 'WORKS_AT'],
   ['WORKED_FOR', 'WORKED_AT'],
-  ['FOUNDED', 'CO_FOUNDED', 'ESTABLISHED'],
+  ['FOUNDED', 'ESTABLISHED'],
+  ['CO_FOUNDED', 'COFOUNDED'],
   ['LEADS', 'LEADS_AT', 'HEADS', 'DIRECTS', 'CHAIRS'],
   ['LED', 'LED_AT', 'HEADED', 'CHAIRED'],
   ['ADVISES', 'ADVISES_AT', 'CONSULTS_FOR'],
@@ -231,6 +232,7 @@ const INVERSE_SYNONYMS = new Map<string, string>([
   ['WAS_EMPLOYED_BY', 'WORKED_FOR'],
   ['FOUNDED_BY', 'FOUNDED'],
   ['CO_FOUNDED_BY', 'CO_FOUNDED'],
+  ['COFOUNDED_BY', 'CO_FOUNDED'],
   ['WRITTEN_BY', 'WROTE'],
   ['AUTHORED_BY', 'AUTHORED'],
   ['COMPOSED_BY', 'COMPOSED'],

@@ -33,6 +33,31 @@ export interface TemporalRecord {
   expiredAt?: Date | undefined
 }
 
+// ── Deterministic External Identity ──
+
+export type ExternalIdIdentityType =
+  | 'tenant'
+  | 'group'
+  | 'user'
+  | 'agent'
+  | 'conversation'
+  | 'entity'
+
+export type ExternalIdEncoding = 'none' | 'sha256'
+
+export interface ExternalId {
+  /** External system identifier value, e.g. email, Slack user ID, GitHub handle. */
+  id: string
+  /** Identifier namespace/type, e.g. email, slack_user_id, github_handle. */
+  type: string
+  /** Identity level this identifier applies to. */
+  identityType: ExternalIdIdentityType
+  /** Encoding of `id`. Defaults to `none`. */
+  encoding?: ExternalIdEncoding | undefined
+  /** Optional system/source metadata for debugging and future conflict policy. */
+  metadata?: Record<string, unknown> | undefined
+}
+
 // ── Base Memory Record ──
 
 export interface MemoryRecord extends TemporalRecord {
@@ -90,6 +115,8 @@ export interface SemanticEntity {
   entityType: string
   /** Alternative names / spellings */
   aliases: string[]
+  /** Deterministic external identifiers used before fuzzy/probabilistic matching. */
+  externalIds?: ExternalId[] | undefined
   /** Arbitrary typed properties */
   properties: Record<string, unknown>
   /** Embedding of the entity name for similarity matching */

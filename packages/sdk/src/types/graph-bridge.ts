@@ -1,6 +1,6 @@
 import type { typegraphIdentity } from './identity.js'
 import type { ConversationTurnResult, MemoryHealthReport } from './memory.js'
-import type { MemoryRecord } from '../memory/types/memory.js'
+import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
 import type { PaginationOpts } from './pagination.js'
 import type { TelemetryOpts } from './events.js'
 import type { Visibility } from './typegraph-document.js'
@@ -35,6 +35,62 @@ export interface RecallOpts extends typegraphIdentity, TelemetryOpts {
 }
 
 export type HealthCheckOpts = typegraphIdentity & TelemetryOpts
+
+export interface GraphEntityRef extends typegraphIdentity {
+  /** Existing TypeGraph entity ID. */
+  id?: string | undefined
+  /** Deterministic identifier lookup. Takes priority over name/fuzzy matching. */
+  externalId?: ExternalId | undefined
+  /** Deterministic identifiers to attach or use for lookup. */
+  externalIds?: ExternalId[] | undefined
+  /** Entity name. Required when the reference must create a new entity. */
+  name?: string | undefined
+  entityType?: string | undefined
+  aliases?: string[] | undefined
+  description?: string | undefined
+  properties?: Record<string, unknown> | undefined
+  visibility?: Visibility | undefined
+}
+
+export interface UpsertGraphEntityInput extends typegraphIdentity {
+  id?: string | undefined
+  name: string
+  entityType?: string | undefined
+  aliases?: string[] | undefined
+  description?: string | undefined
+  properties?: Record<string, unknown> | undefined
+  externalIds?: ExternalId[] | undefined
+  visibility?: Visibility | undefined
+}
+
+export interface UpsertGraphEdgeInput extends typegraphIdentity {
+  /** Entity ref. A bare string reuses an existing entity ID when found, otherwise seeds by name. */
+  source: GraphEntityRef | string
+  /** Entity ref. A bare string reuses an existing entity ID when found, otherwise seeds by name. */
+  target: GraphEntityRef | string
+  relation: string
+  weight?: number | undefined
+  properties?: Record<string, unknown> | undefined
+  description?: string | undefined
+  evidenceText?: string | undefined
+  sourceChunkId?: string | undefined
+  visibility?: Visibility | undefined
+}
+
+export interface UpsertGraphFactInput extends typegraphIdentity {
+  /** Entity ref. A bare string reuses an existing entity ID when found, otherwise seeds by name. */
+  subject: GraphEntityRef | string
+  predicate: string
+  /** Entity ref. A bare string reuses an existing entity ID when found, otherwise seeds by name. */
+  object: GraphEntityRef | string
+  factText?: string | undefined
+  description?: string | undefined
+  evidenceText?: string | undefined
+  sourceChunkId?: string | undefined
+  confidence?: number | undefined
+  properties?: Record<string, unknown> | undefined
+  visibility?: Visibility | undefined
+}
 
 /**
  * Memory bridge — conversational memory operations (remember, recall, forget, correct).
@@ -112,6 +168,30 @@ export interface KnowledgeGraphBridge {
     visibility?: Visibility | undefined
     metadata?: Record<string, unknown>
   }): Promise<void>
+
+  /** Create or update a deterministic developer-seeded entity. */
+  upsertEntity?(input: UpsertGraphEntityInput): Promise<EntityDetail>
+
+  /** Create or update many deterministic developer-seeded entities. */
+  upsertEntities?(inputs: UpsertGraphEntityInput[]): Promise<EntityDetail[]>
+
+  /** Resolve an entity by TypeGraph ID, external ID, or scoped name lookup. */
+  resolveEntity?(ref: GraphEntityRef | string, identity?: typegraphIdentity): Promise<EntityDetail | null>
+
+  /** Attach deterministic external IDs to an existing entity. */
+  linkExternalIds?(entityId: string, externalIds: ExternalId[], identity?: typegraphIdentity): Promise<EntityDetail>
+
+  /** Create or update a deterministic developer-seeded edge. */
+  upsertEdge?(input: UpsertGraphEdgeInput): Promise<EdgeResult>
+
+  /** Create or update many deterministic developer-seeded edges. */
+  upsertEdges?(inputs: UpsertGraphEdgeInput[]): Promise<EdgeResult[]>
+
+  /** Create or update a developer-seeded fact and its backing edge/fact record. */
+  upsertFact?(input: UpsertGraphFactInput): Promise<FactResult>
+
+  /** Create or update many developer-seeded facts. */
+  upsertFacts?(inputs: UpsertGraphFactInput[]): Promise<FactResult[]>
 
   /** Store extracted entities and their source mentions even when no relationship was found. */
   addEntityMentions?(mentions: Array<{
@@ -206,6 +286,7 @@ export interface EntityResult {
   name: string
   entityType: string
   aliases: string[]
+  externalIds?: ExternalId[] | undefined
   /** Present when searched by query. */
   similarity?: number | undefined
   /** Number of edges (degree centrality). */
@@ -259,6 +340,7 @@ export interface FactSearchOpts extends typegraphIdentity {
 }
 
 export interface GraphExploreOptions {
+  intentParser?: GraphIntentParserMode | undefined
   include?: {
     entities?: boolean | undefined
     facts?: boolean | undefined
@@ -275,6 +357,8 @@ export interface GraphExploreOptions {
 
 export type GraphExploreOpts = GraphExploreOptions & typegraphIdentity & TelemetryOpts
 
+export type GraphIntentParserMode = 'deterministic' | 'llm' | 'none'
+
 export interface GraphQueryIntentPredicate {
   name: string
   confidence: number
@@ -286,29 +370,33 @@ export interface GraphQueryIntent {
   sourceEntityQueries: string[]
   targetEntityQueries: string[]
   predicates: GraphQueryIntentPredicate[]
-  answerSide: 'source' | 'target' | 'either' | 'none'
   subqueries: string[]
   mode: 'fact' | 'relationship' | 'summary' | 'creative'
+  strictness: 'strict' | 'soft' | 'none'
 }
 
 export type GraphExploreIntentPredicate = GraphQueryIntentPredicate
 export type GraphExploreIntent = GraphQueryIntent
 
 export interface ParsedGraphQueryIntent {
-  parser: 'llm' | 'none'
-  fallbackUsed: false
+  parser: 'deterministic' | 'llm' | 'none'
   intent: GraphQueryIntent
+  matchedPatterns?: string[] | undefined
+  rejectedPredicates?: string[] | undefined
+  parseMs?: number | undefined
 }
 
 export interface GraphExploreTrace {
-  parser: 'llm' | 'none'
-  fallbackUsed: false
+  parser: 'deterministic' | 'llm' | 'none'
   mode: GraphQueryIntent['mode']
-  answerSide: GraphQueryIntent['answerSide']
+  strictness: GraphQueryIntent['strictness']
   selectedPredicates: string[]
   sourceEntityQueries: string[]
   targetEntityQueries: string[]
   subqueries: string[]
+  intentParseMs?: number | undefined
+  intentMatchedPatterns?: string[] | undefined
+  rejectedPredicates?: string[] | undefined
   anchorCandidates: EntityResult[]
   selectedAnchorIds: string[]
   matchedEdgeIds: string[]
@@ -346,6 +434,7 @@ export interface PassageResult {
 export type GraphSearchProfile = 'fact-filtered-narrow'
 
 export interface GraphSearchOpts {
+  intentParser?: GraphIntentParserMode | undefined
   profile?: GraphSearchProfile | undefined
   count?: number | undefined
   bucketIds?: string[] | undefined
@@ -374,7 +463,10 @@ export type GraphExplainOpts = GraphSearchOpts & typegraphIdentity
 
 export interface GraphSearchTrace {
   intent?: GraphQueryIntent | undefined
-  parser?: 'llm' | 'none' | undefined
+  parser?: 'deterministic' | 'llm' | 'none' | undefined
+  intentParseMs?: number | undefined
+  intentMatchedPatterns?: string[] | undefined
+  rejectedPredicates?: string[] | undefined
   entitySeedCount: number
   factSeedCount: number
   passageSeedCount: number

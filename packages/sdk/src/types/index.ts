@@ -71,6 +71,10 @@ export type { typegraphIdentity } from './identity.js'
 export type {
   MemoryBridge,
   KnowledgeGraphBridge,
+  GraphEntityRef,
+  UpsertGraphEntityInput,
+  UpsertGraphEdgeInput,
+  UpsertGraphFactInput,
   EntityResult,
   EntityDetail,
   EdgeResult,
@@ -86,6 +90,7 @@ export type {
   GraphBackfillResult,
   GraphExplainOpts,
   PassageResult,
+  GraphIntentParserMode,
   GraphSearchProfile,
   GraphSearchOpts,
   GraphSearchTrace,
@@ -129,7 +134,12 @@ export type {
   ConversationTurnResult,
   MemoryHealthReport,
 } from './memory.js'
-export type { MemoryRecord } from '../memory/types/memory.js'
+export type {
+  ExternalId,
+  ExternalIdIdentityType,
+  ExternalIdEncoding,
+  MemoryRecord,
+} from '../memory/types/memory.js'
 
 export type { typegraphLogger } from './logger.js'
 

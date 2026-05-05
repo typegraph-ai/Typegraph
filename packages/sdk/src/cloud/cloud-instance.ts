@@ -10,9 +10,9 @@ import type { CreatePolicyInput, UpdatePolicyInput, Policy, PolicyType } from '.
 import type { UndeployResult } from '../types/adapter.js'
 import type { PaginationOpts, PaginatedResult } from '../types/pagination.js'
 import type { ConversationTurnResult, MemoryHealthReport } from '../types/memory.js'
-import type { MemoryRecord } from '../memory/types/memory.js'
+import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
 import type { Job, JobFilter } from '../types/job.js'
-import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, PassageResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts } from '../types/graph-bridge.js'
+import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, PassageResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput } from '../types/graph-bridge.js'
 import { DEFAULT_BUCKET_ID, normalizeRawDocument } from '../typegraph.js'
 import { HttpClient } from './http-client.js'
 import type { CloudConfig } from './http-client.js'
@@ -103,6 +103,30 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
   }
 
   const graph: GraphApi = {
+    async upsertEntity(input: UpsertGraphEntityInput): Promise<EntityDetail> {
+      return client.post<EntityDetail>('/v1/graph/entities', input)
+    },
+    async upsertEntities(inputs: UpsertGraphEntityInput[]): Promise<EntityDetail[]> {
+      return client.post<EntityDetail[]>('/v1/graph/entities/batch', { entities: inputs })
+    },
+    async resolveEntity(ref: GraphEntityRef | string, identity?: typegraphIdentity): Promise<EntityDetail | null> {
+      return client.post<EntityDetail | null>('/v1/graph/entities/resolve', { ref, identity })
+    },
+    async linkExternalIds(entityId: string, externalIds: ExternalId[], identity?: typegraphIdentity): Promise<EntityDetail> {
+      return client.post<EntityDetail>(`/v1/graph/entities/${e(entityId)}/external-ids`, { externalIds, identity })
+    },
+    async upsertEdge(input: UpsertGraphEdgeInput): Promise<EdgeResult> {
+      return client.post<EdgeResult>('/v1/graph/edges', input)
+    },
+    async upsertEdges(inputs: UpsertGraphEdgeInput[]): Promise<EdgeResult[]> {
+      return client.post<EdgeResult[]>('/v1/graph/edges/batch', { edges: inputs })
+    },
+    async upsertFact(input: UpsertGraphFactInput): Promise<FactResult> {
+      return client.post<FactResult>('/v1/graph/facts', input)
+    },
+    async upsertFacts(inputs: UpsertGraphFactInput[]): Promise<FactResult[]> {
+      return client.post<FactResult[]>('/v1/graph/facts/batch', { facts: inputs })
+    },
     async searchEntities(query: string, identity: typegraphIdentity, opts?: {
       limit?: number
       entityType?: string

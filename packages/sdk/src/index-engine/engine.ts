@@ -10,6 +10,7 @@ import type { TripleExtractor, EntityContext } from './triple-extractor.js'
 import type { typegraphEventSink } from '../types/events.js'
 import type { typegraphLogger } from '../types/logger.js'
 import type { KnowledgeGraphBridge } from '../types/graph-bridge.js'
+import { optionalCompactObject } from '../utils/input.js'
 
 /** Race a promise against a timeout. Resolves to undefined on timeout (never rejects). */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
@@ -89,8 +90,9 @@ export class IndexEngine {
     bucketId: string,
     source: SourceInput,
     chunks: Chunk[],
-    opts: IngestOptions = {},
+    rawOpts?: IngestOptions | null,
   ): Promise<IndexResult> {
+    const opts = optionalCompactObject<IngestOptions>(rawOpts, 'IndexEngine.ingestWithChunks') as IngestOptions
     const cleanSource = sanitizeSource(source)
     const cleanChunks = chunks.map(sanitizeChunk)
     const { tenantId, groupId, userId, agentId, conversationId, visibility, dryRun = false } = opts
@@ -257,8 +259,9 @@ export class IndexEngine {
   async ingestBatch(
     bucketId: string,
     items: Array<{ source: SourceInput; chunks: Chunk[] }>,
-    opts: IngestOptions = {},
+    rawOpts?: IngestOptions | null,
   ): Promise<IndexResult> {
+    const opts = optionalCompactObject<IngestOptions>(rawOpts, 'IndexEngine.ingestBatch') as IngestOptions
     const cleanItems = items.map(({ source, chunks }) => ({
       source: sanitizeSource(source),
       chunks: chunks.map(sanitizeChunk),

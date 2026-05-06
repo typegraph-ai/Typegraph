@@ -5,6 +5,7 @@ import type { LLMProvider } from '../../types/llm-provider.js'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
 import type { typegraphIdentity } from '../../types/identity.js'
 import type { EpisodicMemory, SemanticFact, ProceduralMemory } from '../types/index.js'
+import { optionalCompactObject } from '../../utils/input.js'
 
 // ── Zod schemas for structured output ──
 
@@ -71,8 +72,9 @@ export class ConsolidationEngine {
    */
   async consolidate(
     scope: typegraphIdentity,
-    opts: ConsolidationOpts = {},
+    rawOpts?: ConsolidationOpts | null,
   ): Promise<ConsolidationResult> {
+    const opts = optionalCompactObject<ConsolidationOpts>(rawOpts, 'ConsolidationEngine.consolidate') as ConsolidationOpts
     const strategies = opts.strategies ?? ['episodic_to_semantic']
     const result: ConsolidationResult = {
       factsExtracted: 0,
@@ -111,8 +113,9 @@ export class ConsolidationEngine {
    */
   async promoteEpisodicToSemantic(
     scope: typegraphIdentity,
-    opts: ConsolidationOpts = {},
+    rawOpts?: ConsolidationOpts | null,
   ): Promise<{ factsExtracted: number; episodesConsolidated: number }> {
+    const opts = optionalCompactObject<ConsolidationOpts>(rawOpts, 'ConsolidationEngine.promoteEpisodicToSemantic') as ConsolidationOpts
     const minAge = opts.minEpisodicAgeMs ?? 60 * 60 * 1000 // 1 hour
     const now = new Date()
     const cutoff = new Date(now.getTime() - minAge)
@@ -202,8 +205,9 @@ Respond with only valid JSON: [{"content": "...", "subject": "...", "predicate":
    */
   async promoteToProcedural(
     scope: typegraphIdentity,
-    opts: ConsolidationOpts = {},
+    rawOpts?: ConsolidationOpts | null,
   ): Promise<{ proceduresCreated: number }> {
+    const opts = optionalCompactObject<ConsolidationOpts>(rawOpts, 'ConsolidationEngine.promoteToProcedural') as ConsolidationOpts
     // Find tool-trace or action episodes
     const allEpisodes = await this.store.list({ scope, category: 'episodic' }, 200)
     const actionEpisodes = allEpisodes.filter((m): m is EpisodicMemory => {

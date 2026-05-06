@@ -105,10 +105,10 @@ export interface UpsertGraphEdgeInput extends typegraphIdentity {
 
 export interface UpsertGraphFactInput extends typegraphIdentity {
   /** Entity ref. A bare string reuses an existing entity ID when found, otherwise seeds by name. */
-  subject: GraphEntityRef | string
-  predicate: string
+  source: GraphEntityRef | string
   /** Entity ref. A bare string reuses an existing entity ID when found, otherwise seeds by name. */
-  object: GraphEntityRef | string
+  target: GraphEntityRef | string
+  relation: string
   factText?: string | undefined
   description?: string | undefined
   evidenceText?: string | undefined
@@ -162,32 +162,32 @@ export interface MemoryBridge {
   deploy?(): Promise<void>
 
   /** Store a memory. LLM extracts triples → memory record. */
-  remember(content: string, opts: RememberOpts): Promise<MemoryRecord>
+  remember(content: string, opts?: RememberOpts | null): Promise<MemoryRecord>
 
   /** Invalidate a memory. Caller must prove ownership via identity. */
-  forget(id: string, opts: ForgetOpts): Promise<void>
+  forget(id: string, opts?: ForgetOpts | null): Promise<void>
 
   /** Apply a natural language correction (e.g., "Actually, Alice works at Beta Inc now"). */
-  correct(correction: string, opts: CorrectOpts): Promise<{ invalidated: number; created: number; summary: string }>
+  correct(correction: string, opts?: CorrectOpts | null): Promise<{ invalidated: number; created: number; summary: string }>
 
   /** Ingest a conversation turn with extraction. */
   addConversationTurn(
     messages: Array<{ role: string; content: string; timestamp?: Date }>,
-    opts: AddConversationTurnOpts,
+    opts?: AddConversationTurnOpts | null,
   ): Promise<ConversationTurnResult>
 
   /** Recall memories by semantic similarity. Returns a formatted string when `format` is set. */
   recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
-  recall(query: string, opts: RecallOpts): Promise<MemoryRecord[]>
+  recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
 
   /** Recall memories using hybrid search (vector + BM25 keyword).
    *  When the memory store supports it, uses RRF to fuse vector and keyword results.
    *  Falls back to vector-only recall if not implemented. */
   recallHybrid?(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
-  recallHybrid?(query: string, opts: RecallOpts): Promise<MemoryRecord[]>
+  recallHybrid?(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
 
   /** Get memory system health statistics. */
-  healthCheck?(opts?: HealthCheckOpts): Promise<MemoryHealthReport>
+  healthCheck?(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport>
 
   /** Check if the memory store has any active memories. Used to skip memory runner when empty. */
   hasMemories?(): Promise<boolean>
@@ -269,7 +269,7 @@ export interface KnowledgeGraphBridge {
   mergeEntities?(input: MergeGraphEntitiesInput): Promise<MergeGraphEntitiesResult>
 
   /** Invalidate or purge an entity and its graph references without deleting chunks/sources/memories. */
-  deleteEntity?(entityId: string, opts?: DeleteGraphEntityOpts): Promise<DeleteGraphEntityResult>
+  deleteEntity?(entityId: string, opts?: DeleteGraphEntityOpts | null): Promise<DeleteGraphEntityResult>
 
   /** Create or update a deterministic developer-seeded edge. */
   upsertEdge?(input: UpsertGraphEdgeInput): Promise<EdgeResult>
@@ -307,46 +307,46 @@ export interface KnowledgeGraphBridge {
   searchEntities?(query: string, identity: typegraphIdentity, limit?: number): Promise<EntityResult[]>
 
   /** Search persisted facts by semantic similarity. */
-  searchFacts?(query: string, opts?: FactSearchOpts): Promise<FactResult[]>
+  searchFacts?(query: string, opts?: FactSearchOpts | null): Promise<FactResult[]>
 
   /** Explore a semantic subgraph using anchor resolution and predicate-first intent parsing. */
-  explore?(query: string, opts?: GraphExploreOpts): Promise<GraphExploreResult>
+  explore?(query: string, opts?: GraphExploreOpts | null): Promise<GraphExploreResult>
 
   /** Resolve entity/external-ID scope to concrete graph and chunk anchors. */
   resolveEntityScope?(scope: QueryEntityScope, identity: typegraphIdentity, opts?: {
     bucketIds?: string[] | undefined
     limit?: number | undefined
-  }): Promise<EntityScopeResolution>
+  } | null): Promise<EntityScopeResolution>
 
   /** Search direct facts/entities without graph traversal. */
-  searchKnowledge?(query: string, identity: typegraphIdentity, opts?: KnowledgeSearchOpts): Promise<KnowledgeSearchResult>
+  searchKnowledge?(query: string, identity: typegraphIdentity, opts?: KnowledgeSearchOpts | null): Promise<KnowledgeSearchResult>
 
   /** Retrieve chunks directly connected to an entity. */
-  getChunksForEntity?(entityId: string, opts?: {
+  getChunksForEntity?(entityId: string, opts?: ({
     bucketIds?: string[] | undefined
     limit?: number | undefined
-  } & typegraphIdentity): Promise<ChunkResult[]>
+  } & typegraphIdentity) | null): Promise<ChunkResult[]>
 
   /** Run heterogeneous graph traversal and return ranked chunks. */
-  searchGraphChunks?(query: string, identity: typegraphIdentity, opts?: GraphSearchOpts): Promise<GraphSearchResult>
+  searchGraphChunks?(query: string, identity: typegraphIdentity, opts?: GraphSearchOpts | null): Promise<GraphSearchResult>
 
   /** Explain a heterogeneous graph query without changing retrieval behavior. */
-  explainQuery?(query: string, opts?: GraphExplainOpts): Promise<GraphSearchTrace>
+  explainQuery?(query: string, opts?: GraphExplainOpts | null): Promise<GraphSearchTrace>
 
   /** Backfill entity-chunk graph edges and fact records from existing indexed graph data. */
-  backfill?(identity: typegraphIdentity, opts?: GraphBackfillOpts): Promise<GraphBackfillResult>
+  backfill?(identity: typegraphIdentity, opts?: GraphBackfillOpts | null): Promise<GraphBackfillResult>
 
   // ── Graph exploration methods ──
 
   /** Get a single entity by ID. */
-  getEntity?(id: string, opts?: typegraphIdentity): Promise<EntityDetail | null>
+  getEntity?(id: string, opts?: typegraphIdentity | null): Promise<EntityDetail | null>
 
   /** Get edges for an entity. */
-  getEdges?(entityId: string, opts?: {
+  getEdges?(entityId: string, opts?: ({
     direction?: 'in' | 'out' | 'both'
     relation?: string
     limit?: number
-  } & typegraphIdentity): Promise<EdgeResult[]>
+  } & typegraphIdentity) | null): Promise<EdgeResult[]>
 
   /** Extract a subgraph around seed entities or a query. */
   getSubgraph?(opts: SubgraphOpts): Promise<SubgraphResult>

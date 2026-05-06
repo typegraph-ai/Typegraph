@@ -22,6 +22,7 @@ import { InvalidationEngine } from './extraction/invalidation.js'
 import { decayScore, DEFAULT_DECAY_CONFIG } from './consolidation/decay.js'
 import { createTemporal } from './temporal.js'
 import { generateId } from '../utils/id.js'
+import { optionalCompactObject } from '../utils/input.js'
 import { DEFAULT_ENTITY_TYPE } from '../index-engine/ontology.js'
 import { createHash } from 'crypto'
 
@@ -46,6 +47,16 @@ interface MemoryContextOpts extends TelemetryOpts {
   subject?: MemorySubject | undefined
   relatedEntities?: MemorySubject[] | undefined
   visibility?: Visibility | undefined
+}
+
+type RememberMemoryOpts = MemoryContextOpts & {
+  category?: MemoryCategory | undefined
+  importance?: number | undefined
+  metadata?: Record<string, unknown> | undefined
+}
+
+interface ConversationTurnOpts extends MemoryContextOpts {
+  conversationId?: string | undefined
 }
 
 // ── Memory Health Report ──
@@ -117,7 +128,7 @@ export class TypegraphMemory {
     targetId: string | undefined,
     payload: Record<string, unknown>,
     durationMs?: number,
-    telemetry?: TelemetryOpts,
+    telemetry?: TelemetryOpts | null,
   ): void {
     if (!this.eventSink) return
     this.eventSink.emit({
@@ -135,7 +146,7 @@ export class TypegraphMemory {
 
   private stableMemoryEntityId(subject: MemorySubject): string {
     const key = subject.entityId
-      ?? subject.externalIds?.map(id => `${id.identityType}:${id.type}:${id.encoding ?? 'none'}:${id.id}`).sort().join('|')
+      ?? subject.externalIds?.map(id => `${id.type}:${id.encoding ?? 'none'}:${id.id}`).sort().join('|')
       ?? subject.name
       ?? 'memory-subject'
     const scopeKey = [
@@ -150,9 +161,6 @@ export class TypegraphMemory {
 
   private memorySubjectEntityType(subject: MemorySubject): string {
     if (subject.entityType?.trim()) return subject.entityType.trim()
-    const identityType = subject.externalIds?.[0]?.identityType
-    if (identityType === 'user') return 'person'
-    if (identityType === 'tenant' || identityType === 'group') return 'organization'
     return DEFAULT_ENTITY_TYPE
   }
 
@@ -234,7 +242,7 @@ export class TypegraphMemory {
     return this.store.getMemoryIdsForEntities(entityIds, this.scope)
   }
 
-  private async resolveMemoryContext(opts?: MemoryContextOpts | undefined): Promise<{
+  private async resolveMemoryContext(opts?: MemoryContextOpts | null): Promise<{
     entities: SemanticEntity[]
     entityScope?: QueryEntityScope | undefined
     memoryIds?: string[] | undefined
@@ -256,14 +264,8 @@ export class TypegraphMemory {
    * Store a memory. Creates a record in the given category (default: `semantic`).
    * For LLM extraction of structured facts from a conversation, use `addConversationTurn()`.
    */
-  async remember(content: string, opts?: {
-    category?: MemoryCategory | undefined
-    importance?: number | undefined
-    metadata?: Record<string, unknown> | undefined
-    subject?: MemorySubject | undefined
-    relatedEntities?: MemorySubject[] | undefined
-    visibility?: Visibility | undefined
-  } & TelemetryOpts): Promise<MemoryRecord> {
+  async remember(content: string, rawOpts?: RememberMemoryOpts | null): Promise<MemoryRecord> {
+    const opts = optionalCompactObject<RememberMemoryOpts>(rawOpts, 'TypegraphMemory.remember') as RememberMemoryOpts
     const category = opts?.category ?? 'semantic'
     const embedding = await this.embedding.embed(content)
     const temporal = createTemporal()
@@ -293,10 +295,11 @@ export class TypegraphMemory {
   /**
    * Forget (invalidate) a memory by ID. Preserves the record with invalidAt set.
    */
-  async forget(id: string, telemetry?: TelemetryOpts): Promise<void> {
+  async forget(id: string, telemetry?: TelemetryOpts | null): Promise<void> {
+    const normalizedTelemetry = optionalCompactObject<TelemetryOpts>(telemetry, 'TypegraphMemory.forget', 'telemetry') as TelemetryOpts
     await this.store.invalidate(id)
     await this.store.invalidateGraphEdgesForNode?.('memory', id)
-    this.emit('memory.invalidate', id, {}, undefined, telemetry)
+    this.emit('memory.invalidate', id, {}, undefined, normalizedTelemetry)
   }
 
   /**
@@ -307,11 +310,12 @@ export class TypegraphMemory {
    * machinery as `addConversationTurn`, so prior facts get invalidated
    * by the LLM contradiction judge rather than a brittle substring match.
    */
-  async correct(naturalLanguageCorrection: string, opts?: MemoryContextOpts): Promise<{
+  async correct(naturalLanguageCorrection: string, rawOpts?: MemoryContextOpts | null): Promise<{
     invalidated: number
     created: number
     summary: string
   }> {
+    const opts = optionalCompactObject<MemoryContextOpts>(rawOpts, 'TypegraphMemory.correct') as MemoryContextOpts
     const messages: ConversationMessage[] = [
       { role: 'user', content: naturalLanguageCorrection },
     ]
@@ -371,8 +375,9 @@ export class TypegraphMemory {
    * suitable for dropping into an LLM prompt.
    */
   async recall(query: string, opts: RecallOptsWithFormat): Promise<string>
-  async recall(query: string, opts?: RecallOptsInternal): Promise<MemoryRecord[]>
-  async recall(query: string, opts?: RecallOptsInternal): Promise<MemoryRecord[] | string> {
+  async recall(query: string, opts?: RecallOptsInternal | null): Promise<MemoryRecord[]>
+  async recall(query: string, rawOpts?: RecallOptsInternal | null): Promise<MemoryRecord[] | string> {
+    const opts = optionalCompactObject<RecallOptsInternal>(rawOpts, 'TypegraphMemory.recall') as RecallOptsInternal
     const embedding = await this.embedding.embed(query)
     const scopedMemoryIds = await this.memoryIdsForEntityScope(opts?.entityScope)
     const results = await this.store.search(embedding, {
@@ -405,8 +410,9 @@ export class TypegraphMemory {
   }
 
   async recallHybrid(query: string, opts: RecallOptsWithFormat): Promise<string>
-  async recallHybrid(query: string, opts?: RecallOptsInternal): Promise<MemoryRecord[]>
-  async recallHybrid(query: string, opts?: RecallOptsInternal): Promise<MemoryRecord[] | string> {
+  async recallHybrid(query: string, opts?: RecallOptsInternal | null): Promise<MemoryRecord[]>
+  async recallHybrid(query: string, rawOpts?: RecallOptsInternal | null): Promise<MemoryRecord[] | string> {
+    const opts = optionalCompactObject<RecallOptsInternal>(rawOpts, 'TypegraphMemory.recallHybrid') as RecallOptsInternal
     const embedding = await this.embedding.embed(query)
     const scopedMemoryIds = await this.memoryIdsForEntityScope(opts?.entityScope)
     const searchOpts = {
@@ -447,8 +453,8 @@ export class TypegraphMemory {
   /**
    * Recall only semantic facts.
    */
-  async recallFacts(query: string, limit: number = 10, telemetry?: TelemetryOpts): Promise<SemanticFact[]> {
-    const results = await this.recall(query, { types: ['semantic'], limit, ...telemetry })
+  async recallFacts(query: string, limit: number = 10, telemetry?: TelemetryOpts | null): Promise<SemanticFact[]> {
+    const results = await this.recall(query, { types: ['semantic'], limit, ...(telemetry ?? {}) })
     const facts = results.filter((r): r is SemanticFact => r.category === 'semantic')
     this.emit('memory.read', undefined, { query: query.slice(0, 100), resultCount: facts.length, source: 'facts' }, undefined, telemetry)
     return facts
@@ -457,16 +463,16 @@ export class TypegraphMemory {
   /**
    * Recall only episodic memories.
    */
-  async recallEpisodes(query: string, limit: number = 10, telemetry?: TelemetryOpts): Promise<EpisodicMemory[]> {
-    const results = await this.recall(query, { types: ['episodic'], limit, ...telemetry })
+  async recallEpisodes(query: string, limit: number = 10, telemetry?: TelemetryOpts | null): Promise<EpisodicMemory[]> {
+    const results = await this.recall(query, { types: ['episodic'], limit, ...(telemetry ?? {}) })
     return results.filter((r): r is EpisodicMemory => r.category === 'episodic')
   }
 
   /**
    * Recall procedural memories matching a trigger.
    */
-  async recallProcedures(trigger: string, limit: number = 5, telemetry?: TelemetryOpts): Promise<ProceduralMemory[]> {
-    const results = await this.recall(trigger, { types: ['procedural'], limit, ...telemetry })
+  async recallProcedures(trigger: string, limit: number = 5, telemetry?: TelemetryOpts | null): Promise<ProceduralMemory[]> {
+    const results = await this.recall(trigger, { types: ['procedural'], limit, ...(telemetry ?? {}) })
     return results.filter((r): r is ProceduralMemory => r.category === 'procedural')
   }
 
@@ -477,9 +483,10 @@ export class TypegraphMemory {
    */
   async addConversationTurn(
     messages: ConversationMessage[],
-    conversationId?: string,
-    opts?: MemoryContextOpts,
+    rawOpts?: ConversationTurnOpts | null,
   ): Promise<ExtractionResult> {
+    const opts = optionalCompactObject<ConversationTurnOpts>(rawOpts, 'TypegraphMemory.addConversationTurn') as ConversationTurnOpts
+    const { conversationId } = opts
     const context = await this.resolveMemoryContext(opts)
     // Get existing facts for conflict resolution
     const existingFacts = context.entityScope
@@ -560,7 +567,7 @@ export class TypegraphMemory {
    * Return a snapshot of memory system health and statistics.
    * Uses count methods on the adapter when available; falls back to list() sampling.
    */
-  async healthCheck(): Promise<MemoryHealthReport> {
+  async healthCheck(_opts?: TelemetryOpts | null): Promise<MemoryHealthReport> {
     let totalMemories: number
     let activeMemories: number
     let invalidatedMemories: number

@@ -64,11 +64,11 @@ export interface VectorStoreAdapter {
 
   /** Upsert chunks for a source into the vector store. */
   upsertSourceChunks(model: string, chunks: EmbeddedChunk[]): Promise<void>
-  delete(model: string, filter: ChunkFilter): Promise<void>
+  delete(model: string, filter: ChunkFilter | null): Promise<void>
 
-  search(model: string, embedding: number[], opts: SearchOpts): Promise<ScoredChunk[]>
-  hybridSearch?(model: string, embedding: number[], query: string, opts: SearchOpts): Promise<ScoredChunk[]>
-  countChunks(model: string, filter: ChunkFilter): Promise<number>
+  search(model: string, embedding: number[], opts: SearchOpts | null): Promise<ScoredChunk[]>
+  hybridSearch?(model: string, embedding: number[], query: string, opts: SearchOpts | null): Promise<ScoredChunk[]>
+  countChunks(model: string, filter: ChunkFilter | null): Promise<number>
 
   hashStore: HashStoreAdapter
 
@@ -79,9 +79,9 @@ export interface VectorStoreAdapter {
   /** Get a source by UUID. */
   getSource?(id: string): Promise<typegraphSource | null>
   /** List sources matching a filter. Supports optional pagination. */
-  listSources?(filter: SourceFilter, pagination?: PaginationOpts): Promise<typegraphSource[] | PaginatedResult<typegraphSource>>
+  listSources?(filter?: SourceFilter | null, pagination?: PaginationOpts | null): Promise<typegraphSource[] | PaginatedResult<typegraphSource>>
   /** Delete sources matching a filter. Returns count deleted. */
-  deleteSources?(filter: SourceFilter): Promise<number>
+  deleteSources?(filter: SourceFilter | null): Promise<number>
   /** Update a source's status and optionally its chunk count. */
   updateSourceStatus?(id: string, status: SourceStatus, chunkCount?: number): Promise<void>
   /** Update source metadata fields (title, url, visibility, subject, etc.). Returns updated source. */
@@ -94,7 +94,7 @@ export interface VectorStoreAdapter {
   /** Fetch a job by id. */
   getJob?(id: string): Promise<Job | null>
   /** List jobs matching a filter, ordered by created_at DESC. */
-  listJobs?(filter: JobFilter, pagination?: PaginationOpts): Promise<Job[] | PaginatedResult<Job>>
+  listJobs?(filter?: JobFilter | null, pagination?: PaginationOpts | null): Promise<Job[] | PaginatedResult<Job>>
   /** Apply a partial status/result/error/progress patch to a job. */
   updateJobStatus?(id: string, patch: JobStatusPatch): Promise<void>
   /** Atomically add to a job's progress_processed counter. Safe under concurrent workers. */
@@ -105,7 +105,7 @@ export interface VectorStoreAdapter {
     model: string,
     embedding: number[],
     query: string,
-    opts: SearchOpts & { sourceFilter?: SourceFilter | undefined }
+    opts: (SearchOpts & { sourceFilter?: SourceFilter | undefined }) | null
   ): Promise<ScoredChunkWithSource[]>
 
   /** Fetch chunks by source and index range (for neighbor expansion). No vector search. */

@@ -3,7 +3,7 @@ import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '@typegraph-ai/sdk'
 import type { typegraphSource, SourceFilter, SourceStatus, UpsertSourceInput } from '@typegraph-ai/sdk'
 import type { Bucket } from '@typegraph-ai/sdk'
 import type { Job, JobFilter, UpsertJobInput, JobStatusPatch, PaginationOpts, PaginatedResult } from '@typegraph-ai/sdk'
-import { DEFAULT_BUCKET_ID } from '@typegraph-ai/sdk'
+import { ConfigError, DEFAULT_BUCKET_ID } from '@typegraph-ai/sdk'
 import {
   REGISTRY_SQL, MODEL_TABLE_SQL, HASH_TABLE_SQL, SOURCES_TABLE_SQL,
   BUCKETS_TABLE_SQL, EVENTS_TABLE_SQL, POLICIES_TABLE_SQL, JOBS_TABLE_SQL,
@@ -40,6 +40,14 @@ const RELAXED_KEYWORD_STOP_WORDS = new Set([
   'their', 'there', 'these', 'this', 'those', 'to', 'was', 'were', 'what',
   'when', 'where', 'which', 'who', 'whom', 'why', 'with', 'within',
 ])
+
+function requireSearchOpts(opts: SearchOpts | null | undefined, method: string): SearchOpts {
+  if (opts == null) throw new ConfigError(`${method} opts are required.`)
+  if (typeof opts !== 'object' || Array.isArray(opts)) {
+    throw new ConfigError(`${method} opts must be an object.`)
+  }
+  return opts
+}
 
 function buildRelaxedKeywordQuery(query: string): string {
   const terms: string[] = []
@@ -340,39 +348,41 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     )
   }
 
-  async delete(model: string, filter: ChunkFilter): Promise<void> {
+  async delete(model: string, filter: ChunkFilter | null): Promise<void> {
     const table = await this.getTable(model)
+    const normalizedFilter = filter ?? {}
     const hasExplicitFilter =
-      filter.bucketId != null ||
-      (filter.bucketIds != null && filter.bucketIds.length > 0) ||
-      filter.chunkRefs != null ||
-      filter.tenantId != null ||
-      filter.groupId != null ||
-      filter.userId != null ||
-      filter.agentId != null ||
-      filter.conversationId != null ||
-      filter.sourceId != null ||
-      filter.idempotencyKey != null
-    if (!hasExplicitFilter) throw new Error('delete() requires at least one filter field')
-    const { where, params } = buildWhere(filter)
+      normalizedFilter.bucketId != null ||
+      (normalizedFilter.bucketIds != null && normalizedFilter.bucketIds.length > 0) ||
+      normalizedFilter.chunkRefs != null ||
+      normalizedFilter.tenantId != null ||
+      normalizedFilter.groupId != null ||
+      normalizedFilter.userId != null ||
+      normalizedFilter.agentId != null ||
+      normalizedFilter.conversationId != null ||
+      normalizedFilter.sourceId != null ||
+      normalizedFilter.idempotencyKey != null
+    if (!hasExplicitFilter) throw new ConfigError('delete() requires at least one filter field.')
+    const { where, params } = buildWhere(normalizedFilter)
     await this.sql(`DELETE FROM ${table} WHERE ${where}`, params)
   }
 
-  async search(model: string, embedding: number[], opts: SearchOpts): Promise<ScoredChunk[]> {
+  async search(model: string, embedding: number[], opts: SearchOpts | null): Promise<ScoredChunk[]> {
+    const normalizedOpts = requireSearchOpts(opts, 'search')
     const table = await this.getTable(model)
     const vectorStr = `[${embedding.join(',')}]`
-    const { where, params } = buildWhere(opts.filter)
+    const { where, params } = buildWhere(normalizedOpts.filter)
     // Add temporal filtering if requested
     const temporalConditions: string[] = where ? [where] : []
-    if (opts.temporalAt) {
-      params.push(opts.temporalAt.toISOString())
+    if (normalizedOpts.temporalAt) {
+      params.push(normalizedOpts.temporalAt.toISOString())
       temporalConditions.push(`indexed_at <= $${params.length}`)
     }
     const filterClause = temporalConditions.length > 0 ? `WHERE ${temporalConditions.join(' AND ')}` : ''
-    const count = opts.count
+    const count = normalizedOpts.count
 
     const runQuery = async (sql: SqlExecutor, inTransaction: boolean): Promise<ScoredChunk[]> => {
-      if (inTransaction && opts.iterativeScan !== false) {
+      if (inTransaction && normalizedOpts.iterativeScan !== false) {
         await sql(`SET LOCAL hnsw.iterative_scan = relaxed_order;`)
       }
       const paramOffset = params.length
@@ -399,21 +409,22 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     model: string,
     embedding: number[],
     query: string,
-    opts: SearchOpts
+    opts: SearchOpts | null
   ): Promise<ScoredChunk[]> {
+    const normalizedOpts = requireSearchOpts(opts, 'hybridSearch')
     const table = await this.getTable(model)
     const vectorStr = `[${embedding.join(',')}]`
-    const count = opts.count
-    const useSemantic = opts.signals?.semantic !== false
-    const useKeyword = opts.signals?.keyword ?? true
+    const count = normalizedOpts.count
+    const useSemantic = normalizedOpts.signals?.semantic !== false
+    const useKeyword = normalizedOpts.signals?.keyword ?? true
     if (!useSemantic && !useKeyword) return []
     const relaxedQuery = buildRelaxedKeywordQuery(query)
-    const { where: filterWhere, params: filterParams } = buildWhere(opts.filter)
+    const { where: filterWhere, params: filterParams } = buildWhere(normalizedOpts.filter)
     // Add temporal filtering — appended to filterParams so it gets reindexed with everything else
-    if (opts.temporalAt) {
-      filterParams.push(opts.temporalAt.toISOString())
+    if (normalizedOpts.temporalAt) {
+      filterParams.push(normalizedOpts.temporalAt.toISOString())
     }
-    const temporalCond = opts.temporalAt ? ` AND indexed_at <= $${filterParams.length}` : ''
+    const temporalCond = normalizedOpts.temporalAt ? ` AND indexed_at <= $${filterParams.length}` : ''
     const filterClause = (filterWhere ? `AND ${filterWhere}` : '') + temporalCond
 
     // Offset param indices past filter params: $1=vectorStr, $2=strict query,
@@ -425,7 +436,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     )
 
     const runQuery = async (sql: SqlExecutor, inTransaction: boolean): Promise<ScoredChunk[]> => {
-      if (inTransaction && opts.iterativeScan !== false) {
+      if (inTransaction && normalizedOpts.iterativeScan !== false) {
         await sql(`SET LOCAL hnsw.iterative_scan = relaxed_order;`)
       }
 
@@ -513,7 +524,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     return runQuery(this.sql, false)
   }
 
-  async countChunks(model: string, filter: ChunkFilter): Promise<number> {
+  async countChunks(model: string, filter: ChunkFilter | null): Promise<number> {
     const table = await this.getTable(model)
     const { where, params } = buildWhere(filter)
     const filterClause = where ? `WHERE ${where}` : ''
@@ -534,11 +545,11 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     return this.sourceStore.get(id)
   }
 
-  async listSources(filter: SourceFilter, pagination?: import('@typegraph-ai/sdk').PaginationOpts): Promise<typegraphSource[] | import('@typegraph-ai/sdk').PaginatedResult<typegraphSource>> {
+  async listSources(filter?: SourceFilter | null, pagination?: import('@typegraph-ai/sdk').PaginationOpts | null): Promise<typegraphSource[] | import('@typegraph-ai/sdk').PaginatedResult<typegraphSource>> {
     return this.sourceStore.list(filter, pagination)
   }
 
-  async deleteSources(filter: SourceFilter): Promise<number> {
+  async deleteSources(filter: SourceFilter | null): Promise<number> {
     const { count, ids } = await this.sourceStore.delete(filter)
     if (ids.length === 0) return 0
 
@@ -600,7 +611,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     return this.jobStore.get(id)
   }
 
-  async listJobs(filter: JobFilter, pagination?: PaginationOpts): Promise<Job[] | PaginatedResult<Job>> {
+  async listJobs(filter?: JobFilter | null, pagination?: PaginationOpts | null): Promise<Job[] | PaginatedResult<Job>> {
     return this.jobStore.list(filter, pagination)
   }
 
@@ -618,23 +629,24 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     model: string,
     embedding: number[],
     query: string,
-    opts: SearchOpts & { sourceFilter?: SourceFilter | undefined }
+    opts: (SearchOpts & { sourceFilter?: SourceFilter | undefined }) | null
   ): Promise<ScoredChunkWithSource[]> {
+    const normalizedOpts = requireSearchOpts(opts, 'searchWithSources') as SearchOpts & { sourceFilter?: SourceFilter | undefined }
     const table = await this.getTable(model)
     const vectorStr = `[${embedding.join(',')}]`
-    const count = opts.count
-    const useSemantic = opts.signals?.semantic !== false
-    const useKeyword = opts.signals?.keyword ?? true
+    const count = normalizedOpts.count
+    const useSemantic = normalizedOpts.signals?.semantic !== false
+    const useKeyword = normalizedOpts.signals?.keyword ?? true
     if (!useSemantic && !useKeyword) return []
     const relaxedQuery = buildRelaxedKeywordQuery(query)
-    const { where: chunkFilterWhere, params: chunkFilterParams } = buildWhere(opts.filter)
+    const { where: chunkFilterWhere, params: chunkFilterParams } = buildWhere(normalizedOpts.filter)
     // Add temporal filtering
-    if (opts.temporalAt) {
-      chunkFilterParams.push(opts.temporalAt.toISOString())
+    if (normalizedOpts.temporalAt) {
+      chunkFilterParams.push(normalizedOpts.temporalAt.toISOString())
     }
-    const temporalCond = opts.temporalAt ? ` AND c.indexed_at <= $${chunkFilterParams.length}` : ''
+    const temporalCond = normalizedOpts.temporalAt ? ` AND c.indexed_at <= $${chunkFilterParams.length}` : ''
     const chunkFilterClause = (chunkFilterWhere ? `AND ${chunkFilterWhere}` : '') + temporalCond
-    const { where: sourceFilterWhere, params: sourceFilterParams } = buildSourceWhere(opts.sourceFilter ?? {})
+    const { where: sourceFilterWhere, params: sourceFilterParams } = buildSourceWhere(normalizedOpts.sourceFilter ?? {})
 
     // Base params: $1=vector, $2=strict query, $3=count, $4=relaxed query
     // Then chunk filter params, then source filter params
@@ -651,7 +663,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     const allParams = [vectorStr, query, count, relaxedQuery, ...chunkFilterParams, ...sourceFilterParams]
 
     const runQuery = async (sql: SqlExecutor, inTransaction: boolean): Promise<ScoredChunkWithSource[]> => {
-      if (inTransaction && opts.iterativeScan !== false) {
+      if (inTransaction && normalizedOpts.iterativeScan !== false) {
         await sql(`SET LOCAL hnsw.iterative_scan = relaxed_order;`)
       }
 
@@ -863,7 +875,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
   }
 }
 
-function buildWhere(filter?: ChunkFilter): { where: string; params: unknown[] } {
+function buildWhere(filter?: ChunkFilter | null): { where: string; params: unknown[] } {
   const conditions: string[] = []
   const params: unknown[] = []
 

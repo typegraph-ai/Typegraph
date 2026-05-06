@@ -19,18 +19,20 @@ import type { MemoryStoreAdapter } from './types/adapter.js'
 import type { ConversationMessage } from './extraction/extractor.js'
 import { TypegraphMemory } from './typegraph-memory.js'
 import { scopeKey } from './types/scope.js'
+import { optionalCompactObject, withDefaultTenant } from '../utils/input.js'
 
 /** Extract typegraphIdentity fields from an opts bag. */
-function identityFrom(opts: typegraphIdentity): typegraphIdentity {
+function identityFrom(opts: typegraphIdentity | null | undefined, defaults?: typegraphIdentity): typegraphIdentity {
+  const merged = { ...(defaults ?? {}), ...optionalCompactObject<typegraphIdentity>(opts, 'memory.identity', 'opts') }
   return {
-    tenantId: opts.tenantId,
-    groupId: opts.groupId,
-    userId: opts.userId,
-    agentId: opts.agentId,
-    conversationId: opts.conversationId,
-    agentName: opts.agentName,
-    agentDescription: opts.agentDescription,
-    agentVersion: opts.agentVersion,
+    tenantId: merged.tenantId,
+    groupId: merged.groupId,
+    userId: merged.userId,
+    agentId: merged.agentId,
+    conversationId: merged.conversationId,
+    agentName: merged.agentName,
+    agentDescription: merged.agentDescription,
+    agentVersion: merged.agentVersion,
   }
 }
 
@@ -72,88 +74,97 @@ export function createMemoryBridge(config: CreateMemoryBridgeConfig): MemoryBrid
     return mem
   }
 
-  async function remember(content: string, opts: RememberOpts): Promise<MemoryRecord> {
-    const mem = getMemory(identityFrom(opts))
+  async function remember(content: string, opts?: RememberOpts | null): Promise<MemoryRecord> {
+    const normalizedOpts = withDefaultTenant(opts, config.scope?.tenantId, 'remember') as RememberOpts
+    const mem = getMemory(identityFrom(normalizedOpts, config.scope))
     return mem.remember(content, {
-      category: (opts.category as 'episodic' | 'semantic' | 'procedural' | undefined) ?? 'semantic',
-      importance: opts.importance,
-      metadata: opts.metadata,
-      subject: opts.subject,
-      relatedEntities: opts.relatedEntities,
-      visibility: opts.visibility,
-      traceId: opts.traceId,
-      spanId: opts.spanId,
+      category: (normalizedOpts.category as 'episodic' | 'semantic' | 'procedural' | undefined) ?? 'semantic',
+      importance: normalizedOpts.importance,
+      metadata: normalizedOpts.metadata,
+      subject: normalizedOpts.subject,
+      relatedEntities: normalizedOpts.relatedEntities,
+      visibility: normalizedOpts.visibility,
+      traceId: normalizedOpts.traceId,
+      spanId: normalizedOpts.spanId,
     }) as unknown as Promise<MemoryRecord>
   }
 
-  async function forget(id: string, opts: ForgetOpts): Promise<void> {
-    const mem = getMemory(identityFrom(opts))
-    await mem.forget(id, { traceId: opts.traceId, spanId: opts.spanId })
+  async function forget(id: string, opts?: ForgetOpts | null): Promise<void> {
+    const normalizedOpts = withDefaultTenant(opts, config.scope?.tenantId, 'forget') as ForgetOpts
+    const mem = getMemory(identityFrom(normalizedOpts, config.scope))
+    await mem.forget(id, { traceId: normalizedOpts.traceId, spanId: normalizedOpts.spanId })
   }
 
-  async function correct(correction: string, opts: CorrectOpts) {
-    const mem = getMemory(identityFrom(opts))
+  async function correct(correction: string, opts?: CorrectOpts | null) {
+    const normalizedOpts = withDefaultTenant(opts, config.scope?.tenantId, 'correct') as CorrectOpts
+    const mem = getMemory(identityFrom(normalizedOpts, config.scope))
     return mem.correct(correction, {
-      subject: opts.subject,
-      relatedEntities: opts.relatedEntities,
-      traceId: opts.traceId,
-      spanId: opts.spanId,
+      subject: normalizedOpts.subject,
+      relatedEntities: normalizedOpts.relatedEntities,
+      traceId: normalizedOpts.traceId,
+      spanId: normalizedOpts.spanId,
     })
   }
 
   async function addConversationTurn(
     messages: Array<{ role: string; content: string; timestamp?: Date }>,
-    opts: AddConversationTurnOpts,
+    opts?: AddConversationTurnOpts | null,
   ): Promise<ConversationTurnResult> {
-    const mem = getMemory(identityFrom(opts))
-    return mem.addConversationTurn(messages as ConversationMessage[], opts.conversationId, {
-      subject: opts.subject,
-      relatedEntities: opts.relatedEntities,
-      traceId: opts.traceId,
-      spanId: opts.spanId,
+    const normalizedOpts = withDefaultTenant(opts, config.scope?.tenantId, 'addConversationTurn') as AddConversationTurnOpts
+    const mem = getMemory(identityFrom(normalizedOpts, config.scope))
+    return mem.addConversationTurn(messages as ConversationMessage[], {
+      conversationId: normalizedOpts.conversationId,
+      subject: normalizedOpts.subject,
+      relatedEntities: normalizedOpts.relatedEntities,
+      visibility: normalizedOpts.visibility,
+      traceId: normalizedOpts.traceId,
+      spanId: normalizedOpts.spanId,
     }) as unknown as Promise<ConversationTurnResult>
   }
 
   function recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
-  function recall(query: string, opts: RecallOpts): Promise<MemoryRecord[]>
-  function recall(query: string, opts: RecallOpts): Promise<MemoryRecord[] | string> {
-    const mem = getMemory(identityFrom(opts))
+  function recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
+  function recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[] | string> {
+    const normalizedOpts = withDefaultTenant(opts, config.scope?.tenantId, 'recall') as RecallOpts
+    const mem = getMemory(identityFrom(normalizedOpts, config.scope))
     const internalOpts = {
-      limit: opts.limit,
-      types: opts.types as ('episodic' | 'semantic' | 'procedural')[] | undefined,
-      asOf: opts.temporalAt,
-      includeInvalidated: opts.includeInvalidated,
-      entityScope: opts.entityScope,
-      format: opts.format,
-      traceId: opts.traceId,
-      spanId: opts.spanId,
+      limit: normalizedOpts.limit,
+      types: normalizedOpts.types as ('episodic' | 'semantic' | 'procedural')[] | undefined,
+      asOf: normalizedOpts.temporalAt,
+      includeInvalidated: normalizedOpts.includeInvalidated,
+      entityScope: normalizedOpts.entityScope,
+      format: normalizedOpts.format,
+      traceId: normalizedOpts.traceId,
+      spanId: normalizedOpts.spanId,
     }
-    return opts.format
+    return normalizedOpts.format
       ? mem.recall(query, internalOpts as typeof internalOpts & { format: 'xml' | 'markdown' | 'plain' })
       : mem.recall(query, internalOpts) as unknown as Promise<MemoryRecord[]>
   }
 
   function recallHybrid(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
-  function recallHybrid(query: string, opts: RecallOpts): Promise<MemoryRecord[]>
-  function recallHybrid(query: string, opts: RecallOpts): Promise<MemoryRecord[] | string> {
-    const mem = getMemory(identityFrom(opts))
+  function recallHybrid(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
+  function recallHybrid(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[] | string> {
+    const normalizedOpts = withDefaultTenant(opts, config.scope?.tenantId, 'recallHybrid') as RecallOpts
+    const mem = getMemory(identityFrom(normalizedOpts, config.scope))
     const internalOpts = {
-      limit: opts.limit,
-      types: opts.types as ('episodic' | 'semantic' | 'procedural')[] | undefined,
-      asOf: opts.temporalAt,
-      includeInvalidated: opts.includeInvalidated,
-      entityScope: opts.entityScope,
-      format: opts.format,
-      traceId: opts.traceId,
-      spanId: opts.spanId,
+      limit: normalizedOpts.limit,
+      types: normalizedOpts.types as ('episodic' | 'semantic' | 'procedural')[] | undefined,
+      asOf: normalizedOpts.temporalAt,
+      includeInvalidated: normalizedOpts.includeInvalidated,
+      entityScope: normalizedOpts.entityScope,
+      format: normalizedOpts.format,
+      traceId: normalizedOpts.traceId,
+      spanId: normalizedOpts.spanId,
     }
-    return opts.format
+    return normalizedOpts.format
       ? mem.recallHybrid(query, internalOpts as typeof internalOpts & { format: 'xml' | 'markdown' | 'plain' })
       : mem.recallHybrid(query, internalOpts) as unknown as Promise<MemoryRecord[]>
   }
 
-  async function healthCheck(opts?: HealthCheckOpts): Promise<MemoryHealthReport> {
-    const mem = getMemory(opts ? identityFrom(opts) : {})
+  async function healthCheck(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport> {
+    const normalizedOpts = withDefaultTenant(opts, config.scope?.tenantId, 'healthCheck') as HealthCheckOpts
+    const mem = getMemory(identityFrom(normalizedOpts, config.scope))
     return mem.healthCheck() as unknown as Promise<MemoryHealthReport>
   }
 

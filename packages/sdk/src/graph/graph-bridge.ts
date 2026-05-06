@@ -18,6 +18,7 @@ import {
   buildFactSearchText,
   formatFactEvidence,
 } from './retrieval-primitives.js'
+import { optionalCompactObject, requiredObject } from '../utils/input.js'
 import { isSymmetricPredicate } from '../memory/extraction/predicate-normalizer.js'
 import {
   ALIAS_ASSIGNMENT_CUES,
@@ -638,7 +639,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     })
   }
 
-  function normalizeExternalId(input: ExternalId): ExternalId | undefined {
+  function normalizeExternalId(input: ExternalId | null | undefined): ExternalId | undefined {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
+    if (typeof input.type !== 'string' || typeof input.id !== 'string') return undefined
     const type = input.type.trim().toLowerCase()
     const id = normalizeExternalIdValue(input.id, type, input.encoding ?? 'none')
     if (!id || !type) return undefined
@@ -660,14 +663,13 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
   function externalIdKey(externalId: ExternalId): string {
     return [
-      externalId.identityType,
       externalId.type.trim().toLowerCase(),
       externalId.id.trim(),
       externalId.encoding ?? 'none',
     ].join('|')
   }
 
-  function normalizeExternalIds(externalIds: ExternalId[] | undefined): ExternalId[] {
+  function normalizeExternalIds(externalIds: Array<ExternalId | null | undefined> | undefined): ExternalId[] {
     const byKey = new Map<string, ExternalId>()
     for (const externalId of externalIds ?? []) {
       const normalized = normalizeExternalId(externalId)
@@ -678,10 +680,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   }
 
   function normalizeSubjectExternalIds(subject: SourceSubject): ExternalId[] {
-    return normalizeExternalIds(subject.externalIds?.map(externalId => ({
-      ...externalId,
-      identityType: externalId.identityType ?? 'entity',
-    })))
+    return normalizeExternalIds(subject.externalIds)
   }
 
   function mergeExternalIds(
@@ -737,7 +736,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         const existing = await memoryStore.findEntityByExternalId(externalId, scope)
         if (existing && existing.id !== entityId) {
           throw new Error(
-            `External ID ${externalId.identityType}:${externalId.type}:${externalId.id} is already linked to entity ${existing.id}`,
+            `External ID ${externalId.type}:${externalId.id} is already linked to entity ${existing.id}`,
           )
         }
       }
@@ -1657,9 +1656,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   async function upsertFact(input: UpsertGraphFactInput): Promise<FactResult> {
     const scope = scopeFrom(input)
     const result = await upsertRelation({
-      source: input.subject,
-      target: input.object,
-      relation: input.predicate,
+      source: input.source,
+      target: input.target,
+      relation: input.relation,
       scope,
       visibility: input.visibility,
       weight: input.confidence,
@@ -1809,48 +1808,50 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
   async function searchFacts(
     query: string,
-    opts: FactSearchOpts = {},
+    opts?: FactSearchOpts | null,
   ): Promise<FactResult[]> {
+    const normalizedOpts = optionalCompactObject<FactSearchOpts>(opts, 'graph.searchFacts') as FactSearchOpts
     if (!memoryStore.searchFacts && !memoryStore.searchFactsHybrid) return []
     const queryEmbedding = await embedding.embed(query)
     const identity = {
-      tenantId: opts.tenantId,
-      groupId: opts.groupId,
-      userId: opts.userId,
-      agentId: opts.agentId,
-      conversationId: opts.conversationId,
+      tenantId: normalizedOpts.tenantId,
+      groupId: normalizedOpts.groupId,
+      userId: normalizedOpts.userId,
+      agentId: normalizedOpts.agentId,
+      conversationId: normalizedOpts.conversationId,
     }
     const facts = memoryStore.searchFactsHybrid
-      ? await memoryStore.searchFactsHybrid(query, queryEmbedding, identity, opts.limit ?? 20)
-      : await memoryStore.searchFacts!(queryEmbedding, identity, opts.limit ?? 20)
+      ? await memoryStore.searchFactsHybrid(query, queryEmbedding, identity, normalizedOpts.limit ?? 20)
+      : await memoryStore.searchFacts!(queryEmbedding, identity, normalizedOpts.limit ?? 20)
     return hydrateFacts(facts, identity)
   }
 
   async function explore(
     query: string,
-    opts: GraphExploreOpts = {},
+    opts?: GraphExploreOpts | null,
   ): Promise<GraphExploreResult> {
+    const normalizedOpts = optionalCompactObject<GraphExploreOpts>(opts, 'graph.explore') as GraphExploreOpts
     const identity = {
-      tenantId: opts.tenantId,
-      groupId: opts.groupId,
-      userId: opts.userId,
-      agentId: opts.agentId,
-      conversationId: opts.conversationId,
+      tenantId: normalizedOpts.tenantId,
+      groupId: normalizedOpts.groupId,
+      userId: normalizedOpts.userId,
+      agentId: normalizedOpts.agentId,
+      conversationId: normalizedOpts.conversationId,
     }
     const include = {
-      entities: opts.include?.entities ?? true,
-      facts: opts.include?.facts ?? true,
-      chunks: opts.include?.chunks ?? false,
+      entities: normalizedOpts.include?.entities ?? true,
+      facts: normalizedOpts.include?.facts ?? true,
+      chunks: normalizedOpts.include?.chunks ?? false,
     }
-    const anchorLimit = Math.max(1, opts.anchorLimit ?? 3)
-    const entityLimit = requestedLimit(opts.entityLimit)
-    const factLimit = requestedLimit(opts.factLimit)
-    const chunkLimit = Math.max(1, opts.chunkLimit ?? 10)
-    const depth: 1 | 2 = opts.depth === 2 ? 2 : 1
+    const anchorLimit = Math.max(1, normalizedOpts.anchorLimit ?? 3)
+    const entityLimit = requestedLimit(normalizedOpts.entityLimit)
+    const factLimit = requestedLimit(normalizedOpts.factLimit)
+    const chunkLimit = Math.max(1, normalizedOpts.chunkLimit ?? 10)
+    const depth: 1 | 2 = normalizedOpts.depth === 2 ? 2 : 1
 
     const parsed = await parseGraphQueryIntent({
       query,
-      mode: opts.intentParser,
+      mode: normalizedOpts.intentParser,
       llm: explorationLlm,
     })
     const predicateConfidenceByName = new Map(parsed.intent.predicates.map(predicate => [predicate.name, predicate.confidence]))
@@ -1895,7 +1896,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       entities: [],
       facts: [],
       ...(include.chunks ? { chunks: [] } : {}),
-      ...(opts.explain ? { trace } : {}),
+      ...(normalizedOpts.explain ? { trace } : {}),
     }
 
     if (anchors.length === 0) return emptyResult
@@ -1989,7 +1990,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       const chunkMap = new Map<string, ChunkResult>()
       for (const entityId of topEntityIds) {
         const connectedChunks = await getChunksForEntity(entityId, {
-          bucketIds: opts.bucketIds,
+          bucketIds: normalizedOpts.bucketIds,
           limit: chunkLimit,
           ...identity,
         })
@@ -2018,7 +2019,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       entities: entityResults,
       facts,
       ...(include.chunks ? { chunks: chunks ?? [] } : {}),
-      ...(opts.explain ? { trace } : {}),
+      ...(normalizedOpts.explain ? { trace } : {}),
     }
   }
 
@@ -2026,28 +2027,35 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     return `${ref.bucketId}\u001f${ref.sourceId}\u001f${ref.chunkIndex}\u001f${ref.embeddingModel ?? ''}`
   }
 
-  async function getChunksForEntity(entityId: string, opts?: {
+  async function getChunksForEntity(entityId: string, opts?: ({
     bucketIds?: string[] | undefined
     limit?: number | undefined
-  } & typegraphIdentity): Promise<ChunkResult[]> {
+  } & typegraphIdentity) | null): Promise<ChunkResult[]> {
+    const normalizedOpts = optionalCompactObject<{
+      bucketIds?: string[] | undefined
+      limit?: number | undefined
+    } & typegraphIdentity>(opts, 'graph.getChunksForEntity') as {
+      bucketIds?: string[] | undefined
+      limit?: number | undefined
+    } & typegraphIdentity
     if (!memoryStore.getChunkEdgesForEntities || !memoryStore.getChunksByRefs || !config.resolveChunksTable) return []
     const identity = {
-      tenantId: opts?.tenantId,
-      groupId: opts?.groupId,
-      userId: opts?.userId,
-      agentId: opts?.agentId,
-      conversationId: opts?.conversationId,
+      tenantId: normalizedOpts.tenantId,
+      groupId: normalizedOpts.groupId,
+      userId: normalizedOpts.userId,
+      agentId: normalizedOpts.agentId,
+      conversationId: normalizedOpts.conversationId,
     }
     const chunkEdges = await memoryStore.getChunkEdgesForEntities([entityId], {
       scope: identity,
-      bucketIds: opts?.bucketIds,
-      limit: opts?.limit ?? 20,
+      bucketIds: normalizedOpts.bucketIds,
+      limit: normalizedOpts.limit ?? 20,
     })
     if (chunkEdges.length === 0) return []
     const chunksTable = await config.resolveChunksTable(embeddingModelKey(embedding))
     const chunkRows = await memoryStore.getChunksByRefs(
       chunkEdges.map(edge => edge.chunkRef),
-      { chunksTable, bucketIds: opts?.bucketIds, scope: identity },
+      { chunksTable, bucketIds: normalizedOpts.bucketIds, scope: identity },
     )
     const scoreByChunk = new Map(chunkEdges.map(edge => [chunkRefKey(edge.chunkRef), edge.weight]))
     return chunkRows
@@ -2068,13 +2076,20 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         conversationId: row.conversationId,
       }))
       .sort((a, b) => b.score - a.score)
-      .slice(0, opts?.limit ?? 20)
+      .slice(0, normalizedOpts.limit ?? 20)
   }
 
   async function resolveEntityScope(scope: import('../types/query.js').QueryEntityScope, identity: typegraphIdentity, opts?: {
     bucketIds?: string[] | undefined
     limit?: number | undefined
-  }): Promise<EntityScopeResolution> {
+  } | null): Promise<EntityScopeResolution> {
+    const normalizedOpts = optionalCompactObject<{
+      bucketIds?: string[] | undefined
+      limit?: number | undefined
+    }>(opts, 'graph.resolveEntityScope') as {
+      bucketIds?: string[] | undefined
+      limit?: number | undefined
+    }
     const warnings: string[] = []
     const entityIds = new Set((scope.entityIds ?? []).filter(Boolean))
     if ((scope.externalIds?.length ?? 0) > 0 && !memoryStore.findEntityByExternalId) {
@@ -2096,8 +2111,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const chunkEdges = resolvedIds.length > 0
       ? await memoryStore.getChunkEdgesForEntities!(resolvedIds, {
           scope: identity,
-          bucketIds: opts?.bucketIds,
-          limit: opts?.limit ?? Math.max(200, resolvedIds.length * 200),
+          bucketIds: normalizedOpts.bucketIds,
+          limit: normalizedOpts.limit ?? Math.max(200, resolvedIds.length * 200),
         })
       : []
     const chunkRefs = [...new Map(chunkEdges.map(edge => [chunkRefKey(edge.chunkRef), edge.chunkRef])).values()]
@@ -2111,14 +2126,15 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   async function searchKnowledge(
     query: string,
     identity: typegraphIdentity,
-    opts: KnowledgeSearchOpts = {},
+    opts?: KnowledgeSearchOpts | null,
   ): Promise<KnowledgeSearchResult> {
-    const limit = opts.count ?? 10
-    const scopeEntityIds = new Set(opts.resolvedEntityIds ?? [])
-    const hasEntityScopeFilter = Boolean(opts.entityScope && opts.entityScope.mode !== 'boost')
+    const normalizedOpts = optionalCompactObject<KnowledgeSearchOpts>(opts, 'graph.searchKnowledge') as KnowledgeSearchOpts
+    const limit = normalizedOpts.count ?? 10
+    const scopeEntityIds = new Set(normalizedOpts.resolvedEntityIds ?? [])
+    const hasEntityScopeFilter = Boolean(normalizedOpts.entityScope && normalizedOpts.entityScope.mode !== 'boost')
     if (hasEntityScopeFilter && scopeEntityIds.size === 0) return { facts: [], entities: [] }
     const shouldFilter = hasEntityScopeFilter
-    const queryEmbedding = opts.signals?.semantic !== false || opts.signals?.keyword
+    const queryEmbedding = normalizedOpts.signals?.semantic !== false || normalizedOpts.signals?.keyword
       ? await embedding.embed(query)
       : undefined
 
@@ -2151,32 +2167,33 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   async function searchGraphChunks(
     query: string,
     identity: typegraphIdentity,
-    opts: GraphSearchOpts = {},
+    opts?: GraphSearchOpts | null,
   ): Promise<GraphSearchResult> {
-    const count = opts.count ?? 10
-    const restartProbability = opts.restartProbability ?? 0.5
-    const chunkSeedWeight = opts.chunkSeedWeight ?? 0.05
-    const entitySeedWeight = opts.entitySeedWeight ?? 1.0
-    const factCandidateLimit = opts.factCandidateLimit ?? 200
-    const factFilterInputLimit = opts.factFilterInputLimit ?? 8
-    const chunkSeedLimit = opts.chunkSeedLimit ?? 200
-    const maxIterations = opts.maxPprIterations ?? 50
-    const minPprScore = opts.minPprScore ?? 1e-10
-    const maxExpansionEdgesPerEntity = opts.maxExpansionEdgesPerEntity ?? 100
-    const factChainLimit = opts.factChainLimit ?? 3
-    const entityScopeMode = opts.entityScope?.mode ?? 'filter'
-    const scopedEntityIds = opts.entityScope
-      ? (opts.resolvedEntityIds ?? (await resolveEntityScope(opts.entityScope, identity, {
-          bucketIds: opts.bucketIds,
+    const normalizedOpts = optionalCompactObject<GraphSearchOpts>(opts, 'graph.searchGraphChunks') as GraphSearchOpts
+    const count = normalizedOpts.count ?? 10
+    const restartProbability = normalizedOpts.restartProbability ?? 0.5
+    const chunkSeedWeight = normalizedOpts.chunkSeedWeight ?? 0.05
+    const entitySeedWeight = normalizedOpts.entitySeedWeight ?? 1.0
+    const factCandidateLimit = normalizedOpts.factCandidateLimit ?? 200
+    const factFilterInputLimit = normalizedOpts.factFilterInputLimit ?? 8
+    const chunkSeedLimit = normalizedOpts.chunkSeedLimit ?? 200
+    const maxIterations = normalizedOpts.maxPprIterations ?? 50
+    const minPprScore = normalizedOpts.minPprScore ?? 1e-10
+    const maxExpansionEdgesPerEntity = normalizedOpts.maxExpansionEdgesPerEntity ?? 100
+    const factChainLimit = normalizedOpts.factChainLimit ?? 3
+    const entityScopeMode = normalizedOpts.entityScope?.mode ?? 'filter'
+    const scopedEntityIds = normalizedOpts.entityScope
+      ? (normalizedOpts.resolvedEntityIds ?? (await resolveEntityScope(normalizedOpts.entityScope, identity, {
+          bucketIds: normalizedOpts.bucketIds,
           limit: Math.max(count * 50, 200),
         })).entityIds)
       : []
     const scopedEntityIdSet = new Set(scopedEntityIds)
-    const isEntityScopeFilter = Boolean(opts.entityScope && entityScopeMode === 'filter')
+    const isEntityScopeFilter = Boolean(normalizedOpts.entityScope && entityScopeMode === 'filter')
 
     const parsed = await parseGraphQueryIntent({
       query,
-      mode: opts.intentParser,
+      mode: normalizedOpts.intentParser,
       llm: explorationLlm,
     })
 
@@ -2242,7 +2259,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
           targetAnchorIds: resolvedAnchors.targetAnchorIds,
         }).match)
       : []
-    if (opts.factFilter && config.factRelevanceFilter && selectedFacts.length > 0) {
+    if (normalizedOpts.factFilter && config.factRelevanceFilter && selectedFacts.length > 0) {
       const filterInput = await hydrateFacts(selectedFacts.slice(0, Math.max(factFilterInputLimit, selectedFacts.length)), identity)
       try {
         const selectedIds = new Set(await config.factRelevanceFilter(query, filterInput))
@@ -2276,7 +2293,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const chunkSeedRows = memoryStore.searchChunks
       ? await memoryStore.searchChunks(chunkEmbedding, identity, {
           chunksTable,
-          bucketIds: opts.bucketIds,
+          bucketIds: normalizedOpts.bucketIds,
           limit: chunkSeedLimit,
         })
       : []
@@ -2321,7 +2338,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const chunkEntityEdges = memoryStore.getChunkEdgesForEntities
       ? await memoryStore.getChunkEdgesForEntities([...activeEntityIds], {
           scope: identity,
-          bucketIds: opts.bucketIds,
+          bucketIds: normalizedOpts.bucketIds,
           limit: Math.max(100, activeEntityIds.size * maxExpansionEdgesPerEntity),
         })
       : []
@@ -2365,7 +2382,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const chunkIds = [...scoredChunkIds, ...fallbackChunkIds]
     const chunkRefs = chunkIds.map(id => chunkRefById.get(id)).filter((ref): ref is ChunkRef => !!ref)
     const chunkRows = memoryStore.getChunksByRefs && chunkRefs.length > 0
-      ? await memoryStore.getChunksByRefs(chunkRefs, { chunksTable, bucketIds: opts.bucketIds, scope: identity })
+      ? await memoryStore.getChunksByRefs(chunkRefs, { chunksTable, bucketIds: normalizedOpts.bucketIds, scope: identity })
       : []
     const denseScoreByChunk = new Map(chunkSeedRows.map(row => [chunkNodeIdFor(row), row.similarity ?? 0]))
     const selectedFactResults = await hydrateFacts(selectedFacts, identity)
@@ -2450,15 +2467,16 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     return { results, facts: selectedFactResults, entities: selectedEntityResults, factChains, trace }
   }
 
-  async function explainQuery(query: string, opts: GraphExplainOpts = {}): Promise<GraphSearchTrace> {
+  async function explainQuery(query: string, opts?: GraphExplainOpts | null): Promise<GraphSearchTrace> {
+    const normalizedOpts = optionalCompactObject<GraphExplainOpts>(opts, 'graph.explainQuery') as GraphExplainOpts
     const identity = {
-      tenantId: opts.tenantId,
-      groupId: opts.groupId,
-      userId: opts.userId,
-      agentId: opts.agentId,
-      conversationId: opts.conversationId,
+      tenantId: normalizedOpts.tenantId,
+      groupId: normalizedOpts.groupId,
+      userId: normalizedOpts.userId,
+      agentId: normalizedOpts.agentId,
+      conversationId: normalizedOpts.conversationId,
     }
-    const result = await searchGraphChunks(query, identity, opts)
+    const result = await searchGraphChunks(query, identity, normalizedOpts)
     return result.trace
   }
 
@@ -2504,9 +2522,10 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
   async function backfill(
     identity: typegraphIdentity,
-    opts: GraphBackfillOpts = {},
+    opts?: GraphBackfillOpts | null,
   ): Promise<GraphBackfillResult> {
-    const batchSize = Math.max(1, opts.batchSize ?? 500)
+    const normalizedOpts = optionalCompactObject<GraphBackfillOpts>(opts, 'graph.backfill') as GraphBackfillOpts
+    const batchSize = Math.max(1, normalizedOpts.batchSize ?? 500)
     const result: GraphBackfillResult = {
       entityChunkEdgesUpserted: 0,
       factRecordsUpserted: 0,
@@ -2520,12 +2539,12 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const pageOpts = (offset: number) => ({
       chunksTable,
       scope: identity,
-      bucketIds: opts.bucketIds,
+      bucketIds: normalizedOpts.bucketIds,
       limit: batchSize,
       offset,
     })
 
-    if ((opts.entityChunkEdges ?? true) && memoryStore.listChunkMentionBackfillRows && memoryStore.upsertGraphEdges) {
+    if ((normalizedOpts.entityChunkEdges ?? true) && memoryStore.listChunkMentionBackfillRows && memoryStore.upsertGraphEdges) {
       for (let offset = 0; ; offset += batchSize) {
         const rows = await memoryStore.listChunkMentionBackfillRows(pageOpts(offset))
         if (rows.length === 0) break
@@ -2590,14 +2609,14 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       }
     }
 
-    const shouldBackfillFacts = opts.facts ?? true
-    const shouldBackfillProfiles = opts.entityProfiles ?? true
+    const shouldBackfillFacts = normalizedOpts.facts ?? true
+    const shouldBackfillProfiles = normalizedOpts.entityProfiles ?? true
     if ((shouldBackfillFacts || shouldBackfillProfiles) && memoryStore.listSemanticEdgesForBackfill) {
       const updatedProfileEntityIds = new Set<string>()
       for (let offset = 0; ; offset += batchSize) {
         const edges = await memoryStore.listSemanticEdgesForBackfill({
           scope: identity,
-          bucketIds: opts.bucketIds,
+          bucketIds: normalizedOpts.bucketIds,
           limit: batchSize,
           offset,
         })
@@ -2657,11 +2676,12 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
   // ── Graph Exploration ──
 
-  async function getEntity(id: string, opts: typegraphIdentity = {}): Promise<EntityDetail | null> {
-    const entity = await graph.getEntity(id, opts)
+  async function getEntity(id: string, opts?: typegraphIdentity | null): Promise<EntityDetail | null> {
+    const normalizedOpts = optionalCompactObject<typegraphIdentity>(opts, 'graph.getEntity') as typegraphIdentity
+    const entity = await graph.getEntity(id, normalizedOpts)
     if (!entity) return null
 
-    const edges = await graph.getEdges(id, 'both', opts)
+    const edges = await graph.getEdges(id, 'both', normalizedOpts)
     const neighborIds = new Set<string>()
     for (const e of edges) {
       neighborIds.add(e.sourceEntityId)
@@ -2669,7 +2689,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     }
     neighborIds.delete(id)
     const nameMap = new Map<string, string>([[id, entity.name]])
-    const neighbors = await graph.getEntitiesBatch([...neighborIds], opts)
+    const neighbors = await graph.getEntitiesBatch([...neighborIds], normalizedOpts)
     for (const n of neighbors) nameMap.set(n.id, n.name)
 
     const topEdges: EdgeResult[] = edges
@@ -2702,21 +2722,30 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     }
   }
 
-  async function getEdges(entityId: string, opts?: {
+  async function getEdges(entityId: string, opts?: ({
     direction?: 'in' | 'out' | 'both'
     relation?: string
     limit?: number
-  } & typegraphIdentity): Promise<EdgeResult[]> {
+  } & typegraphIdentity) | null): Promise<EdgeResult[]> {
+    const normalizedOpts = optionalCompactObject<{
+      direction?: 'in' | 'out' | 'both'
+      relation?: string
+      limit?: number
+    } & typegraphIdentity>(opts, 'graph.getEdges') as {
+      direction?: 'in' | 'out' | 'both'
+      relation?: string
+      limit?: number
+    } & typegraphIdentity
     const identity = {
-      tenantId: opts?.tenantId,
-      groupId: opts?.groupId,
-      userId: opts?.userId,
-      agentId: opts?.agentId,
-      conversationId: opts?.conversationId,
+      tenantId: normalizedOpts.tenantId,
+      groupId: normalizedOpts.groupId,
+      userId: normalizedOpts.userId,
+      agentId: normalizedOpts.agentId,
+      conversationId: normalizedOpts.conversationId,
     }
-    let edges = await graph.getEdges(entityId, opts?.direction ?? 'both', identity)
-    if (opts?.relation) {
-      edges = edges.filter(e => e.relation === opts.relation)
+    let edges = await graph.getEdges(entityId, normalizedOpts.direction ?? 'both', identity)
+    if (normalizedOpts.relation) {
+      edges = edges.filter(e => e.relation === normalizedOpts.relation)
     }
 
     const entityIds = new Set<string>()
@@ -2728,7 +2757,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const ents = await graph.getEntitiesBatch([...entityIds], identity)
     for (const ent of ents) nameMap.set(ent.id, ent.name)
 
-    const limit = opts?.limit ?? 50
+    const limit = normalizedOpts.limit ?? 50
     return edges.slice(0, limit).map(e => ({
       id: e.id,
       sourceEntityId: e.sourceEntityId,
@@ -2742,36 +2771,37 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   }
 
   async function getSubgraph(opts: SubgraphOpts): Promise<SubgraphResult> {
-    let seedIds = opts.entityIds ?? []
-    if (opts.query && (memoryStore.searchEntities || memoryStore.searchEntitiesHybrid)) {
-      const queryEmb = await embedding.embed(opts.query)
+    const normalizedOpts = requiredObject<SubgraphOpts>(opts, 'graph.getSubgraph', 'opts')
+    let seedIds = normalizedOpts.entityIds ?? []
+    if (normalizedOpts.query && (memoryStore.searchEntities || memoryStore.searchEntitiesHybrid)) {
+      const queryEmb = await embedding.embed(normalizedOpts.query)
       const found = memoryStore.searchEntitiesHybrid
-        ? await memoryStore.searchEntitiesHybrid(opts.query, queryEmb, opts.identity, opts.limit ?? 10)
-        : await memoryStore.searchEntities!(queryEmb, opts.identity, opts.limit ?? 10)
+        ? await memoryStore.searchEntitiesHybrid(normalizedOpts.query, queryEmb, normalizedOpts.identity, normalizedOpts.limit ?? 10)
+        : await memoryStore.searchEntities!(queryEmb, normalizedOpts.identity, normalizedOpts.limit ?? 10)
       seedIds = [...seedIds, ...found.map(e => e.id)]
     }
     if (seedIds.length === 0) {
       return { entities: [], edges: [], stats: { entityCount: 0, edgeCount: 0, avgDegree: 0, components: 0 } }
     }
 
-    const depth = Math.min(opts.depth ?? 1, 3)
-    const sub = await graph.getSubgraph(seedIds, depth, opts.identity)
+    const depth = Math.min(normalizedOpts.depth ?? 1, 3)
+    const sub = await graph.getSubgraph(seedIds, depth, normalizedOpts.identity)
 
     let entities = sub.entities
     let edges = sub.edges
-    if (opts.entityTypes?.length) {
-      const types = new Set(opts.entityTypes)
+    if (normalizedOpts.entityTypes?.length) {
+      const types = new Set(normalizedOpts.entityTypes)
       entities = entities.filter(e => types.has(e.entityType))
     }
-    if (opts.relations?.length) {
-      const rels = new Set(opts.relations)
+    if (normalizedOpts.relations?.length) {
+      const rels = new Set(normalizedOpts.relations)
       edges = edges.filter(e => rels.has(e.relation))
     }
-    if (opts.minWeight) {
-      edges = edges.filter(e => e.weight >= opts.minWeight!)
+    if (normalizedOpts.minWeight) {
+      edges = edges.filter(e => e.weight >= normalizedOpts.minWeight!)
     }
 
-    const entityLimit = opts.limit ?? 100
+    const entityLimit = normalizedOpts.limit ?? 100
     entities = entities.slice(0, entityLimit)
     const entitySet = new Set(entities.map(e => e.id))
     edges = edges.filter(e => entitySet.has(e.sourceEntityId) && entitySet.has(e.targetEntityId))
@@ -2865,11 +2895,14 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     }
   }
 
-  async function deleteEntity(entityId: string, opts: DeleteGraphEntityOpts = {}): Promise<DeleteGraphEntityResult> {
+  async function deleteEntity(entityId: string, opts?: DeleteGraphEntityOpts | null): Promise<DeleteGraphEntityResult> {
     if (!memoryStore.deleteEntityReferences) {
       throw new ConfigError('MemoryStoreAdapter does not support transactional entity delete operations.')
     }
-    return memoryStore.deleteEntityReferences(entityId, opts)
+    return memoryStore.deleteEntityReferences(
+      entityId,
+      optionalCompactObject<DeleteGraphEntityOpts>(opts, 'graph.deleteEntity') as DeleteGraphEntityOpts,
+    )
   }
 
   async function deploy(): Promise<void> {

@@ -28,7 +28,7 @@ describe('IndexEngine', () => {
   ) {
     const chunkOpts = { chunkSize: ingestOptions.chunkSize ?? 100, chunkOverlap: ingestOptions.chunkOverlap ?? 20 }
     const items = await Promise.all(sources.map(async source => ({ source, chunks: await defaultChunker(source, chunkOpts) })))
-    return engine.ingestBatch(bucketId, items, { ...ingestOptions, ...opts })
+    return engine.ingestBatch(bucketId, items, { ...ingestOptions, ...(opts ?? {}) })
   }
 
   describe('ingestBatch', () => {
@@ -40,6 +40,18 @@ describe('IndexEngine', () => {
       expect(result.total).toBe(3)
       expect(result.inserted).toBe(3)
       expect(result.skipped).toBe(0)
+    })
+
+    it('treats null opts as omitted', async () => {
+      const source = createTestSource()
+      const { bucket } = createMockBucket({ sources: [] })
+      const chunks = [{ content: 'Chunk 0', chunkIndex: 0 }]
+      const engine = new IndexEngine(adapter, embedding)
+
+      const result = await engine.ingestBatch(bucket.id, [{ source, chunks }], null)
+
+      expect(result.inserted).toBe(1)
+      expect(result.total).toBe(1)
     })
 
     it('skips unchanged sources (idempotency)', async () => {
@@ -394,6 +406,18 @@ describe('IndexEngine', () => {
 
       const stored = adapter._chunks.get(embeddingModelKey(embedding))!
       expect(stored).toHaveLength(2)
+    })
+
+    it('treats null opts as omitted', async () => {
+      const source = createTestSource()
+      const { bucket } = createMockBucket({ sources: [] })
+      const chunks = [{ content: 'Chunk 0', chunkIndex: 0 }]
+      const engine = new IndexEngine(adapter, embedding)
+
+      const result = await engine.ingestWithChunks(bucket.id, source, chunks, null)
+
+      expect(result.inserted).toBe(1)
+      expect(result.total).toBe(1)
     })
 
     it('supports dryRun', async () => {

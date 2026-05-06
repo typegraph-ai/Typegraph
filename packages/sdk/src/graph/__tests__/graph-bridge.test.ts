@@ -51,7 +51,6 @@ interface MockMention {
 
 function externalIdKey(externalId: ExternalId): string {
   return [
-    externalId.identityType,
     externalId.type.trim().toLowerCase(),
     externalId.id.trim(),
     externalId.encoding ?? 'none',
@@ -330,7 +329,6 @@ describe('createKnowledgeGraphBridge', () => {
       const externalId: ExternalId = {
         id: 'ryan@example.com',
         type: 'email',
-        identityType: 'user',
       }
 
       const seeded = await bridge.upsertEntity!({
@@ -343,12 +341,11 @@ describe('createKnowledgeGraphBridge', () => {
       expect(seeded.externalIds).toEqual([expect.objectContaining({
         id: 'ryan@example.com',
         type: 'email',
-        identityType: 'user',
         encoding: 'none',
       })])
       expect(resolved?.id).toBe(seeded.id)
       expect(store.findEntityByExternalId).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'ryan@example.com', type: 'email', identityType: 'user' }),
+        expect.objectContaining({ id: 'ryan@example.com', type: 'email' }),
         testScope,
       )
     })
@@ -365,7 +362,6 @@ describe('createKnowledgeGraphBridge', () => {
       const slackId: ExternalId = {
         id: 'U123',
         type: 'slack_user_id',
-        identityType: 'user',
       }
 
       const jane = await bridge.upsertEntity!({
@@ -375,9 +371,9 @@ describe('createKnowledgeGraphBridge', () => {
       })
 
       const fact = await bridge.upsertFact!({
-        subject: { name: 'J. Doe', entityType: 'person', externalId: slackId },
-        predicate: 'works at',
-        object: { name: 'TypeGraph', entityType: 'organization' },
+        source: { name: 'J. Doe', entityType: 'person', externalId: slackId },
+        relation: 'works at',
+        target: { name: 'TypeGraph', entityType: 'organization' },
         evidenceText: 'J. Doe works at TypeGraph.',
       })
 
@@ -448,9 +444,25 @@ describe('createKnowledgeGraphBridge', () => {
       expect(entities.get('pat')?.status).toBe('invalidated')
       expect(edges[0]!.temporal.invalidAt).toBeInstanceOf(Date)
 
+      const defaultMode = await bridge.deleteEntity!('pat', null)
+      expect(defaultMode.mode).toBe('invalidate')
+
       const purged = await bridge.deleteEntity!('acme', { mode: 'purge' })
       expect(purged.mode).toBe('purge')
       expect(entities.has('acme')).toBe(false)
+    })
+
+    it('treats null graph search opts as omitted', async () => {
+      const store = mockStore()
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      await expect(bridge.searchFacts!('query', null)).resolves.toEqual([])
+      await expect(bridge.getEntity!('missing', null)).resolves.toBeNull()
+      await expect(bridge.getEdges!('missing', null)).resolves.toEqual([])
     })
 
     it('rejects external ID conflicts instead of reassigning identity', async () => {
@@ -464,7 +476,6 @@ describe('createKnowledgeGraphBridge', () => {
       const email: ExternalId = {
         id: 'alice@example.com',
         type: 'email',
-        identityType: 'user',
       }
 
       await bridge.upsertEntity!({
@@ -483,8 +494,8 @@ describe('createKnowledgeGraphBridge', () => {
     })
 
     it('resolves entity scope from entity IDs and external IDs with OR semantics', async () => {
-      const email: ExternalId = { id: 'pat@example.com', type: 'email', identityType: 'user' }
-      const github: ExternalId = { id: 'pm', type: 'github_handle', identityType: 'user' }
+      const email: ExternalId = { id: 'pat@example.com', type: 'email' }
+      const github: ExternalId = { id: 'pm', type: 'github_handle' }
       const entities = new Map<string, SemanticEntity>([
         ['ent-manual', makeEntity('ent-manual', 'Manual Anchor', 'person')],
         ['ent-email', { ...makeEntity('ent-email', 'Pat Email', 'person'), externalIds: [email] }],
@@ -592,7 +603,6 @@ describe('createKnowledgeGraphBridge', () => {
       }))
       expect([...entities.values()][0]!.externalIds).toEqual([
         expect.objectContaining({
-          identityType: 'entity',
           type: 'calendar_event_id',
           id: 'evt_123',
         }),

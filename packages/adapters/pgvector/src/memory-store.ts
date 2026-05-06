@@ -198,7 +198,6 @@ const ENTITY_EXTERNAL_IDS_DDL = (t: string, entitiesTable: string) => {
   CREATE TABLE IF NOT EXISTS ${t} (
     id               TEXT PRIMARY KEY,
     entity_id        TEXT NOT NULL REFERENCES ${entitiesTable}(id) ON DELETE CASCADE,
-    identity_type    TEXT NOT NULL CHECK (identity_type IN ('tenant', 'group', 'user', 'agent', 'conversation', 'entity')),
     type             TEXT NOT NULL,
     id_value         TEXT NOT NULL,
     normalized_value TEXT NOT NULL,
@@ -215,14 +214,13 @@ const ENTITY_EXTERNAL_IDS_DDL = (t: string, entitiesTable: string) => {
   );
 
   CREATE INDEX IF NOT EXISTS ${idx('entity_idx')} ON ${t} (entity_id);
-  CREATE INDEX IF NOT EXISTS ${idx('lookup_idx')} ON ${t} (identity_type, type, normalized_value, encoding);
+  CREATE INDEX IF NOT EXISTS ${idx('lookup_idx')} ON ${t} (type, normalized_value, encoding);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')} ON ${t} (tenant_id, user_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')} ON ${t} (tenant_id, group_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')} ON ${t} (tenant_id, agent_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_conversation_idx')} ON ${t} (tenant_id, conversation_id);
   CREATE UNIQUE INDEX IF NOT EXISTS ${idx('scoped_external_id_uniq_idx')}
     ON ${t} (
-      identity_type,
       type,
       normalized_value,
       encoding,
@@ -796,7 +794,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   private async attachExternalIds(entities: SemanticEntity[]): Promise<SemanticEntity[]> {
     if (entities.length === 0) return entities
     const rows = await this.sqlWithRetry(
-      `SELECT entity_id, identity_type, type, id_value, encoding, metadata
+      `SELECT entity_id, type, id_value, encoding, metadata
          FROM ${this.entityExternalIdsTable}
         WHERE entity_id = ANY($1::text[])
         ORDER BY created_at ASC`,
@@ -806,7 +804,6 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     for (const row of rows) {
       const entityId = row.entity_id as string
       const externalId: ExternalId = {
-        identityType: row.identity_type as ExternalId['identityType'],
         type: row.type as string,
         id: row.id_value as string,
         encoding: (row.encoding as ExternalId['encoding']) ?? 'none',
@@ -890,11 +887,10 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       const normalized = normalizeExternalId(externalId)
       if (!normalized) continue
       const base = params.length
-      values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14})`)
+      values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13})`)
       params.push(
         generateId('xid'),
         entityId,
-        normalized.identityType,
         normalized.type,
         normalized.id,
         normalized.normalizedValue,
@@ -913,11 +909,10 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const tbl = unqualified(this.entityExternalIdsTable)
     const rows = await this.sqlWithRetry(
       `INSERT INTO ${this.entityExternalIdsTable}
-        (id, entity_id, identity_type, type, id_value, normalized_value, encoding, metadata,
+        (id, entity_id, type, id_value, normalized_value, encoding, metadata,
          scope, tenant_id, group_id, user_id, agent_id, conversation_id)
        VALUES ${values.join(',')}
        ON CONFLICT (
-         identity_type,
          type,
          normalized_value,
          encoding,
@@ -942,7 +937,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   async findEntityByExternalId(externalId: ExternalId, scope?: typegraphIdentity): Promise<SemanticEntity | null> {
     const normalized = normalizeExternalId(externalId)
     if (!normalized) return null
-    const identity = buildGraphVisibilityWhere(scope, 5, 'e')
+    const identity = buildGraphVisibilityWhere(scope, 4, 'e')
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
     const rows = await this.sqlWithRetry(
       `SELECT e.id, e.name, e.entity_type, e.aliases, e.properties,
@@ -951,16 +946,14 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
               e.valid_at, e.invalid_at, e.created_at, e.updated_at
          FROM ${this.entityExternalIdsTable} xid
          JOIN ${this.entitiesTable} e ON e.id = xid.entity_id
-        WHERE xid.identity_type = $1
-          AND xid.type = $2
-          AND xid.normalized_value = $3
-          AND xid.encoding = $4
+        WHERE xid.type = $1
+          AND xid.normalized_value = $2
+          AND xid.encoding = $3
           ${scopeClause}
           AND e.invalid_at IS NULL
           AND e.status = 'active'
         LIMIT 1`,
       [
-        normalized.identityType,
         normalized.type,
         normalized.normalizedValue,
         normalized.encoding,
@@ -1639,7 +1632,6 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
           USING ${this.entityExternalIdsTable} tx
          WHERE sx.entity_id = $1
            AND tx.entity_id = $2
-           AND sx.identity_type = tx.identity_type
            AND sx.type = tx.type
            AND sx.normalized_value = tx.normalized_value
            AND sx.encoding = tx.encoding
@@ -1859,8 +1851,8 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     })
   }
 
-  async deleteEntityReferences(entityId: string, opts: DeleteGraphEntityOpts): Promise<DeleteGraphEntityResult> {
-    const mode = opts.mode ?? 'invalidate'
+  async deleteEntityReferences(entityId: string, opts?: DeleteGraphEntityOpts | null): Promise<DeleteGraphEntityResult> {
+    const mode = opts?.mode ?? 'invalidate'
     const now = new Date()
 
     return this.withTransaction(async () => {

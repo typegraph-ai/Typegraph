@@ -1,13 +1,9 @@
 import type { ExternalId } from '../memory/types/memory.js'
 import type { EntityType } from '../index-engine/ontology.js'
 
-export type SourceSubjectExternalId =
-  Omit<ExternalId, 'identityType'> &
-  { identityType?: ExternalId['identityType'] | undefined }
-
 export interface SourceSubject {
   entityId?: string | undefined
-  externalIds?: SourceSubjectExternalId[] | undefined
+  externalIds?: ExternalId[] | undefined
   name?: string | undefined
   entityType?: EntityType | string | undefined
   aliases?: string[] | undefined

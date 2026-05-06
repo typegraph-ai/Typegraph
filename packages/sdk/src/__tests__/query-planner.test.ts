@@ -45,6 +45,13 @@ describe('QueryPlanner', () => {
     expect(response.results.memories).toEqual([])
   })
 
+  it('treats null execute opts as omitted', async () => {
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings)
+    const response = await planner.execute('Source 1', null)
+
+    expect(response.results.chunks.length).toBeGreaterThan(0)
+  })
+
   it('respects count', async () => {
     const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings)
     const response = await planner.execute('test query', { count: 1 })
@@ -210,7 +217,7 @@ describe('QueryPlanner', () => {
 
   it('prefilters indexed chunks with OR entity-scope chunk refs', async () => {
     const [firstChunk, secondChunk] = [...adapter._chunks.values()][0]!
-    const externalId: ExternalId = { id: 'pat@example.com', type: 'email', identityType: 'user' }
+    const externalId: ExternalId = { id: 'pat@example.com', type: 'email' }
     const knowledgeGraph: KnowledgeGraphBridge = {
       resolveEntityScope: vi.fn().mockResolvedValue({
         entityIds: ['ent-1', 'ent-2'],
@@ -278,7 +285,7 @@ describe('QueryPlanner', () => {
   })
 
   it('allows memory-only entity scope without a knowledge graph bridge', async () => {
-    const email: ExternalId = { id: 'pat@example.com', type: 'email', identityType: 'user' }
+    const email: ExternalId = { id: 'pat@example.com', type: 'email' }
     const memory: MemoryRecord = {
       id: 'mem-1',
       category: 'semantic',

@@ -135,7 +135,7 @@ export interface MemoryStoreAdapter {
   upsertEntityExternalIds?(entityId: string, externalIds: ExternalId[], scope: typegraphIdentity): Promise<void>
   findEntityByExternalId?(externalId: ExternalId, scope?: typegraphIdentity): Promise<SemanticEntity | null>
   mergeEntityReferences?(input: MergeGraphEntitiesInput): Promise<MergeGraphEntitiesResult>
-  deleteEntityReferences?(entityId: string, opts: DeleteGraphEntityOpts): Promise<DeleteGraphEntityResult>
+  deleteEntityReferences?(entityId: string, opts?: DeleteGraphEntityOpts | null): Promise<DeleteGraphEntityResult>
   searchEntities?(embedding: number[], scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]>
   searchEntitiesHybrid?(query: string, embedding: number[], scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]>
 

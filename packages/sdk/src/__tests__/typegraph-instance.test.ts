@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { typegraphInit, typegraphDeploy } from '../typegraph.js'
+import { DEFAULT_BUCKET_ID, typegraphInit, typegraphDeploy } from '../typegraph.js'
 import { createMockAdapter } from './helpers/mock-adapter.js'
 import { createMockEmbedding } from './helpers/mock-embedding.js'
 import { createMockBucket } from './helpers/mock-source.js'
@@ -104,7 +104,7 @@ describe('typegraphInit', () => {
         name: 'Alice',
         entityType: 'person',
         aliases: [],
-        externalIds: [{ id: 'alice@example.com', type: 'email', identityType: 'user', encoding: 'none' }],
+        externalIds: [{ id: 'alice@example.com', type: 'email', encoding: 'none' }],
         edgeCount: 0,
         properties: {},
         createdAt: new Date(),
@@ -118,13 +118,13 @@ describe('typegraphInit', () => {
       const result = await inst.graph.upsertEntity({
         name: 'Alice',
         entityType: 'person',
-        externalIds: [{ id: 'alice@example.com', type: 'email', identityType: 'user' }],
+        externalIds: [{ id: 'alice@example.com', type: 'email' }],
       })
 
       expect(knowledgeGraph.upsertEntity).toHaveBeenCalledWith({
         name: 'Alice',
         entityType: 'person',
-        externalIds: [{ id: 'alice@example.com', type: 'email', identityType: 'user' }],
+        externalIds: [{ id: 'alice@example.com', type: 'email' }],
       })
       expect(result).toEqual(seeded)
     })
@@ -274,6 +274,50 @@ describe('typegraphInit', () => {
       expect(result.inserted).toBe(1)
     })
 
+    it('treats null ingest opts as omitted', async () => {
+      const { bucket } = createMockBucket({ id: DEFAULT_BUCKET_ID, sources: [] })
+      registerTestBucket(instance, bucket, embedding)
+      const source = createTestSource({ content: 'Some content to ingest with null opts' })
+
+      const result = await instance.ingest([source], null)
+
+      expect(result.inserted).toBe(1)
+      expect(result.bucketId).toBe(DEFAULT_BUCKET_ID)
+    })
+
+    it('treats null pre-chunked ingest opts as omitted', async () => {
+      const { bucket } = createMockBucket({ id: DEFAULT_BUCKET_ID, sources: [] })
+      registerTestBucket(instance, bucket, embedding)
+      const source = createTestSource({ content: 'Prechunked content with null opts' })
+
+      const result = await instance.ingestPreChunked(
+        source,
+        [{ content: source.content, chunkIndex: 0 }],
+        null,
+      )
+
+      expect(result.inserted).toBe(1)
+      expect(result.bucketId).toBe(DEFAULT_BUCKET_ID)
+    })
+
+    it('ignores null source subject external ID entries', async () => {
+      const { bucket, ingestOptions } = createMockBucket({ sources: [] })
+      registerTestBucket(instance, bucket, embedding)
+      const source = createTestSource({
+        subject: {
+          externalIds: [
+            null,
+            undefined,
+            { type: 'email', id: 'pat@example.com' },
+          ] as any,
+        },
+      })
+
+      const result = await instance.ingest([source], { ...ingestOptions, bucketId: bucket.id })
+
+      expect(result.inserted).toBe(1)
+    })
+
     it('ingests a batch of sources', async () => {
       const { bucket, ingestOptions } = createMockBucket({ sources: [] })
       registerTestBucket(instance, bucket, embedding)
@@ -310,12 +354,37 @@ describe('typegraphInit', () => {
     })
   })
 
+  describe('optional filters', () => {
+    it('treats null list filters as omitted', async () => {
+      const { bucket, ingestOptions } = createMockBucket({ sources: [] })
+      registerTestBucket(instance, bucket, embedding)
+      await instance.ingest([createTestSource()], { ...ingestOptions, bucketId: bucket.id })
+
+      await expect(instance.sources.list(null)).resolves.toHaveLength(1)
+      await expect(instance.jobs.list(null)).resolves.toEqual([])
+    })
+
+    it('rejects null destructive source filters with a ConfigError', async () => {
+      await expect(instance.sources.delete(null)).rejects.toThrow('sources.delete requires at least one filter field')
+    })
+  })
+
   describe('query', () => {
     it('returns results', async () => {
       const { bucket, sources, ingestOptions } = createMockBucket({ sources: createTestSources(3) })
       registerTestBucket(instance, bucket, embedding)
       await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
       const response = await instance.query('Source 1')
+      expect(response.results.chunks.length).toBeGreaterThan(0)
+    })
+
+    it('treats null query opts as omitted', async () => {
+      const { bucket, sources, ingestOptions } = createMockBucket({ sources: createTestSources(1) })
+      registerTestBucket(instance, bucket, embedding)
+      await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
+
+      const response = await instance.query('Source 1', null)
+
       expect(response.results.chunks.length).toBeGreaterThan(0)
     })
 

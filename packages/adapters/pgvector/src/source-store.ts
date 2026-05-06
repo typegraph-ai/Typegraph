@@ -1,3 +1,4 @@
+import { ConfigError } from '@typegraph-ai/sdk'
 import type { typegraphSource, SourceFilter, SourceStatus, UpsertSourceInput, PaginationOpts, PaginatedResult } from '@typegraph-ai/sdk'
 import type { SqlExecutor } from './adapter.js'
 
@@ -94,7 +95,7 @@ export class PgSourceStore {
     return mapSourceRow(rows[0]!)
   }
 
-  async list(filter: SourceFilter, pagination?: PaginationOpts): Promise<typegraphSource[] | PaginatedResult<typegraphSource>> {
+  async list(filter?: SourceFilter | null, pagination?: PaginationOpts | null): Promise<typegraphSource[] | PaginatedResult<typegraphSource>> {
     const { where, params } = buildSourceWhere(filter)
     const filterClause = where ? `WHERE ${where}` : ''
 
@@ -120,9 +121,9 @@ export class PgSourceStore {
     return rows.map(mapSourceRow)
   }
 
-  async delete(filter: SourceFilter): Promise<{ count: number; ids: string[] }> {
+  async delete(filter: SourceFilter | null): Promise<{ count: number; ids: string[] }> {
     const { where, params } = buildSourceWhere(filter)
-    if (!where) throw new Error('deleteSources() requires at least one filter field')
+    if (!where) throw new ConfigError('deleteSources() requires at least one filter field.')
     const rows = await this.sql(
       `DELETE FROM ${this.tableName} WHERE ${where} RETURNING id`,
       params
@@ -165,35 +166,35 @@ export class PgSourceStore {
   }
 }
 
-function buildSourceWhere(filter: SourceFilter): { where: string; params: unknown[] } {
+function buildSourceWhere(filter?: SourceFilter | null): { where: string; params: unknown[] } {
   const conditions: string[] = []
   const params: unknown[] = []
 
-  if (filter.bucketId != null) {
+  if (filter?.bucketId != null) {
     params.push(filter.bucketId)
     conditions.push(`bucket_id = $${params.length}`)
   }
-  if (filter.tenantId != null) {
+  if (filter?.tenantId != null) {
     params.push(filter.tenantId)
     conditions.push(`tenant_id = $${params.length}`)
   }
-  if (filter.groupId != null) {
+  if (filter?.groupId != null) {
     params.push(filter.groupId)
     conditions.push(`group_id = $${params.length}`)
   }
-  if (filter.userId != null) {
+  if (filter?.userId != null) {
     params.push(filter.userId)
     conditions.push(`user_id = $${params.length}`)
   }
-  if (filter.agentId != null) {
+  if (filter?.agentId != null) {
     params.push(filter.agentId)
     conditions.push(`agent_id = $${params.length}`)
   }
-  if (filter.conversationId != null) {
+  if (filter?.conversationId != null) {
     params.push(filter.conversationId)
     conditions.push(`conversation_id = $${params.length}`)
   }
-  if (filter.status != null) {
+  if (filter?.status != null) {
     if (Array.isArray(filter.status)) {
       params.push(filter.status)
       conditions.push(`status = ANY($${params.length}::text[])`)
@@ -202,7 +203,7 @@ function buildSourceWhere(filter: SourceFilter): { where: string; params: unknow
       conditions.push(`status = $${params.length}`)
     }
   }
-  if (filter.visibility != null) {
+  if (filter?.visibility != null) {
     if (Array.isArray(filter.visibility)) {
       params.push(filter.visibility)
       conditions.push(`visibility = ANY($${params.length}::text[])`)
@@ -211,11 +212,11 @@ function buildSourceWhere(filter: SourceFilter): { where: string; params: unknow
       conditions.push(`visibility = $${params.length}`)
     }
   }
-  if (filter.sourceIds != null && filter.sourceIds.length > 0) {
+  if (filter?.sourceIds != null && filter.sourceIds.length > 0) {
     params.push(filter.sourceIds)
     conditions.push(`id = ANY($${params.length}::text[])`)
   }
-  if (filter.graphExtracted != null) {
+  if (filter?.graphExtracted != null) {
     params.push(filter.graphExtracted)
     conditions.push(`graph_extracted = $${params.length}`)
   }

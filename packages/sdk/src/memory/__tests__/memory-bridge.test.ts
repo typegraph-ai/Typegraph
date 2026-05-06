@@ -101,12 +101,31 @@ describe('createMemoryBridge', () => {
     expect(store.search).toHaveBeenCalled()
   })
 
+  it('treats null memory opts as omitted', async () => {
+    const store = mockStore()
+    const bridge = createMemoryBridge({
+      memoryStore: store,
+      embedding: mockEmbedding(),
+      llm: mockLLM(),
+      scope: testScope,
+    })
+
+    await bridge.remember('test memory', null)
+    const results = await bridge.recall('query', null)
+    await bridge.forget('some-id', null)
+
+    expect(Array.isArray(results)).toBe(true)
+    expect(store.upsert).toHaveBeenCalled()
+    expect(store.search).toHaveBeenCalled()
+    expect(store.invalidate).toHaveBeenCalledWith('some-id')
+  })
+
   it('links memories to deterministic external-ID subjects and recalls by entity scope', async () => {
     const store = mockStore()
     const records: MemoryRecord[] = []
     const entities = new Map<string, SemanticEntity>()
     const edges: SemanticGraphEdge[] = []
-    const email: ExternalId = { id: 'pat@example.com', type: 'email', identityType: 'user' }
+    const email: ExternalId = { id: 'pat@example.com', type: 'email' }
 
     Object.assign(store, {
       upsert: vi.fn().mockImplementation(async (record: MemoryRecord) => {
@@ -116,7 +135,6 @@ describe('createMemoryBridge', () => {
       findEntityByExternalId: vi.fn().mockImplementation(async (externalId: ExternalId) => {
         return [...entities.values()].find(entity =>
           entity.externalIds?.some(id =>
-            id.identityType === externalId.identityType &&
             id.type === externalId.type &&
             id.id === externalId.id
           )
@@ -179,7 +197,7 @@ describe('createMemoryBridge', () => {
 
   it('returns empty scoped recall when external IDs resolve to no entity', async () => {
     const store = mockStore()
-    const email: ExternalId = { id: 'missing@example.com', type: 'email', identityType: 'user' }
+    const email: ExternalId = { id: 'missing@example.com', type: 'email' }
     Object.assign(store, {
       findEntityByExternalId: vi.fn().mockResolvedValue(null),
       getMemoryIdsForEntities: vi.fn().mockResolvedValue(['should-not-be-used']),

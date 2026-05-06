@@ -64,7 +64,7 @@ export function typegraphMemoryMiddleware(memory: TypegraphMemory, opts: MemoryM
       messages: { role: 'user' | 'assistant'; content: string }[],
       conversationId?: string,
     ): Promise<void> {
-      await memory.addConversationTurn(messages, conversationId)
+      await memory.addConversationTurn(messages, { conversationId })
     },
   }
 }

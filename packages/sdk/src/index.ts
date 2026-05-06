@@ -112,7 +112,6 @@ export type {
   PolicyViolation,
   PolicyStoreAdapter,
   ExternalId,
-  ExternalIdIdentityType,
   ExternalIdEncoding,
   MemoryRecord,
   ChunkRef,

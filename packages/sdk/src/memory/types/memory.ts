@@ -36,14 +36,6 @@ export interface TemporalRecord {
 
 // ── Deterministic External Identity ──
 
-export type ExternalIdIdentityType =
-  | 'tenant'
-  | 'group'
-  | 'user'
-  | 'agent'
-  | 'conversation'
-  | 'entity'
-
 export type ExternalIdEncoding = 'none' | 'sha256'
 
 export interface ExternalId {
@@ -51,8 +43,6 @@ export interface ExternalId {
   id: string
   /** Identifier namespace/type, e.g. email, slack_user_id, github_handle. */
   type: string
-  /** Identity level this identifier applies to. */
-  identityType: ExternalIdIdentityType
   /** Encoding of `id`. Defaults to `none`. */
   encoding?: ExternalIdEncoding | undefined
   /** Optional system/source metadata for debugging and future conflict policy. */

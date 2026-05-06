@@ -703,7 +703,6 @@ function externalIdKey(externalId: ExternalId): string {
   const type = externalId.type.trim().toLowerCase()
   const encoding = externalId.encoding ?? 'none'
   return [
-    externalId.identityType,
     type,
     normalizeExternalIdValue(externalId.id, type, encoding),
     encoding,

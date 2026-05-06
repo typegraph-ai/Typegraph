@@ -147,7 +147,6 @@ export type {
 } from './memory.js'
 export type {
   ExternalId,
-  ExternalIdIdentityType,
   ExternalIdEncoding,
   MemoryRecord,
 } from '../memory/types/memory.js'

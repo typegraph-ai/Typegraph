@@ -5,7 +5,6 @@ export type {
   MemoryStatus,
   TemporalRecord,
   ExternalId,
-  ExternalIdIdentityType,
   ExternalIdEncoding,
   MemoryRecord,
   EpisodicMemory,

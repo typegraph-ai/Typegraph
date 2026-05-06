@@ -148,7 +148,6 @@ describe('PgMemoryStoreAdapter', () => {
     const externalId: ExternalId = {
       id: 'Alice@Example.com',
       type: 'EMAIL',
-      identityType: 'user',
     }
 
     await store.upsertEntityExternalIds('ent_alice', [externalId], { tenantId: 'tenant-1' })
@@ -156,11 +155,10 @@ describe('PgMemoryStoreAdapter', () => {
     expect(capturedQuery).toContain('ON CONFLICT')
     expect(capturedQuery).toContain('WHERE typegraph_entity_external_ids.entity_id = EXCLUDED.entity_id')
     expect(capturedParams[1]).toBe('ent_alice')
-    expect(capturedParams[2]).toBe('user')
-    expect(capturedParams[3]).toBe('email')
-    expect(capturedParams[4]).toBe('Alice@Example.com')
-    expect(capturedParams[5]).toBe('alice@example.com')
-    expect(capturedParams[6]).toBe('none')
-    expect(capturedParams[9]).toBe('tenant-1')
+    expect(capturedParams[2]).toBe('email')
+    expect(capturedParams[3]).toBe('Alice@Example.com')
+    expect(capturedParams[4]).toBe('alice@example.com')
+    expect(capturedParams[5]).toBe('none')
+    expect(capturedParams[8]).toBe('tenant-1')
   })
 })

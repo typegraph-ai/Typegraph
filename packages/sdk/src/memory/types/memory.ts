@@ -1,5 +1,6 @@
 import type { typegraphIdentity } from '../../types/identity.js'
-import type { Visibility } from '../../types/typegraph-document.js'
+import type { Visibility } from '../../types/source.js'
+import type { ChunkRef } from '../../types/chunk.js'
 
 // ── Memory Categories ──
 
@@ -31,6 +32,31 @@ export interface TemporalRecord {
   createdAt: Date
   /** When this record was superseded by a newer version in the system */
   expiredAt?: Date | undefined
+}
+
+// ── Deterministic External Identity ──
+
+export type ExternalIdIdentityType =
+  | 'tenant'
+  | 'group'
+  | 'user'
+  | 'agent'
+  | 'conversation'
+  | 'entity'
+
+export type ExternalIdEncoding = 'none' | 'sha256'
+
+export interface ExternalId {
+  /** External system identifier value, e.g. email, Slack user ID, GitHub handle. */
+  id: string
+  /** Identifier namespace/type, e.g. email, slack_user_id, github_handle. */
+  type: string
+  /** Identity level this identifier applies to. */
+  identityType: ExternalIdIdentityType
+  /** Encoding of `id`. Defaults to `none`. */
+  encoding?: ExternalIdEncoding | undefined
+  /** Optional system/source metadata for debugging and future conflict policy. */
+  metadata?: Record<string, unknown> | undefined
 }
 
 // ── Base Memory Record ──
@@ -90,8 +116,16 @@ export interface SemanticEntity {
   entityType: string
   /** Alternative names / spellings */
   aliases: string[]
+  /** Deterministic external identifiers used before fuzzy/probabilistic matching. */
+  externalIds?: ExternalId[] | undefined
   /** Arbitrary typed properties */
   properties: Record<string, unknown>
+  /** Entity lifecycle status. Missing/undefined is treated as active for older rows. */
+  status?: 'active' | 'merged' | 'invalidated' | undefined
+  /** Set when this entity was merged into another canonical entity. */
+  mergedIntoEntityId?: string | undefined
+  /** Set when the entity was invalidated or purged by an entity maintenance operation. */
+  deletedAt?: Date | undefined
   /** Embedding of the entity name for similarity matching */
   embedding?: number[] | undefined
   /** Embedding of the entity description for Phase 3.5 near-miss matching */
@@ -105,11 +139,11 @@ export interface SemanticEntity {
   temporal: TemporalRecord
 }
 
-export type EntityMentionType = 'subject' | 'object' | 'co_occurrence' | 'entity' | 'alias'
+export type EntityMentionType = 'subject' | 'object' | 'co_occurrence' | 'entity' | 'alias' | 'source_subject'
 
 export interface SemanticEntityMention {
   entityId: string
-  documentId: string
+  sourceId: string
   chunkIndex: number
   bucketId: string
   mentionType: EntityMentionType
@@ -120,24 +154,29 @@ export interface SemanticEntityMention {
   confidence?: number | undefined
 }
 
-export interface SemanticPassageNode {
+export type SemanticGraphNodeType = 'entity' | 'chunk' | 'memory'
+
+export interface SemanticGraphEdge {
   id: string
-  bucketId: string
-  documentId: string
-  chunkIndex: number
-  embeddingModel: string
-  contentHash: string
-  chunkId?: string | undefined
-  metadata: Record<string, unknown>
+  sourceType: SemanticGraphNodeType
+  sourceId: string
+  targetType: SemanticGraphNodeType
+  targetId: string
+  relation: string
+  weight: number
+  properties: Record<string, unknown>
   scope: typegraphIdentity
   visibility?: Visibility | undefined
-  createdAt: Date
-  updatedAt: Date
+  temporal: TemporalRecord
+  evidence: string[]
+  sourceChunkRef?: ChunkRef | undefined
+  targetChunkRef?: ChunkRef | undefined
 }
 
-export interface SemanticPassageEntityEdge {
-  passageId: string
+export interface SemanticEntityChunkEdge {
+  id: string
   entityId: string
+  chunkRef: ChunkRef
   weight: number
   mentionCount: number
   confidence?: number | undefined
@@ -147,6 +186,18 @@ export interface SemanticPassageEntityEdge {
   visibility?: Visibility | undefined
   createdAt?: Date | undefined
   updatedAt?: Date | undefined
+}
+
+export interface SemanticChunkRecord extends ChunkRef {
+  content: string
+  totalChunks: number
+  metadata: Record<string, unknown>
+  similarity?: number | undefined
+  tenantId?: string | undefined
+  groupId?: string | undefined
+  userId?: string | undefined
+  agentId?: string | undefined
+  conversationId?: string | undefined
 }
 
 export interface SemanticFactRecord {
@@ -167,6 +218,7 @@ export interface SemanticFactRecord {
   visibility?: Visibility | undefined
   createdAt: Date
   updatedAt: Date
+  invalidAt?: Date | undefined
   similarity?: number | undefined
 }
 
@@ -175,6 +227,10 @@ export interface SemanticFactRecord {
 
 export interface SemanticEdge {
   id: string
+  sourceType?: 'entity' | undefined
+  sourceId?: string | undefined
+  targetType?: 'entity' | undefined
+  targetId?: string | undefined
   sourceEntityId: string
   targetEntityId: string
   /** Relationship type in SCREAMING_SNAKE_CASE: 'WORKS_AT', 'PREFERS', 'KNOWS' */

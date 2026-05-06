@@ -35,7 +35,7 @@ describe('PredicateNormalizer', () => {
       symmetric: false,
     })
     expect(normalizer.normalizeWithDirection('FOUNDED_BY').swapSubjectObject).toBe(true)
-    expect(normalizer.normalizeWithDirection('WRITTEN_BY').predicate).toBe('WROTE')
+    expect(normalizer.normalizeWithDirection('WRITTEN_BY').predicate).toBe('AUTHORED')
     expect(normalizer.normalizeWithDirection('OWNED_BY')).toEqual(expect.objectContaining({
       predicate: 'OWNS',
       swapSubjectObject: true,
@@ -60,13 +60,40 @@ describe('PredicateNormalizer', () => {
     expect(isSymmetricPredicate('MARRIED')).toBe(true)
   })
 
-  it('keeps tense-significant predicates separate', async () => {
+  it('normalizes tense aliases to canonical predicates with temporal metadata', async () => {
     const normalizer = new PredicateNormalizer(mockEmbedding())
 
     expect(await normalizer.normalize('WORKS_FOR')).toBe('WORKS_FOR')
-    expect(await normalizer.normalize('WORKED_FOR')).toBe('WORKED_FOR')
-    expect(await normalizer.normalize('WAS_EMPLOYED_BY')).toBe('WORKED_FOR')
-    expect(normalizer.normalizeWithDirection('WAS_EMPLOYED_BY').swapSubjectObject).toBe(true)
+    expect(await normalizer.normalize('WORKED_FOR')).toBe('WORKS_FOR')
+    expect(normalizer.normalizeWithDirection('WAS_EMPLOYED_BY')).toEqual(expect.objectContaining({
+      predicate: 'WORKS_FOR',
+      swapSubjectObject: false,
+      temporalStatus: 'former',
+    }))
+    expect(normalizer.normalizeWithDirection('LED')).toEqual(expect.objectContaining({
+      predicate: 'LEADS',
+      temporalStatus: 'former',
+    }))
+  })
+
+  it('rejects alias cues and prevents self-inverse swap bugs', () => {
+    const normalizer = new PredicateNormalizer(mockEmbedding())
+
+    expect(normalizer.normalizeWithDirection('KNOWN_AS')).toEqual(expect.objectContaining({
+      predicate: 'KNOWN_AS',
+      valid: false,
+      swapSubjectObject: false,
+    }))
+    expect(normalizer.normalizeWithDirection('AMENDED_BY')).toEqual(expect.objectContaining({
+      predicate: 'AMENDS',
+      valid: true,
+      swapSubjectObject: true,
+    }))
+    expect(normalizer.normalizeWithDirection('EMPLOYED_BY')).toEqual(expect.objectContaining({
+      predicate: 'WORKS_FOR',
+      valid: true,
+      swapSubjectObject: false,
+    }))
   })
 
   it('rejects invented predicates that are not in the ontology', async () => {

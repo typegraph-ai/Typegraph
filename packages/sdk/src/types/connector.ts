@@ -1,4 +1,17 @@
-export interface RawDocument<TMeta extends Record<string, unknown> = Record<string, unknown>> {
+import type { ExternalId } from '../memory/types/memory.js'
+import type { EntityType } from '../index-engine/ontology.js'
+
+export interface SourceSubject {
+  entityId?: string | undefined
+  externalIds?: ExternalId[] | undefined
+  name?: string | undefined
+  entityType?: EntityType | string | undefined
+  aliases?: string[] | undefined
+  description?: string | undefined
+  properties?: Record<string, unknown> | undefined
+}
+
+export interface SourceInput<TMeta extends Record<string, unknown> = Record<string, unknown>> {
   id?: string | undefined
   content: string
   title: string
@@ -10,6 +23,7 @@ export interface RawDocument<TMeta extends Record<string, unknown> = Record<stri
   language?: string | undefined
 
   metadata?: TMeta | undefined
+  subject?: SourceSubject | undefined
 }
 
 export interface ChunkOpts {

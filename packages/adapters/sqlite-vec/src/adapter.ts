@@ -28,8 +28,8 @@ export interface SqliteVecAdapterConfig {
  *
  * **Limitations vs PostgreSQL:**
  * - No hybrid search (BM25 keyword search unavailable)
- * - No document management (list, update, delete documents)
- * - No context passages (searchWithDocuments)
+ * - No source management (list, update, delete sources)
+ * - No context passages (searchWithSources)
  * - No policy enforcement
  * - No graph/memory storage (no sqlite memory adapter — `QuerySignals.graph` and
  *   `QuerySignals.memory` require the pgvector adapter)
@@ -183,14 +183,14 @@ export class SqliteVecAdapter implements VectorStoreAdapter {
     return tables
   }
 
-  async upsertDocument(model: string, chunks: EmbeddedChunk[]): Promise<void> {
+  async upsertSourceChunks(model: string, chunks: EmbeddedChunk[]): Promise<void> {
     if (chunks.length === 0) return
     const { chunksTable, vecTable } = this.getTables(model)
 
     const upsertChunk = this.db.prepare(
       `INSERT INTO ${chunksTable}
         (id, bucket_id, tenant_id, group_id, user_id, agent_id, conversation_id,
-         document_id, idempotency_key, content,
+         source_id, idempotency_key, content,
          embedding_model, chunk_index, total_chunks, metadata, indexed_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (idempotency_key, chunk_index, bucket_id) DO UPDATE SET
@@ -200,7 +200,7 @@ export class SqliteVecAdapter implements VectorStoreAdapter {
         user_id         = excluded.user_id,
         agent_id        = excluded.agent_id,
         conversation_id = excluded.conversation_id,
-        document_id     = excluded.document_id,
+        source_id     = excluded.source_id,
         content         = excluded.content,
         embedding_model = excluded.embedding_model,
         total_chunks    = excluded.total_chunks,
@@ -230,7 +230,7 @@ export class SqliteVecAdapter implements VectorStoreAdapter {
           chunk.userId ?? null,
           chunk.agentId ?? null,
           chunk.conversationId ?? null,
-          chunk.documentId,
+          chunk.sourceId,
           chunk.idempotencyKey,
           chunk.content,
           chunk.embeddingModel,
@@ -455,9 +455,9 @@ function buildWhere(filter?: ChunkFilter): { where: string; params: unknown[] } 
     conditions.push(`conversation_id = ?`)
     params.push(filter.conversationId)
   }
-  if (filter.documentId != null) {
-    conditions.push(`document_id = ?`)
-    params.push(filter.documentId)
+  if (filter.sourceId != null) {
+    conditions.push(`source_id = ?`)
+    params.push(filter.sourceId)
   }
   if (filter.idempotencyKey != null) {
     conditions.push(`idempotency_key = ?`)
@@ -501,7 +501,7 @@ function mapRowToScoredChunk(row: Record<string, unknown>): ScoredChunk {
     userId: (row.user_id as string) ?? undefined,
     agentId: (row.agent_id as string) ?? undefined,
     conversationId: (row.conversation_id as string) ?? undefined,
-    documentId: row.document_id as string,
+    sourceId: row.source_id as string,
     content: row.content as string,
     embedding: [], // Don't return the full vector
     embeddingModel: row.embedding_model as string,

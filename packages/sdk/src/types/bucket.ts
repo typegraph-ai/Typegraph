@@ -1,11 +1,11 @@
-import type { RawDocument } from './connector.js'
+import type { SourceInput } from './connector.js'
 import type { EmbeddingProvider } from '../embedding/provider.js'
 import type { AISDKEmbeddingInput } from '../embedding/ai-sdk-adapter.js'
 
 /**
- * A bucket is a named container for documents.
- * Buckets have no type - they are user-defined namespaces for organizing documents.
- * A bucket named "Marketing Docs" could receive documents from a URL scrape,
+ * A bucket is a named container for sources.
+ * Buckets have no type - they are user-defined namespaces for organizing sources.
+ * A bucket named "Marketing Content" could receive sources from a URL scrape,
  * a domain crawl, file uploads, and a Slack sync - all at the same time.
  *
  * Each bucket supports exactly one embedding model, set at creation time.
@@ -38,8 +38,8 @@ export interface Bucket {
 export interface IndexDefaults {
   chunkSize?: number | undefined
   chunkOverlap?: number | undefined
-  deduplicateBy?: string[] | ((doc: RawDocument) => string) | undefined
-  visibility?: import('./typegraph-document.js').Visibility | undefined
+  deduplicateBy?: string[] | ((source: SourceInput) => string) | undefined
+  visibility?: import('./source.js').Visibility | undefined
   stripMarkdownForEmbedding?: boolean | undefined
   preprocessForEmbedding?: ((content: string) => string) | undefined
   propagateMetadata?: string[] | undefined

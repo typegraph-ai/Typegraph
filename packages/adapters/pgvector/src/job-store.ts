@@ -62,18 +62,18 @@ export class PgJobStore {
     return mapJobRow(rows[0]!)
   }
 
-  async list(filter: JobFilter, pagination?: PaginationOpts): Promise<Job[] | PaginatedResult<Job>> {
+  async list(filter?: JobFilter | null, pagination?: PaginationOpts | null): Promise<Job[] | PaginatedResult<Job>> {
     const conditions: string[] = []
     const params: unknown[] = []
-    if (filter.bucketId != null) {
+    if (filter?.bucketId != null) {
       params.push(filter.bucketId)
       conditions.push(`bucket_id = $${params.length}`)
     }
-    if (filter.status != null) {
+    if (filter?.status != null) {
       params.push(filter.status)
       conditions.push(`status = $${params.length}`)
     }
-    if (filter.type != null) {
+    if (filter?.type != null) {
       params.push(filter.type)
       conditions.push(`type = $${params.length}`)
     }

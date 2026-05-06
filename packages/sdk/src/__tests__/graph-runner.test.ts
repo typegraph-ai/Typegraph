@@ -3,13 +3,13 @@ import { GraphRunner } from '../query/runners/graph-runner.js'
 import type { KnowledgeGraphBridge } from '../types/graph-bridge.js'
 
 describe('GraphRunner', () => {
-  it('maps passage graph results into normalized graph results', async () => {
-    const searchGraphPassages = vi.fn().mockResolvedValue({
+  it('maps chunk graph results into normalized graph results', async () => {
+    const searchGraphChunks = vi.fn().mockResolvedValue({
       results: [{
-        passageId: 'passage-1',
+        chunkId: 'chunk-1',
         content: 'Adarsh Tadimari is debugging Plotline SDK initialization.',
         bucketId: 'bucket-1',
-        documentId: 'doc-1',
+        sourceId: 'source-1',
         chunkIndex: 2,
         totalChunks: 5,
         score: 0.42,
@@ -38,7 +38,7 @@ describe('GraphRunner', () => {
       trace: {
         entitySeedCount: 1,
         factSeedCount: 1,
-        passageSeedCount: 1,
+        chunkSeedCount: 1,
         graphNodeCount: 3,
         graphEdgeCount: 2,
         pprNonzeroCount: 3,
@@ -47,11 +47,11 @@ describe('GraphRunner', () => {
         topGraphScores: [0.42],
         selectedFactIds: ['fact-1'],
         selectedEntityIds: ['ent-1'],
-        selectedPassageIds: ['passage-1'],
+        selectedChunkIds: ['chunk-1'],
       },
     })
 
-    const runner = new GraphRunner({ searchGraphPassages } satisfies KnowledgeGraphBridge)
+    const runner = new GraphRunner({ searchGraphChunks } satisfies KnowledgeGraphBridge)
     const run = await runner.run(
       'Adarsh Plotline SDK',
       { tenantId: 'tenant-1' },
@@ -60,7 +60,7 @@ describe('GraphRunner', () => {
       { restartProbability: 0.5 }
     )
 
-    expect(searchGraphPassages).toHaveBeenCalledWith(
+    expect(searchGraphChunks).toHaveBeenCalledWith(
       'Adarsh Plotline SDK',
       { tenantId: 'tenant-1' },
       {
@@ -68,7 +68,7 @@ describe('GraphRunner', () => {
         factCandidateLimit: 80,
         factFilterInputLimit: 12,
         factSeedLimit: 4,
-        passageSeedLimit: 80,
+        chunkSeedLimit: 80,
         maxExpansionEdgesPerEntity: 25,
         factChainLimit: 2,
         maxPprIterations: 40,
@@ -84,42 +84,42 @@ describe('GraphRunner', () => {
       expect.objectContaining({
         content: 'Adarsh Tadimari is debugging Plotline SDK initialization.',
         bucketId: 'bucket-1',
-        documentId: 'doc-1',
+        sourceId: 'source-1',
         rawScores: { graph: 0.42 },
         mode: 'graph',
         chunk: { index: 2, total: 5 },
         metadata: expect.objectContaining({
           source: 'test',
-          passageId: 'passage-1',
+          chunkId: 'chunk-1',
         }),
         tenantId: 'tenant-1',
       }),
     ])
   })
 
-  it('throws when searchGraphPassages is missing', async () => {
+  it('throws when searchGraphChunks is missing', async () => {
     const runner = new GraphRunner({} satisfies KnowledgeGraphBridge)
 
     await expect(
       runner.run('Adarsh', { tenantId: 'tenant-1' }, 5)
-    ).rejects.toThrow('Knowledge graph bridge must implement searchGraphPassages for graph queries.')
+    ).rejects.toThrow('Knowledge graph bridge must implement searchGraphChunks for graph queries.')
   })
 
   it('lets explicit graph options override the default profile', async () => {
-    const searchGraphPassages = vi.fn().mockResolvedValue({
+    const searchGraphChunks = vi.fn().mockResolvedValue({
       results: [],
       facts: [],
       entities: [],
       trace: {},
     })
-    const runner = new GraphRunner({ searchGraphPassages } satisfies KnowledgeGraphBridge)
+    const runner = new GraphRunner({ searchGraphChunks } satisfies KnowledgeGraphBridge)
 
     await runner.run('query', { tenantId: 'tenant-1' }, 5, undefined, {
       factFilter: false,
       factCandidateLimit: 25,
     })
 
-    expect(searchGraphPassages).toHaveBeenCalledWith(
+    expect(searchGraphChunks).toHaveBeenCalledWith(
       'query',
       { tenantId: 'tenant-1' },
       expect.objectContaining({

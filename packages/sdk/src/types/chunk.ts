@@ -7,8 +7,8 @@ export interface EmbeddedChunk {
   userId?: string | undefined
   agentId?: string | undefined
   conversationId?: string | undefined
-  /** UUID referencing typegraph_documents.id. */
-  documentId: string
+  /** ID referencing typegraph_sources.id. */
+  sourceId: string
 
   content: string
   embedding: number[]
@@ -17,26 +17,36 @@ export interface EmbeddedChunk {
   totalChunks: number
 
   /**
-   * Denormalized from the parent document. Chunks are the query target, so the
+   * Denormalized from the parent source. Chunks are the query target, so the
    * visibility gate has to live here or unscoped queries leak narrowly-visible
    * rows. Defaults to 'tenant' when omitted.
    */
-  visibility?: import('./typegraph-document.js').Visibility | undefined
+  visibility?: import('./source.js').Visibility | undefined
 
   metadata: Record<string, unknown>
   indexedAt: Date
+}
+
+export interface ChunkRef {
+  bucketId: string
+  sourceId: string
+  chunkIndex: number
+  embeddingModel?: string | undefined
+  chunkId?: string | undefined
 }
 
 export interface ChunkFilter {
   bucketId?: string | undefined
   /** Filter to any of several buckets. Preferred over `bucketId` when searching multiple. */
   bucketIds?: string[] | undefined
+  /** Restrict search to exact chunk identities. Empty array intentionally matches nothing. */
+  chunkRefs?: ChunkRef[] | undefined
   tenantId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
   conversationId?: string | undefined
-  documentId?: string | undefined
+  sourceId?: string | undefined
   idempotencyKey?: string | undefined
   metadata?: Record<string, unknown> | undefined
 }

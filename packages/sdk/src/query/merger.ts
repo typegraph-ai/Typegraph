@@ -1,11 +1,12 @@
 import { createHash } from 'crypto'
 import type { QueryMemoryRecord, QuerySignals, NormalizedScores } from '../types/query.js'
+import type { SourceSubject } from '../types/connector.js'
 import { computeCompositeScore } from './planner.js'
 
 export interface RetrievalCandidate {
   content: string
   bucketId: string
-  documentId: string
+  sourceId: string
   rawScores: { semantic?: number | undefined; keyword?: number | undefined; rrf?: number | undefined; memory?: number | undefined; graph?: number | undefined; memorySimilarity?: number | undefined; memoryImportance?: number | undefined; memoryRecency?: number | undefined }
   normalizedScore: number
   mode: 'indexed' | 'memory' | 'graph'
@@ -15,9 +16,10 @@ export interface RetrievalCandidate {
   title?: string | undefined
   updatedAt?: Date | undefined
   tenantId?: string | undefined
-  // Document-level fields (populated when searchWithDocuments is used)
-  documentStatus?: string | undefined
-  documentVisibility?: string | undefined
+  // Source-level fields (populated when searchWithSources is used)
+  sourceStatus?: string | undefined
+  sourceVisibility?: string | undefined
+  sourceSubject?: SourceSubject | undefined
   userId?: string | undefined
   groupId?: string | undefined
   agentId?: string | undefined
@@ -26,8 +28,8 @@ export interface RetrievalCandidate {
 }
 
 export function dedupKey(r: RetrievalCandidate): string {
-  if (r.documentId && r.chunk?.index !== undefined && r.bucketId) {
-    return `${r.bucketId}:${r.documentId}:${r.chunk.index}`
+  if (r.sourceId && r.chunk?.index !== undefined && r.bucketId) {
+    return `${r.bucketId}:${r.sourceId}:${r.chunk.index}`
   }
   return createHash('sha256').update(r.content).digest('hex')
 }
@@ -52,7 +54,7 @@ export function normalizeRRF(rrfScore: number, numLists: number, k = 60): number
 }
 
 /** Normalize graph PPR scores with fourth-root scaling.
- *  PPR is a probability mass and useful passage scores are often small
+ *  PPR is a probability mass and useful chunk scores are often small
  *  absolute values. Fourth-root scaling expands low-but-meaningful scores
  *  while keeping the mapping deterministic and comparable across queries. */
 export function normalizeGraphPPR(pprScore: number): number {

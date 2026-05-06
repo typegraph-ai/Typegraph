@@ -1,8 +1,8 @@
 import { z } from 'zod/v4-mini'
 import type { LLMProvider } from '../types/llm-provider.js'
 import type { KnowledgeGraphBridge } from '../types/graph-bridge.js'
-import type { Visibility } from '../types/typegraph-document.js'
-import { getPredicatesForPrompt } from './ontology.js'
+import type { Visibility } from '../types/source.js'
+import { ENTITY_TYPES, ENTITY_TYPES_LIST, VALID_ENTITY_TYPES, getPredicatesForPrompt } from './ontology.js'
 
 export interface TripleExtractorConfig {
   /** LLM for entity extraction (Pass 1 in two-pass mode) or the single combined call. */
@@ -30,6 +30,9 @@ interface ExtractedRelationship {
   confidence: number
   description?: string | undefined
   evidenceText?: string | undefined
+  temporalStatus?: 'current' | 'former' | 'historical' | 'unknown' | undefined
+  validFrom?: string | undefined
+  validTo?: string | undefined
 }
 
 interface ExtractionResult {
@@ -42,17 +45,6 @@ export interface EntityContext {
   name: string
   type: string
 }
-
-// ── Entity types ──
-
-const ENTITY_TYPES = [
-  'person', 'organization', 'location', 'product', 'concept', 'event',
-  'work_of_art', 'technology', 'law_regulation', 'time_period',
-] as const
-
-const VALID_ENTITY_TYPES = new Set<string>(ENTITY_TYPES)
-
-const ENTITY_TYPES_LIST = ENTITY_TYPES.join(', ')
 
 // ── Zod schemas for structured output ──
 
@@ -70,6 +62,9 @@ const relationshipSchema = z.array(z.object({
   confidence: z.number(),
   description: z.optional(z.string()),
   evidenceText: z.optional(z.string()),
+  temporalStatus: z.optional(z.enum(['current', 'former', 'historical', 'unknown'])),
+  validFrom: z.optional(z.string()),
+  validTo: z.optional(z.string()),
 }))
 
 const singlePassSchema = z.object({
@@ -515,6 +510,9 @@ function postProcessExtraction(
       confidence: typeof rel.confidence === 'number' ? rel.confidence : 1,
       description: sanitizeField(rel.description ?? ''),
       evidenceText: sanitizeField(rel.evidenceText ?? ''),
+      temporalStatus: rel.temporalStatus,
+      validFrom: rel.validFrom ? sanitizeField(rel.validFrom) : undefined,
+      validTo: rel.validTo ? sanitizeField(rel.validTo) : undefined,
     })
   }
 
@@ -523,12 +521,12 @@ function postProcessExtraction(
 
 // ── Single-pass prompt (default) ──
 
-function buildSinglePassPrompt(content: string, entityContext?: EntityContext[], documentTitle?: string): string {
+function buildSinglePassPrompt(content: string, entityContext?: EntityContext[], sourceTitle?: string): string {
   const contextSection = entityContext?.length
-    ? `\nPreviously identified entities in this document:\n${entityContext.map(e => `- ${e.name} (${e.type})`).join('\n')}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
+    ? `\nPreviously identified entities in this source:\n${entityContext.map(e => `- ${e.name} (${e.type})`).join('\n')}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
     : ''
-  const titleSection = documentTitle
-    ? `\nThe text string is from a document titled: "${documentTitle}". Entities referenced in the title should be extracted as primary entities using their full formal names.\n`
+  const titleSection = sourceTitle
+    ? `\nThe text string is from a source titled: "${sourceTitle}". Entities referenced in the title should be extracted as primary entities using their full formal names.\n`
     : ''
 
   return `Your task is to extract all named entities, and relationships between them, from a text string.
@@ -546,6 +544,7 @@ For each entity, provide:
   Events: "2024 United States presidential election" not "the election"; "1984 Summer Olympics" not "1984 games"; "CES 2025" not "CES"; "World War II" not "the war"
   Legal/Science: "General Data Protection Regulation" not "GDPR"; "Clean Air Act of 1970" not "Clean Air Act"; "Hubble Space Telescope" not "Hubble"; "CRISPR-Cas9" not "CRISPR"
   Products: "iPhone 16 Pro Max" not "iPhone"; "Tesla Model 3" not "Model 3"; "GPT-4" not "GPT"
+  Documents: "Acme master services agreement" not "MSA"; "Q4 architecture review deck" not "deck"; "SOC2 readiness report" not "report"
   Culture: "Naismith Memorial Basketball Hall of Fame" not "Hall of Fame"; "Academy Award for Best Picture" not "Best Picture"; "The Great Gatsby" not "Gatsby"
 - "type": One of: ${ENTITY_TYPES_LIST}
 - "description": A one-sentence description of what this entity IS — its defining attributes, NOT its relationships to other entities
@@ -554,7 +553,7 @@ For each entity, provide:
   NEVER include as aliases:
   - Pronouns or pronoun phrases (he, she, it, they, them, we, his, her, its)
   - Generic references (the team, the roster, the company, the city, the league, the organization, the event, the protocol, the framework, the ingredient)
-  - Surnames or first names alone as canonical entity names (Curry, Obama, Kevin, Marie). A bare surname may be an alias only when the same passage or prior context clearly ties it to a full person entity, e.g. "Conway" after "Cole Conway"
+  - Surnames or first names alone as canonical entity names (Curry, Obama, Kevin, Marie). A bare surname may be an alias only when the same chunk or prior context clearly ties it to a full person entity, e.g. "Conway" after "Cole Conway"
   - Names of DIFFERENT entities — "FIBA Hall of Fame" and "Naismith Hall of Fame" are SEPARATE entities; "React" and "React Native" are SEPARATE; "Python 2" and "Python 3" are SEPARATE
   - Descriptive phrases (the American team, the defending champions, the former president, the lead researcher, the main ingredient)
   - Country/city names for their teams — "France" is NOT an alias of "France men's national basketball team"; "Brazil" is NOT an alias of "Brazil national football team"
@@ -568,7 +567,7 @@ Entity rules:
   4. Actors over settings — prefer entities that DO things over entities that are merely locations or backdrops
 - Omit entities that appear only in lists, parenthetical asides, or as minor supporting context with no described relationships.
 - Only extract specific named entities — NOT dates, dollar amounts, percentages, or generic descriptions
-- Exception: when the text directly states a named person's or organization's profession, office, or role, extract that role label as a "concept" entity so it can participate in a structured relationship. Examples: "doctor", "pilot", "house surgeon"
+- Exception: when the text directly states a named person's or organization's profession, office, or role, extract that role label as a "role" entity so it can participate in a structured relationship. Examples: "doctor", "pilot", "house surgeon", "CTO"
 - If an entity is referred to by multiple names (e.g., "OpenAI" and "the company"), list the proper name variants as aliases — NOT the generic reference
 - Include important entities even if they only appear once
 - Preserve complete person surface forms exactly when present. If the text says a person is "calling himself Cole Conway" or "known as Cole Conway", include "Cole Conway" as the entity name or alias — not only "Conway".
@@ -581,7 +580,7 @@ Entity rules:
 - For events, awards, seasons, software versions, product generations, or any time/version-specific entities, ALWAYS include the year, version, or edition in the name. Each distinct occurrence is a SEPARATE entity — e.g., "2023 NBA Finals" and "2024 NBA Finals" are different, "Python 2" and "Python 3" are different, "iPhone 15" and "iPhone 16" are different, "HTTP/1.1" and "HTTP/2" are different, "Michelin Guide 2024" and "Michelin Guide 2025" are different.
 - Different awards are ALWAYS separate entities even when they share words — "NBA Finals MVP" and "NBA MVP" are SEPARATE; "Academy Award for Best Picture" and "Academy Award for Best Director" are SEPARATE; "Nobel Peace Prize" and "Nobel Prize in Physics" are SEPARATE
 - Entities with opposing directional or categorical qualifiers are ALWAYS separate — "Western Conference" and "Eastern Conference" are SEPARATE; "North Atlantic Treaty Organization" and "South Asian Association" are SEPARATE; "Upper Egypt" and "Lower Egypt" are SEPARATE
-- Profession and role statements should become structured edges when supported by the text. Examples: "Steve Sharp, a pilot by profession" → Steve Sharp WORKS_AS pilot; "Elsie Inglis was a doctor" → Elsie Inglis WORKS_AS doctor; "She served as a house surgeon" → person HELD_ROLE house surgeon
+- Profession and role statements should become structured edges when supported by the text. Examples: "Steve Sharp, a pilot by profession" -> Steve Sharp WORKS_AS pilot; "Elsie Inglis was a doctor" -> Elsie Inglis WORKS_AS doctor; "She served as a house surgeon" -> person WORKS_AS house surgeon
 
 CRITICAL — Aliases vs. Relationships:
 - An ALIAS is a different name for THE SAME entity (e.g., "NYC" is an alias for "New York City")
@@ -599,12 +598,17 @@ For each relationship between the entities you identified, provide:
 - "confidence": How confident you are (0.0 to 1.0)
 - "description": One standalone sentence describing the relationship as a complete fact. It must be understandable without the source text.
 - "evidenceText": A concise source-backed excerpt or paraphrase that justifies the relationship. Keep it short; do not include full paragraphs.
+- "temporalStatus": Optional. Use "former" for past-tense relationships, "current" for current relationships, "historical" for historical/narrative facts, or "unknown" when unclear.
+- "validFrom" / "validTo": Optional ISO-like date strings only when the text states explicit dates or bounded periods.
 
 ${getPredicatesForPrompt()}
 
 Relationship rules:
 - Subject and object MUST be entities from Step 1 — do not introduce new entities
 - Use ONLY predicates from the vocabulary above. Do not invent relation names; omit the relationship if no predicate fits.
+- Emit canonical predicates only. Do not emit aliases such as WORKED_FOR, LED, CO_FOUNDED, KNOWN_AS, AKA, or ALIAS.
+- Use the same canonical predicate for current and former facts; put tense in temporalStatus instead of the predicate name.
+- Use IS_A for taxonomy/classification and WORKS_AS for employment, title, job, function, or role relationships.
 - Preserve logical direction. Passive voice must be converted to the active graph direction: "X was killed by Y" becomes Y KILLED X; "X was founded by Y" becomes Y FOUNDED X.
 - Use MARRIED for spouse, husband, wife, wed, or married relationships. Do not emit HUSBAND_OF, WIFE_OF, SPOUSE_OF, or MARRIED_TO.
 - Use PARENT_OF for father/mother/parent relationships, CHILD_OF for son/daughter/child relationships, and SIBLING_OF for brother/sister/sibling relationships.
@@ -625,7 +629,7 @@ Output:
   {"name": "Nancy Wade", "type": "person", "description": "Mother of Cousin Cæsar", "aliases": []},
   {"name": "Big-sis", "type": "person", "description": "Caretaker of Cousin Cæsar during childhood", "aliases": []},
   {"name": "Steve Sharp", "type": "person", "description": "Pilot and partner of Cousin Cæsar in the card game", "aliases": ["Sharp"]},
-  {"name": "pilot", "type": "concept", "description": "A profession practiced by Steve Sharp", "aliases": []},
+  {"name": "pilot", "type": "role", "description": "A profession practiced by Steve Sharp", "aliases": []},
   {"name": "Paducah, Kentucky", "type": "location", "description": "City in Kentucky where Cousin Cæsar uses the name Cole Conway", "aliases": ["Paducah"]},
   {"name": "West Tennessee", "type": "location", "description": "Region where Cousin Cæsar was born", "aliases": []},
   {"name": "Rob Roy", "type": "person", "description": "Wood cutter who worked for Old Smith", "aliases": ["Roy"]},
@@ -633,9 +637,9 @@ Output:
   {"name": "Tennessee River", "type": "location", "description": "River near Old Smith's farm", "aliases": []}
 ], "relationships": [
   {"subject": "Cousin Cæsar", "predicate": "CHILD_OF", "object": "Nancy Wade", "confidence": 0.95, "description": "Cousin Cæsar was born to Nancy Wade.", "evidenceText": "Cousin Cæsar was born to Nancy Wade"},
-  {"subject": "Cousin Cæsar", "predicate": "BORN_IN", "object": "West Tennessee", "confidence": 0.95, "description": "Cousin Cæsar was born in West Tennessee.", "evidenceText": "born to Nancy Wade in West Tennessee"},
-  {"subject": "Cousin Cæsar", "predicate": "TRAVELED_TO", "object": "Paducah, Kentucky", "confidence": 0.85, "description": "Cousin Cæsar later went to Paducah, Kentucky.", "evidenceText": "we find Cousin Cæsar in Paducah, Kentucky"},
-  {"subject": "Cousin Cæsar", "predicate": "COLLABORATED_WITH", "object": "Steve Sharp", "confidence": 0.95, "description": "Cousin Cæsar and Steve Sharp were partners in a card game.", "evidenceText": "in company with one Steve Sharp; they were partners"},
+  {"subject": "Cousin Cæsar", "predicate": "LOCATED_IN", "object": "West Tennessee", "confidence": 0.95, "description": "Cousin Cæsar was born in West Tennessee.", "evidenceText": "born to Nancy Wade in West Tennessee"},
+  {"subject": "Cousin Cæsar", "predicate": "LOCATED_IN", "object": "Paducah, Kentucky", "confidence": 0.85, "description": "Cousin Cæsar later went to Paducah, Kentucky.", "evidenceText": "we find Cousin Cæsar in Paducah, Kentucky"},
+  {"subject": "Cousin Cæsar", "predicate": "PARTNERED_WITH", "object": "Steve Sharp", "confidence": 0.95, "description": "Cousin Cæsar and Steve Sharp were partners in a card game.", "evidenceText": "in company with one Steve Sharp; they were partners"},
   {"subject": "Steve Sharp", "predicate": "WORKS_AS", "object": "pilot", "confidence": 0.9, "description": "Steve Sharp worked as a pilot.", "evidenceText": "Sharp, a pilot by profession"},
   {"subject": "Old Smith", "predicate": "EMPLOYED", "object": "Rob Roy", "confidence": 0.9, "description": "Old Smith employed Rob Roy to cut wood.", "evidenceText": "Rob Roy cut wood for Old Smith"}
 ]}
@@ -652,12 +656,12 @@ ${content}`
 
 // ── Two-pass prompts ──
 
-function buildEntityExtractionPrompt(content: string, entityContext?: EntityContext[], documentTitle?: string): string {
+function buildEntityExtractionPrompt(content: string, entityContext?: EntityContext[], sourceTitle?: string): string {
   const contextSection = entityContext?.length
     ? `\nPreviously identified entities in the text string:\n${entityContext.map(e => `- ${e.name} (${e.type})`).join('\n')}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
     : ''
-  const titleSection = documentTitle
-    ? `\nThe text string is from a document titled: "${documentTitle}". Entities referenced in the title should be extracted as primary entities using their full formal and canonical names.\n`
+  const titleSection = sourceTitle
+    ? `\nThe text string is from a source titled: "${sourceTitle}". Entities referenced in the title should be extracted as primary entities using their full formal and canonical names.\n`
     : ''
 
     return `Your task is to extract all named entities from a text string.
@@ -682,7 +686,7 @@ function buildEntityExtractionPrompt(content: string, entityContext?: EntityCont
     -- NEVER include as aliases:
     --- Pronouns or pronoun phrases (he, she, it, they, them, we, his, her, its)
     --- Generic references (the team, the roster, the company, the city, the league, the organization, the event, the protocol, the framework, the ingredient)
-    --- Surnames or first names alone as canonical entity names (Curry, Obama, Kevin, Marie). A bare surname may be an alias only when the same passage or prior context clearly ties it to a full person entity, e.g. "Conway" after "Cole Conway"
+    --- Surnames or first names alone as canonical entity names (Curry, Obama, Kevin, Marie). A bare surname may be an alias only when the same chunk or prior context clearly ties it to a full person entity, e.g. "Conway" after "Cole Conway"
     --- Names of DIFFERENT entities — "FIBA Hall of Fame" and "Naismith Hall of Fame" are SEPARATE entities; "React" and "React Native" are SEPARATE; "Python 2" and "Python 3" are SEPARATE
     --- Descriptive phrases (the American team, the defending champions, the former president, the lead researcher, the main ingredient)
     --- Country/city names for their teams — "France" is NOT an alias of "France men's national basketball team"; "Brazil" is NOT an alias of "Brazil national football team"
@@ -699,7 +703,7 @@ function buildEntityExtractionPrompt(content: string, entityContext?: EntityCont
     -- 4. ACTORS OVER SETTINGS — prefer entities that DO things over entities that are merely locations or backdrops
     -- Omit entities that appear only in lists, parenthetical asides, or as minor supporting context with no described relationships.
     - Only extract specific named entities. NOT dates, dollar amounts, percentages, or generic descriptions
-    - Exception: when the text directly states a named person's or organization's profession, office, or role, extract that role label as a "concept" entity so it can participate in a structured relationship. Examples: "doctor", "pilot", "house surgeon"
+    - Exception: when the text directly states a named person's or organization's profession, office, or role, extract that role label as a "role" entity so it can participate in a structured relationship. Examples: "doctor", "pilot", "house surgeon", "CTO"
     - If an entity is referred to by multiple names (e.g., "OpenAI" and "the company"), list the proper name variants as aliases — NOT the generic reference
     - Include important entities even if they only appear once
     - Preserve complete person surface forms exactly when present. If the text says a person is "calling himself Cole Conway" or "known as Cole Conway", include "Cole Conway" as the entity name or alias — not only "Conway".
@@ -713,7 +717,7 @@ function buildEntityExtractionPrompt(content: string, entityContext?: EntityCont
     - For events, awards, seasons, software versions, product generations, or any time/version-specific entities, ALWAYS include the year, version, or edition in the name. Each distinct occurrence is a SEPARATE entity — e.g., "2023 NBA Finals" and "2024 NBA Finals" are different, "Python 2" and "Python 3" are different, "iPhone 15" and "iPhone 16" are different, "HTTP/1.1" and "HTTP/2" are different, "Michelin Guide 2024" and "Michelin Guide 2025" are different.
     - Different awards are ALWAYS separate entities even when they share words — "NBA Finals MVP" and "NBA MVP" are SEPARATE; "Academy Award for Best Picture" and "Academy Award for Best Director" are SEPARATE; "Nobel Peace Prize" and "Nobel Prize in Physics" are SEPARATE
     - Entities with opposing directional or categorical qualifiers are ALWAYS separate — "Western Conference" and "Eastern Conference" are SEPARATE; "North Atlantic Treaty Organization" and "South Asian Association" are SEPARATE; "Upper Egypt" and "Lower Egypt" are SEPARATE
-    - Profession and role statements should become structured edges when supported by the text. Examples: "Steve Sharp, a pilot by profession" → Steve Sharp WORKS_AS pilot; "Elsie Inglis was a doctor" → Elsie Inglis WORKS_AS doctor; "She served as a house surgeon" → person HELD_ROLE house surgeon
+    - Profession and role statements should become structured edges when supported by the text. Examples: "Steve Sharp, a pilot by profession" -> Steve Sharp WORKS_AS pilot; "Elsie Inglis was a doctor" -> Elsie Inglis WORKS_AS doctor; "She served as a house surgeon" -> person WORKS_AS house surgeon
     
     </TASK_RULES>
     
@@ -727,7 +731,7 @@ function buildEntityExtractionPrompt(content: string, entityContext?: EntityCont
     - Test: Could you replace one name with the other in any sentence and preserve meaning? If yes → alias. If no → separate entities with a relationship.
     
     ACRONYM / INITIALISM CANONICALIZATION RULES:
-    - Never use an acronym, abbreviation, or initialism as the canonical "name" when a fuller proper name is available in the text, document title, prior entity context, or common domain context.
+    - Never use an acronym, abbreviation, or initialism as the canonical "name" when a fuller proper name is available in the text, source title, prior entity context, or common domain context.
     - Use the expanded full name as "name" and put the acronym/initialism in "aliases".
     - Examples:
       - Use "Time Variance Authority" as name, aliases ["TVA"].
@@ -756,7 +760,7 @@ function buildEntityExtractionPrompt(content: string, entityContext?: EntityCont
       {"name": "Nancy Wade", "type": "person", "description": "Mother of Cousin Cæsar", "aliases": []},
       {"name": "Big-sis", "type": "person", "description": "Caretaker of Cousin Cæsar during childhood", "aliases": []},
       {"name": "Steve Sharp", "type": "person", "description": "Pilot and partner of Cousin Cæsar in the card game", "aliases": []},
-      {"name": "pilot", "type": "concept", "description": "A profession practiced by Steve Sharp", "aliases": []},
+      {"name": "pilot", "type": "role", "description": "A profession practiced by Steve Sharp", "aliases": []},
       {"name": "Paducah, Kentucky", "type": "location", "description": "City in Kentucky where Cousin Cæsar uses the name Cole Conway", "aliases": []},
       {"name": "West Tennessee", "type": "location", "description": "Region where Cousin Cæsar was born", "aliases": []},
       {"name": "Rob Roy", "type": "person", "description": "Wood cutter who worked for Old Smith", "aliases": []},
@@ -781,7 +785,7 @@ function buildEntityExtractionPrompt(content: string, entityContext?: EntityCont
   {"name": "Nancy Wade", "type": "person", "description": "Mother of Cousin Cæsar", "aliases": []},
   {"name": "Big-sis", "type": "person", "description": "Caretaker of Cousin Cæsar during childhood", "aliases": []},
   {"name": "Steve Sharp", "type": "person", "description": "Pilot and partner of Cousin Cæsar in the card game", "aliases": []},
-  {"name": "pilot", "type": "concept", "description": "A profession practiced by Steve Sharp", "aliases": []},
+  {"name": "pilot", "type": "role", "description": "A profession practiced by Steve Sharp", "aliases": []},
   {"name": "Paducah, Kentucky", "type": "location", "description": "City in Kentucky where Cousin Cæsar uses the name Cole Conway", "aliases": []},
   {"name": "West Tennessee", "type": "location", "description": "Region where Cousin Cæsar was born", "aliases": []},
   {"name": "Rob Roy", "type": "person", "description": "Wood cutter who worked for Old Smith", "aliases": []},
@@ -840,6 +844,8 @@ For each relationship, provide:
 - "confidence": How confident you are this relationship is stated or strongly implied (0.0 to 1.0)
 - "description": One standalone sentence describing the relationship as a complete fact.
 - "evidenceText": A concise source-backed excerpt or paraphrase that justifies the relationship.
+- "temporalStatus": Optional. Use "former" for past-tense relationships, "current" for current relationships, "historical" for historical/narrative facts, or "unknown" when unclear.
+- "validFrom" / "validTo": Optional ISO-like date strings only when the text states explicit dates or bounded periods.
 
 </TASK_INSTRUCTIONS>
 
@@ -847,6 +853,9 @@ For each relationship, provide:
 
 - Subject and object MUST be from the entity list listed below — do not introduce new entities
 - Use ONLY predicates from the vocabulary listed below. Do not invent relation names; omit the relationship if no predicate fits.
+- Emit canonical predicates only. Do not emit aliases such as WORKED_FOR, LED, CO_FOUNDED, KNOWN_AS, AKA, or ALIAS.
+- Use the same canonical predicate for current and former facts; put tense in temporalStatus instead of the predicate name.
+- Use IS_A for taxonomy/classification and WORKS_AS for employment, title, job, function, or role relationships.
 - Preserve logical direction. Passive voice must be converted to the active graph direction: "X was killed by Y" becomes Y KILLED X; "X was founded by Y" becomes Y FOUNDED X.
 - Use MARRIED for spouse, husband, wife, wed, or married relationships. Do not emit HUSBAND_OF, WIFE_OF, SPOUSE_OF, or MARRIED_TO.
 - Use PARENT_OF for father/mother/parent relationships, CHILD_OF for son/daughter/child relationships, and SIBLING_OF for brother/sister/sibling relationships.
@@ -856,7 +865,7 @@ For each relationship, provide:
 - Extract relationships that are explicitly stated or strongly implied in the text
 - Do not emit self-relationships or alias relationships. If two names refer to the same entity, they belong in aliases from the entity step, not in the relationships array.
 - Do not connect an entity to a generic description or role unless that role was extracted as a specific named entity.
-- When the text directly states a profession, office, or role for a named entity, emit a structured relationship to that role concept. Examples: person WORKS_AS doctor, person HELD_ROLE house surgeon, person PRACTICED_AS physician
+- When the text directly states a profession, office, or role for a named entity, emit a structured relationship to that role entity. Examples: person WORKS_AS doctor, person WORKS_AS house surgeon, person WORKS_AS physician
 - Preserve important names, dates, places, objects, and negation in relationship descriptions and evidence text.
 - Return an empty array if no clear relationships exist between the entities listed below
 
@@ -874,7 +883,7 @@ For each relationship, provide:
     {"name": "Nancy Wade", "type": "person", "description": "Mother of Cousin Cæsar", "aliases": []},
     {"name": "Big-sis", "type": "person", "description": "Caretaker of Cousin Cæsar during childhood", "aliases": []},
     {"name": "Steve Sharp", "type": "person", "description": "Pilot and partner of Cousin Cæsar in the card game", "aliases": []},
-    {"name": "pilot", "type": "concept", "description": "A profession practiced by Steve Sharp", "aliases": []},
+    {"name": "pilot", "type": "role", "description": "A profession practiced by Steve Sharp", "aliases": []},
     {"name": "Paducah, Kentucky", "type": "location", "description": "City in Kentucky where Cousin Cæsar uses the name Cole Conway", "aliases": []},
     {"name": "West Tennessee", "type": "location", "description": "Region where Cousin Cæsar was born", "aliases": []},
     {"name": "Rob Roy", "type": "person", "description": "Wood cutter who worked for Old Smith", "aliases": []},
@@ -892,9 +901,9 @@ For each relationship, provide:
   <EXAMPLE_OUTPUT>
 
     [{"subject": "Cousin Cæsar", "predicate": "CHILD_OF", "object": "Nancy Wade", "confidence": 0.95, "description": "Cousin Cæsar was born to Nancy Wade.", "evidenceText": "Cousin Cæsar was born to Nancy Wade"},
-    {"subject": "Cousin Cæsar", "predicate": "BORN_IN", "object": "West Tennessee", "confidence": 0.95, "description": "Cousin Cæsar was born in West Tennessee.", "evidenceText": "born to Nancy Wade in West Tennessee"},
-    {"subject": "Cousin Cæsar", "predicate": "TRAVELED_TO", "object": "Paducah, Kentucky", "confidence": 0.85, "description": "Cousin Cæsar later went to Paducah, Kentucky.", "evidenceText": "we find Cousin Cæsar in Paducah, Kentucky"},
-    {"subject": "Cousin Cæsar", "predicate": "COLLABORATED_WITH", "object": "Steve Sharp", "confidence": 0.95, "description": "Cousin Cæsar and Steve Sharp were partners in a card game.", "evidenceText": "in company with one Steve Sharp; they were partners"},
+    {"subject": "Cousin Cæsar", "predicate": "LOCATED_IN", "object": "West Tennessee", "confidence": 0.95, "description": "Cousin Cæsar was born in West Tennessee.", "evidenceText": "born to Nancy Wade in West Tennessee"},
+    {"subject": "Cousin Cæsar", "predicate": "LOCATED_IN", "object": "Paducah, Kentucky", "confidence": 0.85, "description": "Cousin Cæsar later went to Paducah, Kentucky.", "evidenceText": "we find Cousin Cæsar in Paducah, Kentucky"},
+    {"subject": "Cousin Cæsar", "predicate": "PARTNERED_WITH", "object": "Steve Sharp", "confidence": 0.95, "description": "Cousin Cæsar and Steve Sharp were partners in a card game.", "evidenceText": "in company with one Steve Sharp; they were partners"},
     {"subject": "Steve Sharp", "predicate": "WORKS_AS", "object": "pilot", "confidence": 0.9, "description": "Steve Sharp worked as a pilot.", "evidenceText": "Sharp, a pilot by profession"},
     {"subject": "Old Smith", "predicate": "EMPLOYED", "object": "Rob Roy", "confidence": 0.9, "description": "Old Smith employed Rob Roy to cut wood.", "evidenceText": "Rob Roy cut wood for Old Smith"}]
 
@@ -957,10 +966,10 @@ export class TripleExtractor {
     content: string,
     bucketId: string,
     chunkIndex?: number,
-    documentId?: string,
+    sourceId?: string,
     metadata?: Record<string, unknown>,
     entityContext?: EntityContext[],
-    documentTitle?: string,
+    sourceTitle?: string,
     identity?: {
       tenantId?: string | undefined
       groupId?: string | undefined
@@ -974,7 +983,7 @@ export class TripleExtractor {
     if (!this.graph.addTriple && !this.graph.addEntityMentions) return { entities: [] }
 
     const cleanContent = sanitizeText(content)
-    const cleanTitle = documentTitle ? sanitizeField(documentTitle) : undefined
+    const cleanTitle = sourceTitle ? sanitizeField(sourceTitle) : undefined
     const raw = this.twoPass
       ? await this.extractTwoPass(cleanContent, entityContext, cleanTitle)
       : await this.extractSinglePass(cleanContent, entityContext, cleanTitle)
@@ -989,7 +998,7 @@ export class TripleExtractor {
         content: cleanContent,
         bucketId,
         ...(chunkIndex !== undefined ? { chunkIndex } : {}),
-        ...(documentId ? { documentId } : {}),
+        ...(sourceId ? { sourceId } : {}),
         ...(identity?.tenantId ? { tenantId: identity.tenantId } : {}),
         ...(identity?.groupId ? { groupId: identity.groupId } : {}),
         ...(identity?.userId ? { userId: identity.userId } : {}),
@@ -1024,12 +1033,15 @@ export class TripleExtractor {
           objectDescription: objectEntity.description,
           relationshipDescription: rel.description,
           evidenceText: rel.evidenceText,
+          temporalStatus: rel.temporalStatus,
+          validFrom: rel.validFrom,
+          validTo: rel.validTo,
           sourceChunkId,
           confidence: typeof rel.confidence === 'number' ? Math.max(0, Math.min(1, rel.confidence)) : 1.0,
           content: cleanContent,
           bucketId,
           ...(chunkIndex !== undefined ? { chunkIndex } : {}),
-          ...(documentId ? { documentId } : {}),
+          ...(sourceId ? { sourceId } : {}),
           ...(identity?.tenantId ? { tenantId: identity.tenantId } : {}),
           ...(identity?.groupId ? { groupId: identity.groupId } : {}),
           ...(identity?.userId ? { userId: identity.userId } : {}),
@@ -1044,17 +1056,13 @@ export class TripleExtractor {
     return { entities: entities.map(e => ({ name: e.name, type: e.type })) }
   }
 
-  async persistPassageNodes(nodes: Parameters<NonNullable<KnowledgeGraphBridge['upsertPassageNodes']>>[0]): Promise<void> {
-    await this.graph.upsertPassageNodes?.(nodes)
-  }
-
   /** Single combined LLM call for entities + relationships. Used only when twoPass is disabled. */
   private async extractSinglePass(
     content: string,
     entityContext?: EntityContext[],
-    documentTitle?: string,
+    sourceTitle?: string,
   ): Promise<ExtractionResult> {
-    const prompt = buildSinglePassPrompt(content, entityContext, documentTitle)
+    const prompt = buildSinglePassPrompt(content, entityContext, sourceTitle)
     const result = await this.llm.generateJSON<ExtractionResult>(
       prompt,
       'You are a precise knowledge graph extractor. Preserve complete named surface forms, model pseudonyms as aliases, reject generic one-token entities, and return only valid JSON.',
@@ -1077,11 +1085,11 @@ export class TripleExtractor {
   private async extractTwoPass(
     content: string,
     entityContext?: EntityContext[],
-    documentTitle?: string,
+    sourceTitle?: string,
   ): Promise<ExtractionResult> {
     // Pass 1: Extract entities
     const rawEntities = await this.llm.generateJSON<ExtractedEntity[]>(
-      buildEntityExtractionPrompt(content, entityContext, documentTitle),
+      buildEntityExtractionPrompt(content, entityContext, sourceTitle),
       'You are a precise named entity extractor. Preserve complete named surface forms, model pseudonyms as aliases, reject generic one-token entities, and return only valid JSON arrays.',
       { schema: entitySchema },
     )

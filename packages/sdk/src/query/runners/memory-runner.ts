@@ -1,5 +1,6 @@
 import type { MemoryBridge } from '../../types/graph-bridge.js'
 import type { typegraphIdentity } from '../../types/identity.js'
+import type { QueryEntityScope } from '../../types/query.js'
 import type { RetrievalCandidate } from '../merger.js'
 
 /** Memory composite score weights */
@@ -24,7 +25,7 @@ export class MemoryRunner {
     text: string,
     identity: typegraphIdentity,
     count: number,
-    opts?: { temporalAt?: Date | undefined; includeInvalidated?: boolean | undefined; useKeyword?: boolean | undefined },
+    opts?: { temporalAt?: Date | undefined; includeInvalidated?: boolean | undefined; useKeyword?: boolean | undefined; entityScope?: QueryEntityScope | undefined },
   ): Promise<RetrievalCandidate[]> {
     // Use hybrid search when keyword signal is active and bridge supports it
     const useHybrid = opts?.useKeyword && this.memory.recallHybrid
@@ -33,6 +34,7 @@ export class MemoryRunner {
       limit: count,
       ...(opts?.temporalAt ? { temporalAt: opts.temporalAt } : {}),
       ...(opts?.includeInvalidated != null ? { includeInvalidated: opts.includeInvalidated } : {}),
+      ...(opts?.entityScope ? { entityScope: opts.entityScope } : {}),
     }
 
     const memories = useHybrid
@@ -60,7 +62,7 @@ export class MemoryRunner {
       return {
         content: m.content ?? '',
         bucketId: '__memory__',
-        documentId: m.id ?? `memory-${i}`,
+        sourceId: m.id ?? `memory-${i}`,
         rawScores: {
           memory: compositeMemoryScore,
           semantic: similarity, // Cosine similarity — same algorithm as indexed search

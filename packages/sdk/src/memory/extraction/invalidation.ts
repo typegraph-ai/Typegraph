@@ -50,9 +50,10 @@ export class InvalidationEngine {
   async checkContradictions(
     newFact: SemanticFact,
     scope: typegraphIdentity,
+    opts?: { memoryIds?: string[] | undefined } | undefined,
   ): Promise<Contradiction[]> {
     // Search for semantically similar existing facts
-    const existingFacts = await this.findRelatedFacts(newFact, scope)
+    const existingFacts = await this.findRelatedFacts(newFact, scope, opts)
     if (existingFacts.length === 0) return []
 
     const contradictions: Contradiction[] = []
@@ -114,13 +115,17 @@ export class InvalidationEngine {
   private async findRelatedFacts(
     newFact: SemanticFact,
     scope: typegraphIdentity,
+    opts?: { memoryIds?: string[] | undefined } | undefined,
   ): Promise<SemanticFact[]> {
+    if (opts?.memoryIds && opts.memoryIds.length === 0) return []
+
     // Search by embedding similarity if available
     if (newFact.embedding) {
       const results = await this.store.search(newFact.embedding, {
         count: 10,
         filter: {
           scope,
+          ...(opts?.memoryIds ? { ids: opts.memoryIds } : {}),
           category: 'semantic',
         },
       })
@@ -131,7 +136,11 @@ export class InvalidationEngine {
 
     // Fall back to listing facts in scope
     const results = await this.store.list(
-      { scope, category: 'semantic' },
+      {
+        scope,
+        ...(opts?.memoryIds ? { ids: opts.memoryIds } : {}),
+        category: 'semantic',
+      },
       20,
     )
     return results.filter(

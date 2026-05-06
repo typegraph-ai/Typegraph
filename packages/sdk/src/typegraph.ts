@@ -4,14 +4,15 @@ import type { QueryOpts, QueryResponse } from './types/query.js'
 import type { IngestOptions, IndexResult } from './types/index-types.js'
 import type { EmbeddingProvider } from './embedding/provider.js'
 import { embeddingModelKey } from './embedding/provider.js'
-import type { RawDocument, Chunk } from './types/connector.js'
-import type { typegraphDocument, DocumentFilter, UpsertDocumentInput } from './types/typegraph-document.js'
+import type { SourceInput, Chunk, SourceSubject } from './types/connector.js'
+import type { typegraphSource, SourceFilter, UpsertSourceInput } from './types/source.js'
 import type { typegraphHooks } from './types/hooks.js'
 import type { LLMProvider, LLMConfig } from './types/llm-provider.js'
 import type {
   MemoryBridge, KnowledgeGraphBridge,
-  EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchTrace, PassageResult,
-  SubgraphOpts, SubgraphResult, GraphStats,
+  EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchTrace, ChunkResult,
+  SubgraphOpts, SubgraphResult, GraphStats, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput,
+  MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult,
   RememberOpts, ForgetOpts, CorrectOpts, AddConversationTurnOpts,
   RecallOpts, HealthCheckOpts,
 } from './types/graph-bridge.js'
@@ -20,7 +21,7 @@ import type { typegraphIdentity } from './types/identity.js'
 import type { typegraphEventSink, typegraphEventType, TelemetryOpts } from './types/events.js'
 import type { PolicyStoreAdapter, CreatePolicyInput, UpdatePolicyInput, Policy, PolicyType, PolicyAction } from './types/policy.js'
 import type { ConversationTurnResult, MemoryHealthReport } from './types/memory.js'
-import type { MemoryRecord } from './memory/types/memory.js'
+import type { ExternalId, MemoryRecord } from './memory/types/memory.js'
 import type { typegraphLogger } from './types/logger.js'
 import type { Job, JobFilter, UpsertJobInput, JobStatusPatch } from './types/job.js'
 import type { PaginationOpts, PaginatedResult } from './types/pagination.js'
@@ -36,20 +37,57 @@ import { buildContext } from './query/assemble.js'
 import { createCloudInstance } from './cloud/cloud-instance.js'
 import { NotFoundError, NotInitializedError, ConfigError } from './types/errors.js'
 import { generateId } from './utils/id.js'
+import { assertHasMeaningfulFilter, hasMeaningfulFilter, optionalCompactObject, withDefaultTenant } from './utils/input.js'
 
 // ── Default Bucket ──
 
 export const DEFAULT_BUCKET_ID = 'bkt_default'
 export const DEFAULT_BUCKET_NAME = 'Default'
-export const DEFAULT_BUCKET_DESCRIPTION = 'System default bucket. All ingested documents without an explicit bucket assignment are stored here. Cannot be deleted.'
+export const DEFAULT_BUCKET_DESCRIPTION = 'System default bucket. All ingested sources without an explicit bucket assignment are stored here. Cannot be deleted.'
 
 // Fills in defaults for optional fields the engine relies on.
-export function normalizeRawDocument<TMeta extends Record<string, unknown>>(doc: RawDocument<TMeta>): RawDocument<TMeta> {
+export function normalizeSourceInput<TMeta extends Record<string, unknown>>(source: SourceInput<TMeta>): SourceInput<TMeta> {
+  const subject = normalizeSourceSubject(source.subject)
+  validateSourceSubject(subject)
   return {
-    ...doc,
-    url: doc.url ?? undefined,
-    updatedAt: doc.updatedAt ?? new Date(),
-    metadata: doc.metadata ?? ({} as TMeta),
+    ...source,
+    url: source.url ?? undefined,
+    updatedAt: source.updatedAt ?? new Date(),
+    metadata: source.metadata ?? ({} as TMeta),
+    subject,
+  }
+}
+
+function isExternalIdLike(value: unknown): value is ExternalId {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const externalId = value as Partial<ExternalId>
+  return typeof externalId.id === 'string' &&
+    externalId.id.trim().length > 0 &&
+    typeof externalId.type === 'string' &&
+    externalId.type.trim().length > 0
+}
+
+function normalizeSourceSubject(subject?: SourceSubject | null): SourceSubject | undefined {
+  if (subject == null) return undefined
+  if (typeof subject !== 'object' || Array.isArray(subject)) {
+    throw new ConfigError('Source subject must be an object when provided.')
+  }
+  const externalIds = Array.isArray(subject.externalIds)
+    ? subject.externalIds.filter(isExternalIdLike)
+    : []
+  return {
+    ...subject,
+    externalIds: externalIds.length > 0 ? externalIds : undefined,
+  }
+}
+
+function validateSourceSubject(subject?: SourceSubject): void {
+  if (!subject) return
+  const hasEntityId = !!subject.entityId?.trim()
+  const hasExternalId = (subject.externalIds ?? []).some(isExternalIdLike)
+  const hasName = !!subject.name?.trim()
+  if (!hasEntityId && !hasExternalId && !hasName) {
+    throw new ConfigError('Source subject requires entityId, at least one externalIds entry, or name.')
   }
 }
 
@@ -144,23 +182,23 @@ function validateConfig(config: typegraphConfig): void {
 // ── Sub-API Interfaces ──
 
 export interface BucketsApi {
-  create(input: CreateBucketInput, opts?: TelemetryOpts): Promise<Bucket>
+  create(input: CreateBucketInput, opts?: TelemetryOpts | null): Promise<Bucket>
   get(bucketId: string): Promise<Bucket | undefined>
-  list(filter?: BucketListFilter, pagination?: PaginationOpts): Promise<Bucket[] | PaginatedResult<Bucket>>
-  update(bucketId: string, input: Partial<Pick<Bucket, 'name' | 'description' | 'status' | 'indexDefaults'>>, opts?: TelemetryOpts): Promise<Bucket>
-  delete(bucketId: string, opts?: TelemetryOpts): Promise<void>
+  list(filter?: BucketListFilter | null, pagination?: PaginationOpts | null): Promise<Bucket[] | PaginatedResult<Bucket>>
+  update(bucketId: string, input: Partial<Pick<Bucket, 'name' | 'description' | 'status' | 'indexDefaults'>>, opts?: TelemetryOpts | null): Promise<Bucket>
+  delete(bucketId: string, opts?: TelemetryOpts | null): Promise<void>
 }
 
-export interface DocumentsApi {
-  get(id: string): Promise<typegraphDocument | null>
-  list(filter?: DocumentFilter, pagination?: PaginationOpts): Promise<typegraphDocument[] | PaginatedResult<typegraphDocument>>
-  update(id: string, input: Partial<Pick<typegraphDocument, 'title' | 'url' | 'visibility' | 'metadata'>>, opts?: TelemetryOpts): Promise<typegraphDocument>
-  delete(filter: DocumentFilter, opts?: TelemetryOpts): Promise<number>
+export interface SourcesApi {
+  get(id: string): Promise<typegraphSource | null>
+  list(filter?: SourceFilter | null, pagination?: PaginationOpts | null): Promise<typegraphSource[] | PaginatedResult<typegraphSource>>
+  update(id: string, input: Partial<Pick<typegraphSource, 'title' | 'url' | 'visibility' | 'metadata'>>, opts?: TelemetryOpts | null): Promise<typegraphSource>
+  delete(filter: SourceFilter | null, opts?: TelemetryOpts | null): Promise<number>
 }
 
 export interface JobsApi {
   get(id: string): Promise<Job | null>
-  list(filter?: JobFilter): Promise<Job[]>
+  list(filter?: JobFilter | null): Promise<Job[]>
   /** Create or replace a job row (caller-provided id). Writers use this from background workers. */
   upsert(input: UpsertJobInput): Promise<Job>
   /** Apply a partial status/result/error/progress patch. */
@@ -170,29 +208,39 @@ export interface JobsApi {
 }
 
 export interface GraphApi {
-  searchEntities(query: string, identity: typegraphIdentity, opts?: {
+  upsertEntity(input: UpsertGraphEntityInput, opts?: TelemetryOpts | null): Promise<EntityDetail>
+  upsertEntities(inputs: UpsertGraphEntityInput[], opts?: TelemetryOpts | null): Promise<EntityDetail[]>
+  resolveEntity(ref: GraphEntityRef | string, identity?: typegraphIdentity | null, opts?: TelemetryOpts | null): Promise<EntityDetail | null>
+  linkExternalIds(entityId: string, externalIds: ExternalId[], identity?: (typegraphIdentity & TelemetryOpts) | null): Promise<EntityDetail>
+  mergeEntities(input: MergeGraphEntitiesInput, opts?: TelemetryOpts | null): Promise<MergeGraphEntitiesResult>
+  deleteEntity(entityId: string, opts?: (DeleteGraphEntityOpts & TelemetryOpts) | null): Promise<DeleteGraphEntityResult>
+  upsertEdge(input: UpsertGraphEdgeInput, opts?: TelemetryOpts | null): Promise<EdgeResult>
+  upsertEdges(inputs: UpsertGraphEdgeInput[], opts?: TelemetryOpts | null): Promise<EdgeResult[]>
+  upsertFact(input: UpsertGraphFactInput, opts?: TelemetryOpts | null): Promise<FactResult>
+  upsertFacts(inputs: UpsertGraphFactInput[], opts?: TelemetryOpts | null): Promise<FactResult[]>
+  searchEntities(query: string, identity: typegraphIdentity | null, opts?: ({
     limit?: number
     entityType?: string
     minConnections?: number
-  } & TelemetryOpts): Promise<EntityResult[]>
-  getEntity(id: string, opts?: typegraphIdentity): Promise<EntityDetail | null>
-  getEdges(entityId: string, opts?: {
+  } & TelemetryOpts) | null): Promise<EntityResult[]>
+  getEntity(id: string, opts?: typegraphIdentity | null): Promise<EntityDetail | null>
+  getEdges(entityId: string, opts?: ({
     direction?: 'in' | 'out' | 'both'
     relation?: string
     limit?: number
-  } & typegraphIdentity): Promise<EdgeResult[]>
-  searchFacts(query: string, opts?: FactSearchOpts & TelemetryOpts): Promise<FactResult[]>
-  explore(query: string, opts?: GraphExploreOpts): Promise<GraphExploreResult>
-  getPassagesForEntity(entityId: string, opts?: {
+  } & typegraphIdentity) | null): Promise<EdgeResult[]>
+  searchFacts(query: string, opts?: (FactSearchOpts & TelemetryOpts) | null): Promise<FactResult[]>
+  explore(query: string, opts?: GraphExploreOpts | null): Promise<GraphExploreResult>
+  getChunksForEntity(entityId: string, opts?: ({
     bucketIds?: string[] | undefined
     limit?: number | undefined
-  } & typegraphIdentity): Promise<PassageResult[]>
-  explainQuery(query: string, opts?: GraphExplainOpts & TelemetryOpts): Promise<GraphSearchTrace>
-  backfill(identity: typegraphIdentity, opts?: GraphBackfillOpts & TelemetryOpts): Promise<GraphBackfillResult>
+  } & typegraphIdentity) | null): Promise<ChunkResult[]>
+  explainQuery(query: string, opts?: (GraphExplainOpts & TelemetryOpts) | null): Promise<GraphSearchTrace>
+  backfill(identity: typegraphIdentity | null, opts?: (GraphBackfillOpts & TelemetryOpts) | null): Promise<GraphBackfillResult>
   getSubgraph(opts: SubgraphOpts): Promise<SubgraphResult>
-  stats(identity: typegraphIdentity, opts?: TelemetryOpts): Promise<GraphStats>
-  getRelationTypes(identity: typegraphIdentity, opts?: TelemetryOpts): Promise<Array<{ relation: string; count: number }>>
-  getEntityTypes(identity: typegraphIdentity, opts?: TelemetryOpts): Promise<Array<{ entityType: string; count: number }>>
+  stats(identity: typegraphIdentity | null, opts?: TelemetryOpts | null): Promise<GraphStats>
+  getRelationTypes(identity: typegraphIdentity | null, opts?: TelemetryOpts | null): Promise<Array<{ relation: string; count: number }>>
+  getEntityTypes(identity: typegraphIdentity | null, opts?: TelemetryOpts | null): Promise<Array<{ entityType: string; count: number }>>
 }
 
 /** The typegraph instance interface — all public methods. */
@@ -207,7 +255,7 @@ export interface typegraphInstance {
   undeploy(): Promise<UndeployResult>
 
   buckets: BucketsApi
-  documents: DocumentsApi
+  sources: SourcesApi
   jobs: JobsApi
 
   /** Graph exploration API. Requires graph bridge. */
@@ -218,42 +266,42 @@ export interface typegraphInstance {
   getDistinctEmbeddings(bucketIds?: string[]): Map<string, EmbeddingProvider>
   groupBucketsByModel(bucketIds?: string[]): Map<string, string[]>
 
-  /** Ingest documents. Target bucket set via opts.bucketId (defaults to default bucket). */
-  ingest(docs: RawDocument[], opts?: IngestOptions): Promise<IndexResult>
+  /** Ingest sources. Target bucket set via opts.bucketId (defaults to default bucket). */
+  ingest(sources: SourceInput[], opts?: IngestOptions | null): Promise<IndexResult>
 
-  /** Ingest a document with pre-chunked content. Target bucket set via opts.bucketId. */
-  ingestPreChunked(doc: RawDocument, chunks: Chunk[], opts?: IngestOptions): Promise<IndexResult>
+  /** Ingest a source with pre-chunked content. Target bucket set via opts.bucketId. */
+  ingestPreChunked(source: SourceInput, chunks: Chunk[], opts?: IngestOptions | null): Promise<IndexResult>
 
   /** Search across buckets. Optionally build an LLM-ready context via opts.context. */
-  query(text: string, opts?: QueryOpts): Promise<QueryResponse>
+  query(text: string, opts?: QueryOpts | null): Promise<QueryResponse>
 
   // ── Memory operations (require graph bridge) ──
 
   /** Store a memory. LLM extracts triples → entity graph + memory record. */
-  remember(content: string, opts: RememberOpts): Promise<MemoryRecord>
+  remember(content: string, opts?: RememberOpts | null): Promise<MemoryRecord>
   /** Invalidate a memory and its associated graph edges. Identity must match the memory owner. */
-  forget(id: string, opts: ForgetOpts): Promise<void>
+  forget(id: string, opts?: ForgetOpts | null): Promise<void>
   /** Apply a natural language correction. */
-  correct(correction: string, opts: CorrectOpts): Promise<{ invalidated: number; created: number; summary: string }>
+  correct(correction: string, opts?: CorrectOpts | null): Promise<{ invalidated: number; created: number; summary: string }>
   /** Search memories by semantic similarity. When `opts.format` is set, returns a formatted string ready for an LLM prompt. */
   recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
-  recall(query: string, opts: RecallOpts): Promise<MemoryRecord[]>
+  recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
   /** Check memory system health — returns stats about stored memories, entities, and edges. */
-  healthCheck(opts?: HealthCheckOpts): Promise<MemoryHealthReport>
+  healthCheck(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport>
   /** Ingest a conversation turn with extraction. */
   addConversationTurn(
     messages: Array<{ role: string; content: string; timestamp?: Date }>,
-    opts: AddConversationTurnOpts,
+    opts?: AddConversationTurnOpts | null,
   ): Promise<ConversationTurnResult>
 
   // ── Policy operations (require policyStore) ──
 
   policies: {
-    create(input: CreatePolicyInput, opts?: TelemetryOpts): Promise<Policy>
+    create(input: CreatePolicyInput, opts?: TelemetryOpts | null): Promise<Policy>
     get(id: string): Promise<Policy | null>
-    list(filter?: { tenantId?: string; policyType?: PolicyType; enabled?: boolean }): Promise<Policy[]>
-    update(id: string, input: UpdatePolicyInput, opts?: TelemetryOpts): Promise<Policy>
-    delete(id: string, opts?: TelemetryOpts): Promise<void>
+    list(filter?: { tenantId?: string; policyType?: PolicyType; enabled?: boolean } | null): Promise<Policy[]>
+    update(id: string, input: UpdatePolicyInput, opts?: TelemetryOpts | null): Promise<Policy>
+    delete(id: string, opts?: TelemetryOpts | null): Promise<void>
   }
 
   /**
@@ -286,7 +334,7 @@ class TypegraphImpl implements typegraphInstance {
     eventType: typegraphEventType,
     targetId?: string,
     payload: Record<string, unknown> = {},
-    telemetry?: TelemetryOpts,
+    telemetry?: TelemetryOpts | null,
   ): void {
     if (!this.config?.eventSink) return
     this.config.eventSink.emit({
@@ -304,7 +352,7 @@ class TypegraphImpl implements typegraphInstance {
   // ── Buckets ──
 
   buckets: BucketsApi = {
-    create: async (input: CreateBucketInput, opts?: TelemetryOpts): Promise<Bucket> => {
+    create: async (input: CreateBucketInput, opts?: TelemetryOpts | null): Promise<Bucket> => {
       this.assertConfigured()
       const embeddingModel = input.embeddingModel ?? embeddingModelKey(this.defaultEmbedding)
       const queryEmbeddingModel = input.queryEmbeddingModel ?? (this.defaultQueryEmbedding ? embeddingModelKey(this.defaultQueryEmbedding) : undefined)
@@ -358,9 +406,13 @@ class TypegraphImpl implements typegraphInstance {
       return this._buckets.get(bucketId)
     },
 
-    list: async (filter?: BucketListFilter, pagination?: PaginationOpts): Promise<Bucket[] | PaginatedResult<Bucket>> => {
+    list: async (filter?: BucketListFilter | null, pagination?: PaginationOpts | null): Promise<Bucket[] | PaginatedResult<Bucket>> => {
+      const normalizedFilter = optionalCompactObject<BucketListFilter>(filter, 'buckets.list', 'filter') as BucketListFilter
+      const normalizedPagination = pagination == null
+        ? undefined
+        : optionalCompactObject<PaginationOpts>(pagination, 'buckets.list', 'pagination') as PaginationOpts
       if (this.adapter.listBuckets) {
-        const result = await this.adapter.listBuckets(filter, pagination)
+        const result = await this.adapter.listBuckets(normalizedFilter, normalizedPagination)
         const buckets = Array.isArray(result) ? result : result.items
         for (const b of buckets) {
           this._buckets.set(b.id, b)
@@ -371,22 +423,22 @@ class TypegraphImpl implements typegraphInstance {
         return result
       }
       let all = [...this._buckets.values()]
-      if (filter) {
-        if (filter.tenantId) all = all.filter(s => s.tenantId === filter.tenantId)
-        if (filter.groupId) all = all.filter(s => s.groupId === filter.groupId)
-        if (filter.userId) all = all.filter(s => s.userId === filter.userId)
-        if (filter.agentId) all = all.filter(s => s.agentId === filter.agentId)
-        if (filter.conversationId) all = all.filter(s => s.conversationId === filter.conversationId)
+      if (hasMeaningfulFilter(normalizedFilter)) {
+        if (normalizedFilter.tenantId) all = all.filter(s => s.tenantId === normalizedFilter.tenantId)
+        if (normalizedFilter.groupId) all = all.filter(s => s.groupId === normalizedFilter.groupId)
+        if (normalizedFilter.userId) all = all.filter(s => s.userId === normalizedFilter.userId)
+        if (normalizedFilter.agentId) all = all.filter(s => s.agentId === normalizedFilter.agentId)
+        if (normalizedFilter.conversationId) all = all.filter(s => s.conversationId === normalizedFilter.conversationId)
       }
-      if (pagination) {
-        const limit = pagination.limit ?? 100
-        const offset = pagination.offset ?? 0
+      if (normalizedPagination) {
+        const limit = normalizedPagination.limit ?? 100
+        const offset = normalizedPagination.offset ?? 0
         return { items: all.slice(offset, offset + limit), total: all.length, limit, offset }
       }
       return all
     },
 
-    update: async (bucketId: string, input: Partial<Pick<Bucket, 'name' | 'description' | 'status' | 'indexDefaults'>>, opts?: TelemetryOpts): Promise<Bucket> => {
+    update: async (bucketId: string, input: Partial<Pick<Bucket, 'name' | 'description' | 'status' | 'indexDefaults'>>, opts?: TelemetryOpts | null): Promise<Bucket> => {
       const bucket = await this.buckets.get(bucketId)
       if (!bucket) throw new NotFoundError('Bucket', bucketId)
       if (input.name !== undefined) bucket.name = input.name
@@ -404,7 +456,7 @@ class TypegraphImpl implements typegraphInstance {
       return result
     },
 
-    delete: async (bucketId: string, opts?: TelemetryOpts): Promise<void> => {
+    delete: async (bucketId: string, opts?: TelemetryOpts | null): Promise<void> => {
       if (bucketId === DEFAULT_BUCKET_ID) {
         throw new ConfigError('Cannot delete the default bucket.')
       }
@@ -420,44 +472,50 @@ class TypegraphImpl implements typegraphInstance {
     },
   }
 
-  // ── Documents ──
+  // ── Sources ──
 
-  documents: DocumentsApi = {
-    get: async (id: string): Promise<typegraphDocument | null> => {
+  sources: SourcesApi = {
+    get: async (id: string): Promise<typegraphSource | null> => {
       this.assertConfigured()
-      if (!this.adapter.getDocument) {
-        throw new ConfigError('Adapter does not support document operations.')
+      if (!this.adapter.getSource) {
+        throw new ConfigError('Adapter does not support source operations.')
       }
-      return this.adapter.getDocument(id)
+      return this.adapter.getSource(id)
     },
 
-    list: async (filter?: DocumentFilter, pagination?: PaginationOpts): Promise<typegraphDocument[] | PaginatedResult<typegraphDocument>> => {
+    list: async (filter?: SourceFilter | null, pagination?: PaginationOpts | null): Promise<typegraphSource[] | PaginatedResult<typegraphSource>> => {
       this.assertConfigured()
-      if (!this.adapter.listDocuments) {
-        throw new ConfigError('Adapter does not support document operations.')
+      if (!this.adapter.listSources) {
+        throw new ConfigError('Adapter does not support source operations.')
       }
-      return this.adapter.listDocuments(filter ?? {}, pagination)
+      const normalizedFilter = optionalCompactObject<SourceFilter>(filter, 'sources.list', 'filter') as SourceFilter
+      const normalizedPagination = pagination == null
+        ? undefined
+        : optionalCompactObject<PaginationOpts>(pagination, 'sources.list', 'pagination') as PaginationOpts
+      return this.adapter.listSources(normalizedFilter, normalizedPagination)
     },
 
-    update: async (id: string, input: Partial<Pick<typegraphDocument, 'title' | 'url' | 'visibility' | 'metadata'>>, opts?: TelemetryOpts): Promise<typegraphDocument> => {
+    update: async (id: string, input: Partial<Pick<typegraphSource, 'title' | 'url' | 'visibility' | 'metadata'>>, opts?: TelemetryOpts | null): Promise<typegraphSource> => {
       this.assertConfigured()
-      if (!this.adapter.updateDocument) {
-        throw new ConfigError('Adapter does not support document update operations.')
+      if (!this.adapter.updateSource) {
+        throw new ConfigError('Adapter does not support source update operations.')
       }
-      const updated = await this.adapter.updateDocument(id, input)
-      this.emitEvent('document.update', id, { fields: Object.keys(input) }, opts)
+      const updated = await this.adapter.updateSource(id, input)
+      this.emitEvent('source.update', id, { fields: Object.keys(input) }, opts)
       return updated
     },
 
-    delete: async (filter: DocumentFilter, opts?: TelemetryOpts): Promise<number> => {
+    delete: async (filter: SourceFilter | null, opts?: TelemetryOpts | null): Promise<number> => {
       this.assertConfigured()
-      if (!this.adapter.deleteDocuments) {
-        throw new ConfigError('Adapter does not support document operations.')
+      if (!this.adapter.deleteSources) {
+        throw new ConfigError('Adapter does not support source operations.')
       }
-      await this.enforcePolicy('document.delete', { tenantId: filter.tenantId ?? this.config.tenantId })
-      const count = await this.adapter.deleteDocuments(filter)
+      const normalizedFilter = optionalCompactObject<SourceFilter>(filter, 'sources.delete', 'filter') as SourceFilter
+      assertHasMeaningfulFilter(normalizedFilter, 'sources.delete')
+      await this.enforcePolicy('source.delete', { tenantId: normalizedFilter.tenantId ?? this.config.tenantId })
+      const count = await this.adapter.deleteSources(normalizedFilter)
       if (count > 0) {
-        this.emitEvent('document.delete', undefined, { count, filter }, opts)
+        this.emitEvent('source.delete', undefined, { count, filter: normalizedFilter }, opts)
       }
       return count
     },
@@ -471,10 +529,11 @@ class TypegraphImpl implements typegraphInstance {
       if (!this.adapter.getJob) return null
       return this.adapter.getJob(id)
     },
-    list: async (filter?: JobFilter): Promise<Job[]> => {
+    list: async (filter?: JobFilter | null): Promise<Job[]> => {
       this.assertConfigured()
       if (!this.adapter.listJobs) return []
-      const res = await this.adapter.listJobs(filter ?? {})
+      const normalizedFilter = optionalCompactObject<JobFilter>(filter, 'jobs.list', 'filter') as JobFilter
+      const res = await this.adapter.listJobs(normalizedFilter)
       return Array.isArray(res) ? res : res.items
     },
     upsert: async (input: UpsertJobInput): Promise<Job> => {
@@ -503,71 +562,194 @@ class TypegraphImpl implements typegraphInstance {
   // ── Graph Exploration ──
 
   graph: GraphApi = {
-    searchEntities: async (query: string, identity: typegraphIdentity, opts?: {
+    upsertEntity: async (input: UpsertGraphEntityInput, opts?: TelemetryOpts | null): Promise<EntityDetail> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.upsertEntity) throw new ConfigError('Knowledge graph bridge does not support entity seeding.')
+      const telemetry = optionalCompactObject<TelemetryOpts>(opts, 'graph.upsertEntity') as TelemetryOpts
+      const result = await kg.upsertEntity(input)
+      this.emitEvent('graph.entity.upsert' as typegraphEventType, result.id, { name: result.name }, telemetry)
+      return result
+    },
+
+    upsertEntities: async (inputs: UpsertGraphEntityInput[], opts?: TelemetryOpts | null): Promise<EntityDetail[]> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.upsertEntities) throw new ConfigError('Knowledge graph bridge does not support entity seeding.')
+      const telemetry = optionalCompactObject<TelemetryOpts>(opts, 'graph.upsertEntities') as TelemetryOpts
+      const results = await kg.upsertEntities(inputs)
+      this.emitEvent('graph.entity.upsert' as typegraphEventType, undefined, { count: results.length }, telemetry)
+      return results
+    },
+
+    resolveEntity: async (
+      ref: GraphEntityRef | string,
+      identity?: typegraphIdentity | null,
+      _opts?: TelemetryOpts | null,
+    ): Promise<EntityDetail | null> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.resolveEntity) throw new ConfigError('Knowledge graph bridge does not support entity resolution.')
+      return kg.resolveEntity(ref, withDefaultTenant(identity, this.config.tenantId, 'graph.resolveEntity'))
+    },
+
+    linkExternalIds: async (
+      entityId: string,
+      externalIds: ExternalId[],
+      identity?: (typegraphIdentity & TelemetryOpts) | null,
+    ): Promise<EntityDetail> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.linkExternalIds) throw new ConfigError('Knowledge graph bridge does not support deterministic entity external IDs.')
+      const normalizedIdentity = withDefaultTenant(identity, this.config.tenantId, 'graph.linkExternalIds') as typegraphIdentity & TelemetryOpts
+      const result = await kg.linkExternalIds(entityId, externalIds, normalizedIdentity)
+      this.emitEvent('graph.entity.external_ids.link' as typegraphEventType, entityId, { count: externalIds.length }, normalizedIdentity)
+      return result
+    },
+
+    mergeEntities: async (input: MergeGraphEntitiesInput, opts?: TelemetryOpts | null): Promise<MergeGraphEntitiesResult> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.mergeEntities) throw new ConfigError('Knowledge graph bridge does not support entity merge operations.')
+      const telemetry = optionalCompactObject<TelemetryOpts>(opts, 'graph.mergeEntities') as TelemetryOpts
+      const result = await kg.mergeEntities(input)
+      this.emitEvent('graph.entity.merge' as typegraphEventType, input.targetEntityId, {
+        sourceEntityId: input.sourceEntityId,
+        redirectedEdges: result.redirectedEdges,
+        redirectedFacts: result.redirectedFacts,
+      }, telemetry)
+      return result
+    },
+
+    deleteEntity: async (entityId: string, opts?: (DeleteGraphEntityOpts & TelemetryOpts) | null): Promise<DeleteGraphEntityResult> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.deleteEntity) throw new ConfigError('Knowledge graph bridge does not support entity delete operations.')
+      const normalizedOpts = withDefaultTenant(opts, this.config.tenantId, 'graph.deleteEntity') as DeleteGraphEntityOpts & TelemetryOpts
+      const result = await kg.deleteEntity(entityId, normalizedOpts)
+      this.emitEvent('graph.entity.delete' as typegraphEventType, entityId, {
+        mode: result.mode,
+        deletedEdges: result.deletedEdges,
+        deletedFacts: result.deletedFacts,
+      }, normalizedOpts)
+      return result
+    },
+
+    upsertEdge: async (input: UpsertGraphEdgeInput, opts?: TelemetryOpts | null): Promise<EdgeResult> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.upsertEdge) throw new ConfigError('Knowledge graph bridge does not support edge seeding.')
+      const telemetry = optionalCompactObject<TelemetryOpts>(opts, 'graph.upsertEdge') as TelemetryOpts
+      const result = await kg.upsertEdge(input)
+      this.emitEvent('graph.edge.upsert' as typegraphEventType, result.id, { relation: result.relation }, telemetry)
+      return result
+    },
+
+    upsertEdges: async (inputs: UpsertGraphEdgeInput[], opts?: TelemetryOpts | null): Promise<EdgeResult[]> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.upsertEdges) throw new ConfigError('Knowledge graph bridge does not support edge seeding.')
+      const telemetry = optionalCompactObject<TelemetryOpts>(opts, 'graph.upsertEdges') as TelemetryOpts
+      const results = await kg.upsertEdges(inputs)
+      this.emitEvent('graph.edge.upsert' as typegraphEventType, undefined, { count: results.length }, telemetry)
+      return results
+    },
+
+    upsertFact: async (input: UpsertGraphFactInput, opts?: TelemetryOpts | null): Promise<FactResult> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.upsertFact) throw new ConfigError('Knowledge graph bridge does not support fact seeding.')
+      const telemetry = optionalCompactObject<TelemetryOpts>(opts, 'graph.upsertFact') as TelemetryOpts
+      const result = await kg.upsertFact(input)
+      this.emitEvent('graph.fact.upsert' as typegraphEventType, result.id, { relation: result.relation }, telemetry)
+      return result
+    },
+
+    upsertFacts: async (inputs: UpsertGraphFactInput[], opts?: TelemetryOpts | null): Promise<FactResult[]> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.upsertFacts) throw new ConfigError('Knowledge graph bridge does not support fact seeding.')
+      const telemetry = optionalCompactObject<TelemetryOpts>(opts, 'graph.upsertFacts') as TelemetryOpts
+      const results = await kg.upsertFacts(inputs)
+      this.emitEvent('graph.fact.upsert' as typegraphEventType, undefined, { count: results.length }, telemetry)
+      return results
+    },
+
+    searchEntities: async (query: string, identity: typegraphIdentity | null, opts?: ({
       limit?: number
       entityType?: string
       minConnections?: number
-    } & TelemetryOpts): Promise<EntityResult[]> => {
+    } & TelemetryOpts) | null): Promise<EntityResult[]> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.searchEntities) throw new ConfigError('Knowledge graph bridge does not support entity search.')
-      let results = await kg.searchEntities(query, identity, opts?.limit)
-      if (opts?.entityType) {
-        results = results.filter(r => r.entityType === opts.entityType)
+      const normalizedIdentity = withDefaultTenant(identity, this.config.tenantId, 'graph.searchEntities')
+      const normalizedOpts = optionalCompactObject<{
+        limit?: number
+        entityType?: string
+        minConnections?: number
+      } & TelemetryOpts>(opts, 'graph.searchEntities') as {
+        limit?: number
+        entityType?: string
+        minConnections?: number
+      } & TelemetryOpts
+      let results = await kg.searchEntities(query, normalizedIdentity, normalizedOpts.limit)
+      if (normalizedOpts.entityType) {
+        results = results.filter(r => r.entityType === normalizedOpts.entityType)
       }
-      if (opts?.minConnections !== undefined) {
-        const minConnections = opts.minConnections
+      if (normalizedOpts.minConnections !== undefined) {
+        const minConnections = normalizedOpts.minConnections
         results = results.filter(r => r.edgeCount >= minConnections)
       }
       return results
     },
 
-    getEntity: async (id: string, opts?: typegraphIdentity): Promise<EntityDetail | null> => {
+    getEntity: async (id: string, opts?: typegraphIdentity | null): Promise<EntityDetail | null> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.getEntity) throw new ConfigError('Knowledge graph bridge does not support entity lookup.')
-      return kg.getEntity(id, opts)
+      return kg.getEntity(id, withDefaultTenant(opts, this.config.tenantId, 'graph.getEntity'))
     },
 
-    getEdges: async (entityId: string, opts?: {
+    getEdges: async (entityId: string, opts?: ({
       direction?: 'in' | 'out' | 'both'
       relation?: string
       limit?: number
-    } & typegraphIdentity): Promise<EdgeResult[]> => {
+    } & typegraphIdentity) | null): Promise<EdgeResult[]> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.getEdges) throw new ConfigError('Knowledge graph bridge does not support edge queries.')
-      return kg.getEdges(entityId, opts)
+      return kg.getEdges(entityId, withDefaultTenant(opts, this.config.tenantId, 'graph.getEdges') as {
+        direction?: 'in' | 'out' | 'both'
+        relation?: string
+        limit?: number
+      } & typegraphIdentity)
     },
 
-    searchFacts: async (query: string, opts?: FactSearchOpts & TelemetryOpts): Promise<FactResult[]> => {
+    searchFacts: async (query: string, opts?: (FactSearchOpts & TelemetryOpts) | null): Promise<FactResult[]> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.searchFacts) throw new ConfigError('Knowledge graph bridge does not support fact search.')
-      return kg.searchFacts(query, opts)
+      return kg.searchFacts(query, withDefaultTenant(opts, this.config.tenantId, 'graph.searchFacts') as FactSearchOpts & TelemetryOpts)
     },
 
-    explore: async (query: string, opts?: GraphExploreOpts): Promise<GraphExploreResult> => {
+    explore: async (query: string, opts?: GraphExploreOpts | null): Promise<GraphExploreResult> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.explore) throw new ConfigError('Knowledge graph bridge does not support graph exploration.')
-      return kg.explore(query, opts)
+      return kg.explore(query, withDefaultTenant(opts, this.config.tenantId, 'graph.explore') as GraphExploreOpts)
     },
 
-    getPassagesForEntity: async (entityId: string, opts?: {
+    getChunksForEntity: async (entityId: string, opts?: ({
       bucketIds?: string[] | undefined
       limit?: number | undefined
-    } & typegraphIdentity): Promise<PassageResult[]> => {
+    } & typegraphIdentity) | null): Promise<ChunkResult[]> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.getPassagesForEntity) throw new ConfigError('Knowledge graph bridge does not support passage lookup.')
-      return kg.getPassagesForEntity(entityId, opts)
+      if (!kg.getChunksForEntity) throw new ConfigError('Knowledge graph bridge does not support chunk lookup.')
+      return kg.getChunksForEntity(entityId, withDefaultTenant(opts, this.config.tenantId, 'graph.getChunksForEntity') as {
+        bucketIds?: string[] | undefined
+        limit?: number | undefined
+      } & typegraphIdentity)
     },
 
-    explainQuery: async (query: string, opts?: GraphExplainOpts & TelemetryOpts): Promise<GraphSearchTrace> => {
+    explainQuery: async (query: string, opts?: (GraphExplainOpts & TelemetryOpts) | null): Promise<GraphSearchTrace> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.explainQuery) throw new ConfigError('Knowledge graph bridge does not support graph query explanations.')
-      return kg.explainQuery(query, opts)
+      return kg.explainQuery(query, withDefaultTenant(opts, this.config.tenantId, 'graph.explainQuery') as GraphExplainOpts & TelemetryOpts)
     },
 
-    backfill: async (identity: typegraphIdentity, opts?: GraphBackfillOpts & TelemetryOpts): Promise<GraphBackfillResult> => {
+    backfill: async (identity: typegraphIdentity | null, opts?: (GraphBackfillOpts & TelemetryOpts) | null): Promise<GraphBackfillResult> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.backfill) throw new ConfigError('Knowledge graph bridge does not support graph backfill.')
-      return kg.backfill(identity, opts)
+      return kg.backfill(
+        withDefaultTenant(identity, this.config.tenantId, 'graph.backfill'),
+        optionalCompactObject<GraphBackfillOpts & TelemetryOpts>(opts, 'graph.backfill') as GraphBackfillOpts & TelemetryOpts,
+      )
     },
 
     getSubgraph: async (opts: SubgraphOpts): Promise<SubgraphResult> => {
@@ -576,22 +758,22 @@ class TypegraphImpl implements typegraphInstance {
       return kg.getSubgraph(opts)
     },
 
-    stats: async (identity: typegraphIdentity, _opts?: TelemetryOpts): Promise<GraphStats> => {
+    stats: async (identity: typegraphIdentity | null, _opts?: TelemetryOpts | null): Promise<GraphStats> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.getGraphStats) throw new ConfigError('Knowledge graph bridge does not support stats.')
-      return kg.getGraphStats(identity)
+      return kg.getGraphStats(withDefaultTenant(identity, this.config.tenantId, 'graph.stats'))
     },
 
-    getRelationTypes: async (identity: typegraphIdentity, _opts?: TelemetryOpts): Promise<Array<{ relation: string; count: number }>> => {
+    getRelationTypes: async (identity: typegraphIdentity | null, _opts?: TelemetryOpts | null): Promise<Array<{ relation: string; count: number }>> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.getRelationTypes) throw new ConfigError('Knowledge graph bridge does not support relation type queries.')
-      return kg.getRelationTypes(identity)
+      return kg.getRelationTypes(withDefaultTenant(identity, this.config.tenantId, 'graph.getRelationTypes'))
     },
 
-    getEntityTypes: async (identity: typegraphIdentity, _opts?: TelemetryOpts): Promise<Array<{ entityType: string; count: number }>> => {
+    getEntityTypes: async (identity: typegraphIdentity | null, _opts?: TelemetryOpts | null): Promise<Array<{ entityType: string; count: number }>> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.getEntityTypes) throw new ConfigError('Knowledge graph bridge does not support entity type queries.')
-      return kg.getEntityTypes(identity)
+      return kg.getEntityTypes(withDefaultTenant(identity, this.config.tenantId, 'graph.getEntityTypes'))
     },
   }
 
@@ -829,21 +1011,22 @@ class TypegraphImpl implements typegraphInstance {
     return groups
   }
 
-  async ingest(docs: RawDocument[], opts: IngestOptions = {}): Promise<IndexResult> {
+  async ingest(sources: SourceInput[], opts?: IngestOptions | null): Promise<IndexResult> {
     await this.ensureInitialized()
     await this.ensureBucketsLoaded()
-    const resolvedBucketId = opts.bucketId || DEFAULT_BUCKET_ID
+    const normalizedOpts = withDefaultTenant(opts, this.config.tenantId, 'ingest') as IngestOptions
+    const resolvedBucketId = normalizedOpts.bucketId || DEFAULT_BUCKET_ID
     await this.enforcePolicy('index', { tenantId: this.config.tenantId }, resolvedBucketId)
     const bucket = await this.buckets.get(resolvedBucketId)
     if (!bucket) throw new NotFoundError('Bucket', resolvedBucketId)
-    const resolvedOpts = this.resolveIngestOptions(opts, bucket)
+    const resolvedOpts = this.resolveIngestOptions(normalizedOpts, bucket)
     const chunkSize = resolvedOpts.chunkSize ?? 512
     const chunkOverlap = resolvedOpts.chunkOverlap ?? 64
-    const normalizedDocs = docs.map(doc => normalizeRawDocument(doc))
-    const items = await Promise.all(normalizedDocs.map(async doc => ({ doc, chunks: await defaultChunker(doc, { chunkSize, chunkOverlap }) })))
+    const normalizedSources = sources.map(source => normalizeSourceInput(source))
+    const items = await Promise.all(normalizedSources.map(async source => ({ source, chunks: await defaultChunker(source, { chunkSize, chunkOverlap }) })))
     const embedding = await this.resolveEmbeddingForBucket(resolvedBucketId)
     const engine = this.createIndexEngine(embedding)
-    this.logger?.info('Ingesting documents', { bucketId: resolvedBucketId, count: docs.length })
+    this.logger?.info('Ingesting sources', { bucketId: resolvedBucketId, count: sources.length })
     await this.config.hooks?.onIndexStart?.(resolvedBucketId, resolvedOpts)
     const result = await engine.ingestBatch(resolvedBucketId, items, resolvedOpts)
     result.status = 'complete'
@@ -858,33 +1041,35 @@ class TypegraphImpl implements typegraphInstance {
     return result
   }
 
-  async ingestPreChunked(doc: RawDocument, chunks: Chunk[], opts: IngestOptions = {}): Promise<IndexResult> {
+  async ingestPreChunked(source: SourceInput, chunks: Chunk[], opts?: IngestOptions | null): Promise<IndexResult> {
     await this.ensureInitialized()
     await this.ensureBucketsLoaded()
-    const resolvedBucketId = opts.bucketId || DEFAULT_BUCKET_ID
+    const normalizedOpts = withDefaultTenant(opts, this.config.tenantId, 'ingestPreChunked') as IngestOptions
+    const resolvedBucketId = normalizedOpts.bucketId || DEFAULT_BUCKET_ID
     await this.enforcePolicy('index', { tenantId: this.config.tenantId }, resolvedBucketId)
     const bucket = await this.buckets.get(resolvedBucketId)
     if (!bucket) throw new NotFoundError('Bucket', resolvedBucketId)
-    const resolvedOpts = this.resolveIngestOptions(opts, bucket)
+    const resolvedOpts = this.resolveIngestOptions(normalizedOpts, bucket)
     const embedding = await this.resolveEmbeddingForBucket(resolvedBucketId)
     const engine = this.createIndexEngine(embedding)
 
     await this.config.hooks?.onIndexStart?.(resolvedBucketId, resolvedOpts)
-    const result = await engine.ingestWithChunks(resolvedBucketId, normalizeRawDocument(doc), chunks, resolvedOpts)
+    const result = await engine.ingestWithChunks(resolvedBucketId, normalizeSourceInput(source), chunks, resolvedOpts)
     result.status = 'complete'
     await this.config.hooks?.onIndexComplete?.(resolvedBucketId, result)
     return result
   }
 
-  async query(text: string, opts?: QueryOpts): Promise<QueryResponse> {
+  async query(text: string, opts?: QueryOpts | null): Promise<QueryResponse> {
     await this.ensureInitialized()
     await this.ensureBucketsLoaded()
-    await this.enforcePolicy('query', { tenantId: opts?.tenantId ?? this.config.tenantId })
+    const normalizedOpts = withDefaultTenant(opts, this.config.tenantId, 'query') as QueryOpts
+    await this.enforcePolicy('query', { tenantId: normalizedOpts.tenantId ?? this.config.tenantId })
 
     // Batched lazy-load: if the caller names buckets we haven't seen, fetch them in one round-trip.
     // Avoids per-id gets in the hot path without forcing eager load at init.
-    if (opts?.buckets?.length && this.adapter.getBuckets) {
-      const missing = opts.buckets.filter(id => !this._buckets.has(id))
+    if (normalizedOpts.buckets?.length && this.adapter.getBuckets) {
+      const missing = normalizedOpts.buckets.filter(id => !this._buckets.has(id))
       if (missing.length > 0) {
         const fetched = await this.adapter.getBuckets(missing)
         for (const b of fetched) {
@@ -905,13 +1090,13 @@ class TypegraphImpl implements typegraphInstance {
       this.logger,
     )
     const response = await planner.execute(text, {
-      ...opts,
-      tenantId: opts?.tenantId ?? this.config.tenantId,
+      ...normalizedOpts,
+      tenantId: normalizedOpts.tenantId ?? this.config.tenantId,
     })
 
     // Build LLM-ready context if requested.
-    if (opts?.context) {
-      const built = buildContext(response.results, opts.context, this.config.tokenizer)
+    if (normalizedOpts.context) {
+      const built = buildContext(response.results, normalizedOpts.context, this.config.tokenizer)
       response.context = built.context
       response.contextStats = built.stats
     }
@@ -946,41 +1131,47 @@ class TypegraphImpl implements typegraphInstance {
     return bridge
   }
 
-  async remember(content: string, opts: RememberOpts): Promise<MemoryRecord> {
-    await this.enforcePolicy('memory.write', opts)
-    return this.requireMemory().remember(content, opts)
+  async remember(content: string, opts?: RememberOpts | null): Promise<MemoryRecord> {
+    const normalizedOpts = withDefaultTenant(opts, this.config.tenantId, 'remember') as RememberOpts
+    await this.enforcePolicy('memory.write', normalizedOpts)
+    return this.requireMemory().remember(content, normalizedOpts)
   }
 
-  async forget(id: string, opts: ForgetOpts): Promise<void> {
-    await this.enforcePolicy('memory.delete', opts, id)
-    return this.requireMemory().forget(id, opts)
+  async forget(id: string, opts?: ForgetOpts | null): Promise<void> {
+    const normalizedOpts = withDefaultTenant(opts, this.config.tenantId, 'forget') as ForgetOpts
+    await this.enforcePolicy('memory.delete', normalizedOpts, id)
+    return this.requireMemory().forget(id, normalizedOpts)
   }
 
-  async correct(correction: string, opts: CorrectOpts): Promise<{ invalidated: number; created: number; summary: string }> {
-    return this.requireMemory().correct(correction, opts)
+  async correct(correction: string, opts?: CorrectOpts | null): Promise<{ invalidated: number; created: number; summary: string }> {
+    return this.requireMemory().correct(correction, withDefaultTenant(opts, this.config.tenantId, 'correct') as CorrectOpts)
   }
 
   async recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
-  async recall(query: string, opts: RecallOpts): Promise<MemoryRecord[]>
-  async recall(query: string, opts: RecallOpts): Promise<MemoryRecord[] | string> {
-    await this.enforcePolicy('memory.read', opts)
-    if (opts.format) {
-      return this.requireMemory().recall(query, opts as RecallOpts & { format: 'xml' | 'markdown' | 'plain' })
+  async recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
+  async recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[] | string> {
+    const normalizedOpts = withDefaultTenant(opts, this.config.tenantId, 'recall') as RecallOpts
+    await this.enforcePolicy('memory.read', normalizedOpts)
+    if (normalizedOpts.format) {
+      return this.requireMemory().recall(query, normalizedOpts as RecallOpts & { format: 'xml' | 'markdown' | 'plain' })
     }
-    return this.requireMemory().recall(query, opts)
+    return this.requireMemory().recall(query, normalizedOpts)
   }
 
-  async healthCheck(opts?: HealthCheckOpts): Promise<MemoryHealthReport> {
+  async healthCheck(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport> {
     const mem = this.requireMemory()
     if (!mem.healthCheck) throw new ConfigError('healthCheck not supported by this memory bridge.')
-    return mem.healthCheck(opts)
+    return mem.healthCheck(withDefaultTenant(opts, this.config.tenantId, 'healthCheck') as HealthCheckOpts)
   }
 
   async addConversationTurn(
     messages: Array<{ role: string; content: string; timestamp?: Date }>,
-    opts: AddConversationTurnOpts,
+    opts?: AddConversationTurnOpts | null,
   ): Promise<ConversationTurnResult> {
-    const result = await this.requireMemory().addConversationTurn(messages, opts)
+    const result = await this.requireMemory().addConversationTurn(
+      messages,
+      withDefaultTenant(opts, this.config.tenantId, 'addConversationTurn') as AddConversationTurnOpts,
+    )
 
     // The bridge returns the underlying ExtractionResult cast to ConversationTurnResult;
     // read the real shape here for hook dispatch (Fix 10).
@@ -1024,10 +1215,10 @@ class TypegraphImpl implements typegraphInstance {
   }
 
   policies = {
-    create: async (input: CreatePolicyInput, opts?: TelemetryOpts): Promise<Policy> => {
+    create: async (input: CreatePolicyInput, opts?: TelemetryOpts | null): Promise<Policy> => {
       const store = this.requirePolicyStore()
       const policy = await store.createPolicy(input)
-      this.emitEvent('policy.create', policy.id, { name: policy.name, policyType: policy.policyType }, opts)
+      this.emitEvent('policy.create', policy.id, { name: policy.name, policyType: policy.policyType }, optionalCompactObject<TelemetryOpts>(opts, 'policies.create') as TelemetryOpts)
       return policy
     },
 
@@ -1036,22 +1227,22 @@ class TypegraphImpl implements typegraphInstance {
       return store.getPolicy(id)
     },
 
-    list: async (filter?: { tenantId?: string; policyType?: PolicyType; enabled?: boolean }): Promise<Policy[]> => {
+    list: async (filter?: { tenantId?: string; policyType?: PolicyType; enabled?: boolean } | null): Promise<Policy[]> => {
       const store = this.requirePolicyStore()
-      return store.listPolicies(filter)
+      return store.listPolicies(optionalCompactObject<{ tenantId?: string; policyType?: PolicyType; enabled?: boolean }>(filter, 'policies.list', 'filter'))
     },
 
-    update: async (id: string, input: UpdatePolicyInput, opts?: TelemetryOpts): Promise<Policy> => {
+    update: async (id: string, input: UpdatePolicyInput, opts?: TelemetryOpts | null): Promise<Policy> => {
       const store = this.requirePolicyStore()
       const policy = await store.updatePolicy(id, input)
-      this.emitEvent('policy.update', policy.id, { name: policy.name }, opts)
+      this.emitEvent('policy.update', policy.id, { name: policy.name }, optionalCompactObject<TelemetryOpts>(opts, 'policies.update') as TelemetryOpts)
       return policy
     },
 
-    delete: async (id: string, opts?: TelemetryOpts): Promise<void> => {
+    delete: async (id: string, opts?: TelemetryOpts | null): Promise<void> => {
       const store = this.requirePolicyStore()
       await store.deletePolicy(id)
-      this.emitEvent('policy.delete', id, {}, opts)
+      this.emitEvent('policy.delete', id, {}, optionalCompactObject<TelemetryOpts>(opts, 'policies.delete') as TelemetryOpts)
     },
   }
 
@@ -1075,8 +1266,8 @@ class TypegraphImpl implements typegraphInstance {
   }
 
   private createIndexEngine(embedding: EmbeddingProvider): IndexEngine {
-    const engine = new IndexEngine(this.adapter, embedding, this.config.eventSink, this.logger)
     const kg = this.graphBridge
+    const engine = new IndexEngine(this.adapter, embedding, this.config.eventSink, this.logger, kg)
     if (this.config.llm && kg) {
       const mainLlm = resolveLLMProvider(this.config.llm)
       const ext = this.config.extraction

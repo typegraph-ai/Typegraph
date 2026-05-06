@@ -6,6 +6,9 @@ import { embeddingModelKey } from '../embedding/provider.js'
 import type { EntityResult, FactResult, GraphSearchTrace, MemoryBridge, KnowledgeGraphBridge } from '../types/graph-bridge.js'
 import type { typegraphEvent, typegraphEventSink } from '../types/events.js'
 import type { typegraphLogger } from '../types/logger.js'
+import type { ChunkRef } from '../types/chunk.js'
+import { ConfigError } from '../types/errors.js'
+import { optionalCompactObject } from '../utils/input.js'
 import { IndexedRunner } from './runners/indexed.js'
 import { MemoryRunner } from './runners/memory-runner.js'
 import { GraphRunner, type GraphRunResult } from './runners/graph-runner.js'
@@ -13,8 +16,9 @@ import { mergeAndRank, normalizeRRF, normalizeGraphPPR, calibrateSemantic, calib
 import { classifyQuery } from './classifier.js'
 
 /** Resolve user-provided signals (or defaults) into a fully-specified signal set. */
-export function resolveSignals(opts: QueryOpts): Required<QuerySignals> {
-  const s = opts.signals ?? {}
+export function resolveSignals(opts?: QueryOpts | null): Required<QuerySignals> {
+  const normalizedOpts = optionalCompactObject<QueryOpts>(opts, 'resolveSignals') as QueryOpts
+  const s = normalizedOpts.signals ?? {}
   return {
     semantic: s.semantic ?? true,
     keyword: s.keyword ?? false,
@@ -34,10 +38,10 @@ export function signalLabel(signals: QuerySignals): string {
 }
 
 /** Compute composite score with eligible/ineligible distinction.
- *  - `undefined` value = ineligible (result can't have this score, e.g. bucket doc has no memory score).
+ *  - `undefined` value = ineligible (result can't have this score, e.g. bucket source has no memory score).
  *    Weight is redistributed proportionally to eligible categories.
  *  - `0` value = eligible but scored poorly. Full penalty proportional to category weight.
- *  This ensures bucket documents aren't penalized for lacking a memory score,
+ *  This ensures bucket sources aren't penalized for lacking a memory score,
  *  while memories that score 0 in keyword search are properly penalized. */
 function compositeScore(
   components: Array<{ weight: number; value: number | undefined }>
@@ -199,19 +203,20 @@ function toChunkResult(r: RetrievalCandidate, scored: ScoredCandidate): QueryChu
     score: scored.score,
     scores: scored.scores,
     sources: scored.sources,
-    document: {
-      id: r.documentId,
+    source: {
+      id: r.sourceId,
       bucketId: r.bucketId,
       title: r.title ?? '',
       url: r.url,
       updatedAt: r.updatedAt ?? new Date(),
-      status: r.documentStatus,
-      visibility: r.documentVisibility,
+      status: r.sourceStatus,
+      visibility: r.sourceVisibility,
       tenantId: r.tenantId,
       userId: r.userId,
       groupId: r.groupId,
       agentId: r.agentId,
       conversationId: r.conversationId,
+      subject: r.sourceSubject,
     },
     chunk: r.chunk ?? { index: 0, total: 1 },
     metadata: r.metadata,
@@ -222,7 +227,7 @@ function toChunkResult(r: RetrievalCandidate, scored: ScoredCandidate): QueryChu
 function fallbackMemoryRecord(r: RetrievalCandidate): Omit<QueryMemoryResult, 'score' | 'scores'> {
   const now = new Date()
   return {
-    id: r.documentId,
+    id: r.sourceId,
     category: 'semantic',
     status: 'active',
     content: r.content,
@@ -279,8 +284,8 @@ function partitionResults(
 
   return {
     chunks,
-    facts: signals.graph ? uniqueById(graphFacts) : [],
-    entities: signals.graph ? uniqueById(graphEntities) : [],
+    facts: graphFacts.length > 0 ? uniqueById(graphFacts) : [],
+    entities: graphEntities.length > 0 ? uniqueById(graphEntities) : [],
     memories: signals.memory ? memories : [],
     ...(signals.graph && graphTrace ? { graphTrace } : {}),
   }
@@ -304,6 +309,16 @@ function resultCounts(results: QueryResults): {
   }
 }
 
+function boostScopedCandidates(candidates: RetrievalCandidate[], chunkRefs: ChunkRef[]): void {
+  if (chunkRefs.length === 0) return
+  const scoped = new Set(chunkRefs.map(ref => `${ref.bucketId}:${ref.sourceId}:${ref.chunkIndex}`))
+  for (const candidate of candidates) {
+    if (!scoped.has(resultIdentityKey(candidate))) continue
+    candidate.normalizedScore = Math.min(1, candidate.normalizedScore * 1.15 + 0.05)
+    candidate.rawScores.semantic = Math.min(1, (candidate.rawScores.semantic ?? candidate.normalizedScore) * 1.15 + 0.05)
+  }
+}
+
 export class QueryPlanner {
   constructor(
     private adapter: VectorStoreAdapter,
@@ -316,17 +331,18 @@ export class QueryPlanner {
     private logger?: typegraphLogger,
   ) {}
 
-  async execute(text: string, opts: QueryOpts = {}): Promise<QueryResponse> {
+  async execute(text: string, opts?: QueryOpts | null): Promise<QueryResponse> {
+    const normalizedOpts = optionalCompactObject<QueryOpts>(opts, 'QueryPlanner.execute') as QueryOpts
     const startMs = Date.now()
-    const count = opts.count ?? 10
-    const tenantId = opts.tenantId
-    const signals = resolveSignals(opts)
-    const onBucketError = opts.onBucketError ?? 'throw'
+    const count = normalizedOpts.count ?? 10
+    const tenantId = normalizedOpts.tenantId
+    const signals = resolveSignals(normalizedOpts)
+    const onBucketError = normalizedOpts.onBucketError ?? 'throw'
 
     // Auto-weights: classify query type and use optimized weight profile.
     // User-provided scoreWeights always override.
-    let effectiveScoreWeights = opts.scoreWeights
-    if (opts.autoWeights && !effectiveScoreWeights) {
+    let effectiveScoreWeights = normalizedOpts.scoreWeights
+    if (normalizedOpts.autoWeights && !effectiveScoreWeights) {
       const classification = classifyQuery(text)
       effectiveScoreWeights = classification.weights as Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory', number>>
       this.logger?.debug('Auto-weights', { queryType: classification.type, confidence: classification.confidence, weights: classification.weights })
@@ -335,8 +351,8 @@ export class QueryPlanner {
     this.logger?.debug('Query start', { text: text.slice(0, 100), signals, count })
 
     // Filter to requested sources or use all
-    const activeBucketIds = opts.buckets
-      ? opts.buckets.filter(id => this.bucketIds.includes(id))
+    const activeBucketIds = normalizedOpts.buckets
+      ? normalizedOpts.buckets.filter(id => this.bucketIds.includes(id))
       : this.bucketIds
 
     // Group sources by ingest embedding model (determines table routing).
@@ -364,13 +380,29 @@ export class QueryPlanner {
     const needsIndexedSearch = signals.semantic || signals.keyword
     const needsGraph = Boolean(signals.graph && this.knowledgeGraph)
     const needsMemory = Boolean(signals.memory && this.memory)
-    const identity = { tenantId: opts.tenantId, groupId: opts.groupId, userId: opts.userId, agentId: opts.agentId, conversationId: opts.conversationId }
+    const identity = { tenantId: normalizedOpts.tenantId, groupId: normalizedOpts.groupId, userId: normalizedOpts.userId, agentId: normalizedOpts.agentId, conversationId: normalizedOpts.conversationId }
+    const entityScopeMode = normalizedOpts.entityScope?.mode ?? 'filter'
+    let scopedEntityIds: string[] = []
+    let scopedChunkRefs: ChunkRef[] = []
+    const graphScopedQuery = Boolean(normalizedOpts.entityScope && (needsIndexedSearch || signals.graph))
+    if (normalizedOpts.entityScope && graphScopedQuery) {
+      if (!this.knowledgeGraph?.resolveEntityScope) {
+        throw new ConfigError('entityScope requires a knowledge graph bridge with entity scope resolution.')
+      }
+      const resolved = await this.knowledgeGraph.resolveEntityScope(normalizedOpts.entityScope, identity, {
+        bucketIds: activeBucketIds,
+        limit: Math.max(count * 50, 200),
+      })
+      scopedEntityIds = resolved.entityIds
+      scopedChunkRefs = resolved.chunkRefs
+      if (resolved.warnings) warnings.push(...resolved.warnings)
+    }
 
     // Timeouts (user-configurable or defaults)
     const timeouts = {
-      indexed: opts.timeouts?.indexed ?? 30_000,
-      graph: opts.timeouts?.graph ?? 30_000,
-      memory: opts.timeouts?.memory ?? 10_000,
+      indexed: normalizedOpts.timeouts?.indexed ?? 30_000,
+      graph: normalizedOpts.timeouts?.graph ?? 30_000,
+      memory: normalizedOpts.timeouts?.memory ?? 10_000,
     }
 
     // Memory-only or graph-only (no indexed search)
@@ -385,7 +417,7 @@ export class QueryPlanner {
         try {
           const memoryRunner = new MemoryRunner(this.memory!)
           const memResults = await withTimeout(
-            memoryRunner.run(text, identity, count, { useKeyword: signals.keyword }),
+            memoryRunner.run(text, identity, count, { useKeyword: signals.keyword, entityScope: normalizedOpts.entityScope }),
             timeouts.memory,
             [] as RetrievalCandidate[]
           )
@@ -402,7 +434,10 @@ export class QueryPlanner {
         try {
           const graphRunner = new GraphRunner(this.knowledgeGraph!)
           const graphRun = await withTimeout(
-            graphRunner.run(text, identity, count, activeBucketIds, opts.graph),
+            graphRunner.run(text, identity, count, activeBucketIds, {
+              ...normalizedOpts.graph,
+              ...(normalizedOpts.entityScope ? { entityScope: normalizedOpts.entityScope, resolvedEntityIds: scopedEntityIds } : {}),
+            }),
             timeouts.graph,
             { results: [], facts: [], entities: [] } as GraphRunResult
           )
@@ -448,8 +483,8 @@ export class QueryPlanner {
             bucket_count: activeBucketIds.length,
           },
           durationMs,
-          traceId: opts.traceId,
-          spanId: opts.spanId,
+          traceId: normalizedOpts.traceId,
+          spanId: normalizedOpts.spanId,
           timestamp: new Date(),
         }
         void this.eventSink.emit(event)
@@ -475,7 +510,18 @@ export class QueryPlanner {
 
       try {
         const results = await withTimeout(
-          runner.run(text, modelGroups, count, identity, opts.documentFilter, signals, opts.traceId, opts.spanId, opts.temporalAt),
+          runner.run(
+            text,
+            modelGroups,
+            count,
+            identity,
+            normalizedOpts.sourceFilter,
+            signals,
+            normalizedOpts.traceId,
+            normalizedOpts.spanId,
+            normalizedOpts.temporalAt,
+            normalizedOpts.entityScope && entityScopeMode === 'filter' ? scopedChunkRefs : undefined,
+          ),
           timeouts.indexed,
           [] as RetrievalCandidate[]
         )
@@ -520,6 +566,25 @@ export class QueryPlanner {
     let graphFacts: FactResult[] = []
     let graphEntities: EntityResult[] = []
     let graphTrace: GraphSearchTrace | undefined
+    if (normalizedOpts.entityScope && entityScopeMode === 'boost') {
+      boostScopedCandidates(allResults, scopedChunkRefs)
+    }
+    if (needsIndexedSearch && this.knowledgeGraph?.searchKnowledge) {
+      try {
+        const direct = await this.knowledgeGraph.searchKnowledge(text, identity, {
+          count,
+          signals,
+          entityScope: normalizedOpts.entityScope,
+          resolvedEntityIds: scopedEntityIds,
+        })
+        graphFacts = direct.facts
+        graphEntities = direct.entities
+      } catch (err) {
+        const msg = `Knowledge search failed: ${err instanceof Error ? err.message : String(err)}`
+        warnings.push(msg)
+        this.logger?.warn(msg)
+      }
+    }
     if (needsGraph || needsMemory) {
       // Skip memory runner if store has no memories (avoids empty table query per query)
       const skipMemory = !needsMemory || (this.memory?.hasMemories ? !(await this.memory.hasMemories()) : false)
@@ -527,8 +592,9 @@ export class QueryPlanner {
         ? Promise.resolve([] as RetrievalCandidate[])
         : withTimeout(
             new MemoryRunner(this.memory!).run(text, identity, count, {
-              ...(opts.temporalAt ? { temporalAt: opts.temporalAt } : {}),
-              ...(opts.includeInvalidated != null ? { includeInvalidated: opts.includeInvalidated } : {}),
+              ...(normalizedOpts.temporalAt ? { temporalAt: normalizedOpts.temporalAt } : {}),
+              ...(normalizedOpts.includeInvalidated != null ? { includeInvalidated: normalizedOpts.includeInvalidated } : {}),
+              ...(normalizedOpts.entityScope ? { entityScope: normalizedOpts.entityScope } : {}),
               useKeyword: signals.keyword,
             }).catch((err) => { this.logger?.warn(`MemoryRunner failed: ${err instanceof Error ? err.message : err}`); warnings.push(`Memory search failed: ${err instanceof Error ? err.message : String(err)}`); return [] as RetrievalCandidate[] }),
             timeouts.memory,
@@ -538,7 +604,10 @@ export class QueryPlanner {
       const graphPromise = !needsGraph
         ? Promise.resolve({ results: [], facts: [], entities: [] } as GraphRunResult)
         : withTimeout(
-            new GraphRunner(this.knowledgeGraph!).run(text, identity, count, activeBucketIds, opts.graph)
+            new GraphRunner(this.knowledgeGraph!).run(text, identity, count, activeBucketIds, {
+              ...normalizedOpts.graph,
+              ...(normalizedOpts.entityScope ? { entityScope: normalizedOpts.entityScope, resolvedEntityIds: scopedEntityIds } : {}),
+            })
               .catch((err) => { this.logger?.warn(`GraphRunner failed: ${err instanceof Error ? err.message : err}`); warnings.push(`Graph search failed: ${err instanceof Error ? err.message : String(err)}`); return { results: [], facts: [], entities: [] } as GraphRunResult }),
             timeouts.graph,
             { results: [], facts: [], entities: [] } as GraphRunResult
@@ -549,8 +618,8 @@ export class QueryPlanner {
         graphPromise,
       ])
       const graphResults = graphRun.results
-      graphFacts = graphRun.facts
-      graphEntities = graphRun.entities
+      graphFacts = [...graphFacts, ...graphRun.facts]
+      graphEntities = [...graphEntities, ...graphRun.entities]
       graphTrace = graphRun.trace
 
       if (memResults.length > 0) {
@@ -561,7 +630,7 @@ export class QueryPlanner {
         bucketTimings['__memory__'] = { mode: 'memory', resultCount: memResults.length, durationMs: Date.now() - startMs, status: 'ok' }
       }
       if (graphResults.length > 0) {
-        const reinforcement = opts.graphReinforcement ?? 'off'
+        const reinforcement = normalizedOpts.graphReinforcement ?? 'off'
 
         if (reinforcement === 'off') {
           // Include all graph results as-is
@@ -622,8 +691,8 @@ export class QueryPlanner {
           bucket_count: activeBucketIds.length,
         },
         durationMs,
-        traceId: opts.traceId,
-        spanId: opts.spanId,
+        traceId: normalizedOpts.traceId,
+        spanId: normalizedOpts.spanId,
         timestamp: new Date(),
       }
       void this.eventSink.emit(event)
@@ -669,8 +738,8 @@ function sourcesForResult(modes: string[], rawScores: RawScores, signals: Requir
 }
 
 function resultIdentityKey(result: RetrievalCandidate): string {
-  if (result.documentId && result.chunk?.index !== undefined && result.bucketId) {
-    return `${result.bucketId}:${result.documentId}:${result.chunk.index}`
+  if (result.sourceId && result.chunk?.index !== undefined && result.bucketId) {
+    return `${result.bucketId}:${result.sourceId}:${result.chunk.index}`
   }
   return result.content
 }

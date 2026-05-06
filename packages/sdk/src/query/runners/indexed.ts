@@ -1,8 +1,9 @@
 import type { VectorStoreAdapter } from '../../types/adapter.js'
 import type { EmbeddingProvider } from '../../embedding/provider.js'
-import type { DocumentFilter } from '../../types/typegraph-document.js'
+import type { SourceFilter } from '../../types/source.js'
 import type { typegraphIdentity } from '../../types/identity.js'
 import type { QuerySignals } from '../../types/query.js'
+import type { ChunkRef } from '../../types/chunk.js'
 import type { RetrievalCandidate } from '../merger.js'
 import type { typegraphEvent, typegraphEventSink } from '../../types/events.js'
 
@@ -21,11 +22,12 @@ export class IndexedRunner {
     sourcesByModel: Map<string, { embedding: EmbeddingProvider; ingestModelId: string; bucketIds: string[] }>,
     count: number,
     identity?: typegraphIdentity,
-    documentFilter?: DocumentFilter,
+    sourceFilter?: SourceFilter,
     signals?: Required<QuerySignals>,
     traceId?: string,
     spanId?: string,
     temporalAt?: Date,
+    chunkRefs?: ChunkRef[],
   ): Promise<RetrievalCandidate[]> {
     const allResults: RetrievalCandidate[] = []
     const fetchCount = count * 3
@@ -44,14 +46,16 @@ export class IndexedRunner {
         agentId: identity?.agentId,
         conversationId: identity?.conversationId,
         bucketIds: group.bucketIds,
+        chunkRefs: chunkRefs
+          ?.filter(ref => ref.embeddingModel == null || ref.embeddingModel === modelId),
       }
 
-      // Prefer searchWithDocuments if available and documentFilter is set
-      if (this.adapter.searchWithDocuments && documentFilter) {
-        const chunks = await this.adapter.searchWithDocuments(modelId, queryEmbedding, text, {
+      // Prefer searchWithSources if available and sourceFilter is set
+      if (this.adapter.searchWithSources && sourceFilter) {
+        const chunks = await this.adapter.searchWithSources(modelId, queryEmbedding, text, {
           count: fetchCount,
           filter,
-          documentFilter,
+          sourceFilter,
           temporalAt,
           signals: { semantic: useSemantic, keyword: useKeyword },
         })
@@ -60,7 +64,7 @@ export class IndexedRunner {
           allResults.push({
             content: chunk.content,
             bucketId: chunk.bucketId,
-            documentId: chunk.documentId,
+            sourceId: chunk.sourceId,
             rawScores: {
               semantic: chunk.scores.semantic,
               keyword: chunk.scores.keyword,
@@ -73,17 +77,18 @@ export class IndexedRunner {
               index: chunk.chunkIndex,
               total: chunk.totalChunks,
             },
-            url: chunk.document?.url ?? chunk.metadata.url as string | undefined,
-            title: chunk.document?.title ?? chunk.metadata.title as string | undefined,
+            url: chunk.source?.url ?? chunk.metadata.url as string | undefined,
+            title: chunk.source?.title ?? chunk.metadata.title as string | undefined,
             updatedAt: chunk.indexedAt,
             tenantId: chunk.tenantId,
-            // Carry document-level fields if available
-            documentStatus: chunk.document?.status,
-            documentVisibility: chunk.document?.visibility,
-            userId: chunk.document?.userId,
-            groupId: chunk.document?.groupId,
-            agentId: chunk.document?.agentId,
-            conversationId: chunk.document?.conversationId,
+            // Carry source-level fields if available
+            sourceStatus: chunk.source?.status,
+            sourceVisibility: chunk.source?.visibility,
+            sourceSubject: chunk.source?.subject,
+            userId: chunk.source?.userId,
+            groupId: chunk.source?.groupId,
+            agentId: chunk.source?.agentId,
+            conversationId: chunk.source?.conversationId,
           })
         }
       } else {
@@ -103,7 +108,7 @@ export class IndexedRunner {
           allResults.push({
             content: chunk.content,
             bucketId: chunk.bucketId,
-            documentId: chunk.documentId,
+            sourceId: chunk.sourceId,
             rawScores: {
               semantic: chunk.scores.semantic,
               keyword: chunk.scores.keyword,
@@ -144,16 +149,16 @@ export class IndexedRunner {
       }
     }
 
-    // Document-level dedup: keep highest-scoring chunk per document
-    const docBest = new Map<string, RetrievalCandidate>()
+    // Source-level dedup: keep highest-scoring chunk per source
+    const sourceBest = new Map<string, RetrievalCandidate>()
     for (const r of allResults) {
-      const existing = docBest.get(r.documentId)
+      const existing = sourceBest.get(r.sourceId)
       if (!existing || r.normalizedScore > existing.normalizedScore) {
-        docBest.set(r.documentId, r)
+        sourceBest.set(r.sourceId, r)
       }
     }
 
-    return [...docBest.values()]
+    return [...sourceBest.values()]
       .sort((a, b) => b.normalizedScore - a.normalizedScore)
       .slice(0, count)
   }

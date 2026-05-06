@@ -1,5 +1,6 @@
 export type {
-  RawDocument,
+  SourceInput,
+  SourceSubject,
   ChunkOpts,
   Chunk,
 } from './connector.js'
@@ -15,9 +16,10 @@ export type {
 
 export type {
   EmbeddedChunk,
+  ChunkRef,
   ChunkFilter,
   ScoredChunk,
-} from './document.js'
+} from './chunk.js'
 
 export type {
   SearchOpts,
@@ -25,7 +27,7 @@ export type {
   HashStoreAdapter,
   VectorStoreAdapter,
   UndeployResult,
-  ScoredChunkWithDocument,
+  ScoredChunkWithSource,
 } from './adapter.js'
 
 export type {
@@ -40,6 +42,7 @@ export type {
   QueryContextStats,
   RawScores,
   NormalizedScores,
+  QueryEntityScope,
   QueryOpts,
   QueryResponse,
 } from './query.js'
@@ -54,13 +57,13 @@ export type {
 export { IndexError } from './index-types.js'
 
 export type {
-  typegraphDocument,
-  DocumentStatus,
+  typegraphSource,
+  SourceStatus,
   Visibility,
-  DocumentFilter,
-  UpsertDocumentInput,
-  UpsertedDocumentRecord,
-} from './typegraph-document.js'
+  SourceFilter,
+  UpsertSourceInput,
+  UpsertedSourceRecord,
+} from './source.js'
 
 export type { typegraphHooks } from './hooks.js'
 
@@ -71,6 +74,18 @@ export type { typegraphIdentity } from './identity.js'
 export type {
   MemoryBridge,
   KnowledgeGraphBridge,
+  MemorySubject,
+  GraphEntityRef,
+  UpsertGraphEntityInput,
+  UpsertGraphEdgeInput,
+  UpsertGraphFactInput,
+  MergeGraphEntitiesInput,
+  MergeGraphEntitiesResult,
+  DeleteGraphEntityOpts,
+  DeleteGraphEntityResult,
+  EntityScopeResolution,
+  KnowledgeSearchOpts,
+  KnowledgeSearchResult,
   EntityResult,
   EntityDetail,
   EdgeResult,
@@ -85,7 +100,8 @@ export type {
   GraphBackfillOpts,
   GraphBackfillResult,
   GraphExplainOpts,
-  PassageResult,
+  ChunkResult,
+  GraphIntentParserMode,
   GraphSearchProfile,
   GraphSearchOpts,
   GraphSearchTrace,
@@ -129,7 +145,12 @@ export type {
   ConversationTurnResult,
   MemoryHealthReport,
 } from './memory.js'
-export type { MemoryRecord } from '../memory/types/memory.js'
+export type {
+  ExternalId,
+  ExternalIdIdentityType,
+  ExternalIdEncoding,
+  MemoryRecord,
+} from '../memory/types/memory.js'
 
 export type { typegraphLogger } from './logger.js'
 

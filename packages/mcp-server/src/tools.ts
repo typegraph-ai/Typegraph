@@ -164,7 +164,7 @@ export async function executeTool(
       case 'typegraph_add_conversation':
         result = await memory.addConversationTurn(
           args['messages'] as { role: 'user' | 'assistant' | 'system' | 'tool'; content: string }[],
-          args['conversationId'] as string | undefined,
+          { conversationId: args['conversationId'] as string | undefined },
         )
         break
 

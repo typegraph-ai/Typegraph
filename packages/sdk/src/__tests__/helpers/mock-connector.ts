@@ -1,24 +1,24 @@
-import type { RawDocument } from '../../types/connector.js'
+import type { SourceInput } from '../../types/connector.js'
 
-export function createTestDocument(overrides?: Partial<RawDocument>): RawDocument {
+export function createTestSource(overrides?: Partial<SourceInput>): SourceInput {
   return {
-    id: 'doc-1',
-    content: 'Test document content. This is the body of the test document.',
-    title: 'Test Document',
-    url: 'https://example.com/doc-1',
+    id: 'source-1',
+    content: 'Test source content. This is the body of the test source.',
+    title: 'Test Source',
+    url: 'https://example.com/source-1',
     updatedAt: new Date('2024-01-01'),
     metadata: {},
     ...overrides,
   }
 }
 
-export function createTestDocuments(count: number, contentPrefix?: string): RawDocument[] {
-  const prefix = contentPrefix ?? 'Document'
+export function createTestSources(count: number, contentPrefix?: string): SourceInput[] {
+  const prefix = contentPrefix ?? 'Source'
   return Array.from({ length: count }, (_, i) => ({
-    id: `doc-${i + 1}`,
-    content: `${prefix} ${i + 1} content. This is the body of document number ${i + 1}.`,
+    id: `source-${i + 1}`,
+    content: `${prefix} ${i + 1} content. This is the body of source number ${i + 1}.`,
     title: `${prefix} ${i + 1}`,
-    url: `https://example.com/doc-${i + 1}`,
+    url: `https://example.com/source-${i + 1}`,
     updatedAt: new Date('2024-01-01'),
     metadata: {},
   }))

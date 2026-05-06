@@ -17,12 +17,12 @@ This adapter is intentionally scoped for development and testing. It implements 
 
 **Not supported (use `@typegraph-ai/adapter-pgvector` for production):**
 - `hybridSearch` — no BM25 keyword search (SQLite FTS5 is not wired in)
-- Document CRUD — `upsertDocumentRecord`, `getDocument`, `listDocuments`, `deleteDocuments`, `updateDocument`, `searchWithDocuments`, `getChunksByRange`
+- Source CRUD — `upsertSourceRecord`, `getSource`, `listSources`, `deleteSources`, `updateSource`, `searchWithSources`, `getChunksByRange`
 - Graph / memory storage — `QuerySignals.graph` and `QuerySignals.memory` require the pgvector memory adapter
 - Audit events and policy/governance tables
 - Schema isolation (SQLite has no schemas)
 
-If you call `d.query(..., { signals: { keyword: true } })` or any of the document-level APIs against this adapter, the call will either throw or silently return empty results depending on the feature. Use pgvector for anything beyond local dev.
+If you call `d.query(..., { signals: { keyword: true } })` or any of the source-level APIs against this adapter, the call will either throw or silently return empty results depending on the feature. Use pgvector for anything beyond local dev.
 
 ## Install
 

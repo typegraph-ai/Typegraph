@@ -5,7 +5,7 @@ function makeResult(overrides: Partial<RetrievalCandidate> = {}): RetrievalCandi
   return {
     content: 'Test content',
     bucketId: 'src-1',
-    documentId: 'doc-1',
+    sourceId: 'source-1',
     rawScores: { semantic: 0.9 },
     normalizedScore: 0.9,
     mode: 'indexed',
@@ -15,22 +15,22 @@ function makeResult(overrides: Partial<RetrievalCandidate> = {}): RetrievalCandi
 }
 
 describe('dedupKey', () => {
-  it('uses stable chunk identity when bucket, document, and chunk are available', () => {
+  it('uses stable chunk identity when bucket, source, and chunk are available', () => {
     const r = makeResult({ url: 'https://example.com/page', chunk: { index: 2, total: 5 } })
     const key = dedupKey(r)
-    expect(key).toBe('src-1:doc-1:2')
+    expect(key).toBe('src-1:source-1:2')
   })
 
   it('falls back to content hash when chunk identity is unavailable', () => {
-    const r = makeResult({ url: 'https://example.com/page', documentId: '', chunk: undefined })
+    const r = makeResult({ url: 'https://example.com/page', sourceId: '', chunk: undefined })
     const key = dedupKey(r)
     expect(key).toHaveLength(64)
     expect(key).toMatch(/^[0-9a-f]{64}$/)
   })
 
-  it('same content produces same fallback key regardless of documentId', () => {
-    const a = makeResult({ content: 'hello world', documentId: '', chunk: undefined })
-    const b = makeResult({ content: 'hello world', documentId: 'graph-0', chunk: undefined })
+  it('same content produces same fallback key regardless of sourceId', () => {
+    const a = makeResult({ content: 'hello world', sourceId: '', chunk: undefined })
+    const b = makeResult({ content: 'hello world', sourceId: 'graph-0', chunk: undefined })
     expect(dedupKey(a)).toBe(dedupKey(b))
   })
 
@@ -178,14 +178,14 @@ describe('mergeAndRank', () => {
 
   it('deduplicates by content', () => {
     const group1 = [makeResult({ content: 'same content', normalizedScore: 0.9, mode: 'indexed', rawScores: { semantic: 0.8 } })]
-    const group2 = [makeResult({ content: 'same content', normalizedScore: 0.8, mode: 'graph', documentId: 'graph-0', rawScores: { graph: 0.7 } })]
+    const group2 = [makeResult({ content: 'same content', normalizedScore: 0.8, mode: 'graph', sourceId: 'graph-0', rawScores: { graph: 0.7 } })]
     const merged = mergeAndRank([group1, group2], 10)
     expect(merged).toHaveLength(1)
   })
 
   it('aggregates rawScores across runners', () => {
     const indexed = [makeResult({ content: 'shared', normalizedScore: 0.9, mode: 'indexed', rawScores: { semantic: 0.8, keyword: 0.3 } })]
-    const graph = [makeResult({ content: 'shared', normalizedScore: 0.7, mode: 'graph', documentId: 'graph-0', rawScores: { graph: 0.6 } })]
+    const graph = [makeResult({ content: 'shared', normalizedScore: 0.7, mode: 'graph', sourceId: 'graph-0', rawScores: { graph: 0.6 } })]
     const merged = mergeAndRank([indexed, graph], 10)
     expect(merged).toHaveLength(1)
     const result = merged[0]!
@@ -196,7 +196,7 @@ describe('mergeAndRank', () => {
 
   it('tracks modes from contributing runners', () => {
     const indexed = [makeResult({ content: 'shared', mode: 'indexed', rawScores: { semantic: 0.8 } })]
-    const graph = [makeResult({ content: 'shared', mode: 'graph', documentId: 'graph-0', rawScores: { graph: 0.6 } })]
+    const graph = [makeResult({ content: 'shared', mode: 'graph', sourceId: 'graph-0', rawScores: { graph: 0.6 } })]
     const merged = mergeAndRank([indexed, graph], 10)
     const result = merged[0] as any
     expect(result.modes).toContain('indexed')
@@ -284,7 +284,7 @@ describe('mergeAndRank', () => {
   it('cross-runner dedup: indexed + graph with same content → 1 result with both scores', () => {
     const indexed = [makeResult({
       content: 'Golden State Warriors are awesome',
-      documentId: 'doc-123',
+      sourceId: 'source-123',
       mode: 'indexed',
       normalizedScore: 0.8,
       rawScores: { semantic: 0.75, keyword: 0.4 },
@@ -292,7 +292,7 @@ describe('mergeAndRank', () => {
     })]
     const graph = [makeResult({
       content: 'Golden State Warriors are awesome',
-      documentId: 'doc-123',
+      sourceId: 'source-123',
       mode: 'graph',
       normalizedScore: 0.15,
       rawScores: { graph: 0.15 },

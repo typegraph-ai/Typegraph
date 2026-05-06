@@ -1,5 +1,7 @@
 import type { EntityResult, FactResult, GraphSearchOpts, GraphSearchTrace } from './graph-bridge.js'
 import type { MemoryRecord } from '../memory/types/memory.js'
+import type { ExternalId } from '../memory/types/memory.js'
+import type { SourceSubject } from './connector.js'
 
 export type QueryGraphOptions = GraphSearchOpts
 
@@ -76,7 +78,7 @@ export interface QueryChunkResult {
   /** Which retrieval systems contributed to this result (e.g. ["semantic"], ["semantic", "graph"]) */
   sources: string[]
 
-  document: {
+  source: {
     id: string
     bucketId: string
     title: string
@@ -89,6 +91,7 @@ export interface QueryChunkResult {
     userId?: string | undefined
     agentId?: string | undefined
     conversationId?: string | undefined
+    subject?: SourceSubject | undefined
   }
 
   chunk: {
@@ -118,6 +121,12 @@ export interface QueryResults {
   graphTrace?: GraphSearchTrace | undefined
 }
 
+export interface QueryEntityScope {
+  entityIds?: string[] | undefined
+  externalIds?: ExternalId[] | undefined
+  mode?: 'filter' | 'boost' | undefined
+}
+
 export interface QueryOpts {
   /** Which retrieval signals to activate. Default: { semantic: true } (semantic-only search). */
   signals?: QuerySignals | undefined
@@ -130,8 +139,10 @@ export interface QueryOpts {
   userId?: string | undefined
   agentId?: string | undefined
   conversationId?: string | undefined
-  /** Filter results by document-level fields (status, scope, type, etc.). */
-  documentFilter?: import('./typegraph-document.js').DocumentFilter | undefined
+  /** Filter results by source-level fields (status, scope, type, etc.). */
+  sourceFilter?: import('./source.js').SourceFilter | undefined
+  /** Relevance scope by TypeGraph entity IDs or deterministic external IDs. */
+  entityScope?: QueryEntityScope | undefined
 
   /** Override composite score weights. Keys are signal names; values are 0-1 weights.
    *  When omitted, defaults are derived from active signals. */

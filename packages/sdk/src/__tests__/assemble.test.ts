@@ -8,8 +8,8 @@ function makeChunk(overrides: Partial<QueryChunkResult> = {}): QueryChunkResult 
     score: 0.9123,
     scores: { raw: { cosineSimilarity: 0.9123 }, normalized: { semantic: 0.9123 } },
     sources: ['semantic'],
-    document: {
-      id: 'doc-1',
+    source: {
+      id: 'source-1',
       bucketId: 'books',
       title: 'Maud',
       url: 'https://example.com/maud',
@@ -70,7 +70,7 @@ describe('buildContext', () => {
         sourceEntityName: 'Alfred Tennyson',
         targetEntityId: 'ent-2',
         targetEntityName: 'Maud',
-        relation: 'WROTE',
+        relation: 'AUTHORED',
         factText: 'Alfred Tennyson wrote Maud.',
         weight: 1,
         evidenceCount: 2,
@@ -87,7 +87,7 @@ describe('buildContext', () => {
     expect(built.context).toContain('metadata: {"source":"gutenberg","tags":["poetry","victorian"]}')
     expect(built.context).toContain('<context_chunk_1>\nMaud is a poem by Alfred Tennyson.\n</context_chunk_1>')
     expect(built.context).toContain('## Context Facts')
-    expect(built.context).toContain('relation: WROTE')
+    expect(built.context).toContain('relation: AUTHORED')
     expect(built.context).toContain('<context_fact_1>\nAlfred Tennyson wrote Maud.\n</context_fact_1>')
   })
 
@@ -98,7 +98,7 @@ describe('buildContext', () => {
         edgeId: 'edge-1',
         sourceEntityId: 'ent-1',
         targetEntityId: 'ent-2',
-        relation: 'WROTE',
+        relation: 'AUTHORED',
         factText: 'Alfred Tennyson wrote Maud.',
         weight: 1,
         evidenceCount: 2,

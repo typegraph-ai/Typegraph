@@ -1,10 +1,13 @@
 {
   "name": "@typegraph-ai/vercel-ai-provider",
   "version": "0.1.5",
-  "description": "Vercel AI SDK integration - memory tools and middleware for auto-context injection",
+  "description": "Vercel AI SDK tools and memory helpers for TypeGraph",
   "type": "module",
+  "license": "MIT",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "files": ["dist", "README.md"],
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -16,12 +19,21 @@
     "dev": "tsc --watch",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepack": "pnpm run build"
   },
   "dependencies": {
     "@typegraph-ai/sdk": "workspace:*"
   },
+  "peerDependencies": {
+    "ai": "^6.0.0"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
   "devDependencies": {
+    "ai": "^6.0.0",
     "typescript": "^5.4.0",
     "vitest": "^1.0.0"
   }

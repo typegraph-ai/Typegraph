@@ -24,7 +24,7 @@ import type {
 // ── Memory Filtering ──
 
 export interface MemoryFilter {
-  /** Legacy JSONB scope filter (deprecated — use explicit identity fields) */
+  /** Compatibility identity filter. Prefer explicit identity fields. */
   scope?: typegraphIdentity | undefined
   /** Explicit identity fields for filtering */
   tenantId?: string | undefined

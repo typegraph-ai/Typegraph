@@ -80,6 +80,58 @@ function safeIdx(tablePrefix: string, suffix: string): string {
   return `${tablePrefix.slice(0, available)}_${hash}_${suffix}`
 }
 
+function IDENTITY_COLUMNS_DDL(t: string, opts: { visibility?: boolean } = {}) {
+  return `
+  ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+  ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS group_id TEXT;
+  ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS user_id TEXT;
+  ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS agent_id TEXT;
+  ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS conversation_id TEXT;
+  ${opts.visibility
+    ? `ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS visibility TEXT CHECK (visibility IS NULL OR visibility IN ('tenant', 'group', 'user', 'agent', 'conversation'));`
+    : ''}
+`
+}
+
+const MEMORY_ROW_COLUMNS = [
+  'id', 'category', 'status', 'content', 'importance', 'access_count',
+  'last_accessed_at', 'metadata', 'tenant_id', 'group_id', 'user_id',
+  'agent_id', 'conversation_id', 'visibility', 'event_type', 'participants',
+  'episodic_conversation_id', 'sequence', 'consolidated_at', 'subject',
+  'predicate', 'object', 'confidence', 'source_memory_ids', 'trigger', 'steps',
+  'success_count', 'failure_count', 'last_outcome', 'valid_at', 'invalid_at',
+  'expired_at', 'created_at', 'updated_at',
+]
+
+const ENTITY_ROW_COLUMNS = [
+  'id', 'name', 'entity_type', 'aliases', 'properties', 'status',
+  'merged_into_entity_id', 'deleted_at', 'description_embedding', 'tenant_id',
+  'group_id', 'user_id', 'agent_id', 'conversation_id', 'visibility',
+  'valid_at', 'invalid_at', 'created_at', 'updated_at',
+]
+
+const EDGE_ROW_COLUMNS = [
+  'id', 'source_type', 'source_id', 'target_type', 'target_id', 'relation',
+  'weight', 'properties', 'from_bucket_id', 'from_source_id',
+  'from_chunk_index', 'from_embedding_model', 'from_chunk_id', 'to_bucket_id',
+  'to_source_id', 'to_chunk_index', 'to_embedding_model', 'to_chunk_id',
+  'tenant_id', 'group_id', 'user_id', 'agent_id', 'conversation_id',
+  'visibility', 'evidence', 'valid_at', 'invalid_at', 'created_at',
+  'updated_at',
+]
+
+const FACT_ROW_COLUMNS = [
+  'id', 'edge_id', 'source_entity_id', 'target_entity_id', 'relation',
+  'fact_text', 'description', 'evidence_text', 'fact_search_text',
+  'from_chunk_id', 'weight', 'evidence_count', 'tenant_id', 'group_id',
+  'user_id', 'agent_id', 'conversation_id', 'visibility', 'invalid_at',
+  'created_at', 'updated_at',
+]
+
+function selectColumns(columns: string[], alias?: string): string {
+  return columns.map(column => alias ? `${alias}.${column}` : column).join(', ')
+}
+
 const MEMORIES_DDL = (t: string) => {
   const i = idxPrefix(t)
   const idx = (suffix: string) => safeIdx(i, suffix)
@@ -94,7 +146,6 @@ const MEMORIES_DDL = (t: string) => {
     access_count     INTEGER NOT NULL DEFAULT 0,
     last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     metadata         JSONB NOT NULL DEFAULT '{}',
-    scope            JSONB NOT NULL DEFAULT '{}',
     -- Identity columns
     tenant_id        TEXT,
     group_id         TEXT,
@@ -130,6 +181,8 @@ const MEMORIES_DDL = (t: string) => {
     search_vector    TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
   );
 
+  ${IDENTITY_COLUMNS_DDL(t, { visibility: true })}
+
   CREATE INDEX IF NOT EXISTS ${idx('category_idx')} ON ${t} (category);
   CREATE INDEX IF NOT EXISTS ${idx('status_idx')} ON ${t} (status);
   CREATE INDEX IF NOT EXISTS ${idx('subject_idx')} ON ${t} (subject);
@@ -161,7 +214,6 @@ const ENTITIES_DDL = (t: string, dims?: number) => {
     deleted_at  TIMESTAMPTZ,
     embedding   VECTOR${dims ? `(${dims})` : ''},
     description_embedding VECTOR${dims ? `(${dims})` : ''},
-    scope       JSONB NOT NULL DEFAULT '{}',
     -- Identity columns
     tenant_id   TEXT,
     group_id    TEXT,
@@ -174,6 +226,8 @@ const ENTITIES_DDL = (t: string, dims?: number) => {
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
+
+  ${IDENTITY_COLUMNS_DDL(t, { visibility: true })}
 
   CREATE INDEX IF NOT EXISTS ${idx('name_idx')} ON ${t} (name);
   CREATE INDEX IF NOT EXISTS ${idx('type_idx')} ON ${t} (entity_type);
@@ -203,7 +257,6 @@ const ENTITY_EXTERNAL_IDS_DDL = (t: string, entitiesTable: string) => {
     normalized_value TEXT NOT NULL,
     encoding         TEXT NOT NULL DEFAULT 'none' CHECK (encoding IN ('none', 'sha256')),
     metadata         JSONB NOT NULL DEFAULT '{}',
-    scope            JSONB NOT NULL DEFAULT '{}',
     tenant_id        TEXT,
     group_id         TEXT,
     user_id          TEXT,
@@ -212,6 +265,8 @@ const ENTITY_EXTERNAL_IDS_DDL = (t: string, entitiesTable: string) => {
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
+
+  ${IDENTITY_COLUMNS_DDL(t)}
 
   CREATE INDEX IF NOT EXISTS ${idx('entity_idx')} ON ${t} (entity_id);
   CREATE INDEX IF NOT EXISTS ${idx('lookup_idx')} ON ${t} (type, normalized_value, encoding);
@@ -246,7 +301,6 @@ const EDGES_DDL = (t: string) => {
     relation         TEXT NOT NULL,
     weight           REAL NOT NULL DEFAULT 1.0,
     properties       JSONB NOT NULL DEFAULT '{}',
-    scope            JSONB NOT NULL DEFAULT '{}',
     from_bucket_id       TEXT,
     from_source_id     TEXT,
     from_chunk_index     INTEGER,
@@ -271,6 +325,8 @@ const EDGES_DDL = (t: string) => {
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT ${safeIdx(i, 'rel_uniq')} UNIQUE (source_type, source_id, target_type, target_id, relation)
   );
+
+  ${IDENTITY_COLUMNS_DDL(t, { visibility: true })}
 
   CREATE INDEX IF NOT EXISTS ${idx('source_idx')} ON ${t} (source_type, source_id);
   CREATE INDEX IF NOT EXISTS ${idx('target_idx')} ON ${t} (target_type, target_id);
@@ -339,7 +395,6 @@ const FACT_RECORDS_DDL = (t: string, dims?: number) => {
     weight           REAL NOT NULL DEFAULT 1.0,
     evidence_count   INTEGER NOT NULL DEFAULT 1,
     embedding        VECTOR${dims ? `(${dims})` : ''},
-    scope            JSONB NOT NULL DEFAULT '{}',
     tenant_id        TEXT,
     group_id         TEXT,
     user_id          TEXT,
@@ -351,6 +406,8 @@ const FACT_RECORDS_DDL = (t: string, dims?: number) => {
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     search_vector    TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', fact_search_text)) STORED
   );
+
+  ${IDENTITY_COLUMNS_DDL(t, { visibility: true })}
 
   CREATE INDEX IF NOT EXISTS ${idx('source_idx')} ON ${t} (source_entity_id);
   CREATE INDEX IF NOT EXISTS ${idx('target_idx')} ON ${t} (target_entity_id);
@@ -552,21 +609,21 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const rows = await this.sqlWithRetry(
       `INSERT INTO ${this.memoriesTable}
         (id, category, status, content, embedding, importance, access_count,
-         last_accessed_at, metadata, scope,
+         last_accessed_at, metadata,
          tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
          event_type, participants, episodic_conversation_id, sequence, consolidated_at,
          subject, predicate, object, confidence, source_memory_ids,
          trigger, steps, success_count, failure_count, last_outcome,
          valid_at, invalid_at, expired_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::vector,$6,$7,$8,$9,$10,
-               $11,$12,$13,$14,$15,$16,
-               $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,
-               $27,$28,$29,$30,$31,$32,$33,$34,NOW())
+       VALUES ($1,$2,$3,$4,$5::vector,$6,$7,$8,$9,
+               $10,$11,$12,$13,$14,$15,
+               $16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
+               $26,$27,$28,$29,$30,$31,$32,$33,NOW())
        ON CONFLICT (id) DO UPDATE SET
          status = EXCLUDED.status, content = EXCLUDED.content,
          embedding = EXCLUDED.embedding, importance = EXCLUDED.importance,
          access_count = EXCLUDED.access_count, last_accessed_at = EXCLUDED.last_accessed_at,
-         metadata = EXCLUDED.metadata, scope = EXCLUDED.scope,
+         metadata = EXCLUDED.metadata,
          tenant_id = EXCLUDED.tenant_id, group_id = EXCLUDED.group_id,
          user_id = EXCLUDED.user_id, agent_id = EXCLUDED.agent_id,
          conversation_id = EXCLUDED.conversation_id, visibility = EXCLUDED.visibility,
@@ -581,12 +638,12 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          last_outcome = EXCLUDED.last_outcome,
          valid_at = EXCLUDED.valid_at, invalid_at = EXCLUDED.invalid_at,
          expired_at = EXCLUDED.expired_at, updated_at = NOW()
-       RETURNING *`,
+       RETURNING ${selectColumns(MEMORY_ROW_COLUMNS)}`,
       [
         record.id, record.category, record.status, record.content,
         embeddingStr, record.importance, record.accessCount,
         record.lastAccessedAt.toISOString(),
-        JSON.stringify(record.metadata), JSON.stringify(record.scope),
+        JSON.stringify(record.metadata),
         // Identity
         record.scope.tenantId ?? null,
         record.scope.groupId ?? null,
@@ -622,7 +679,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   }
 
   async get(id: string): Promise<MemoryRecord | null> {
-    const rows = await this.sqlWithRetry(`SELECT * FROM ${this.memoriesTable} WHERE id = $1`, [id])
+    const rows = await this.sqlWithRetry(`SELECT ${selectColumns(MEMORY_ROW_COLUMNS)} FROM ${this.memoriesTable} WHERE id = $1`, [id])
     return rows.length > 0 ? mapRowToMemory(rows[0]!) : null
   }
 
@@ -631,7 +688,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const whereClause = where ? `WHERE ${where}` : ''
     params.push(limit ?? 100)
     const rows = await this.sqlWithRetry(
-      `SELECT * FROM ${this.memoriesTable} ${whereClause}
+      `SELECT ${selectColumns(MEMORY_ROW_COLUMNS)} FROM ${this.memoriesTable} ${whereClause}
        ORDER BY last_accessed_at DESC LIMIT $${params.length}`,
       params
     )
@@ -697,7 +754,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     params.push(opts.count)
 
     const rows = await this.sqlWithRetry(
-      `SELECT *, 1 - (embedding <=> $${params.length - 1}::vector) AS similarity
+      `SELECT ${selectColumns(MEMORY_ROW_COLUMNS)}, 1 - (embedding <=> $${params.length - 1}::vector) AS similarity
        FROM ${this.memoriesTable}
        ${whereClause}
        ORDER BY embedding <=> $${params.length - 1}::vector
@@ -742,7 +799,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     // ensures they aren't overly penalized.
     const sql = `
       WITH vector_ranked AS (
-        SELECT *, 1 - (embedding <=> $${vecParamIdx}::vector) AS similarity,
+        SELECT ${selectColumns(MEMORY_ROW_COLUMNS)}, 1 - (embedding <=> $${vecParamIdx}::vector) AS similarity,
                ROW_NUMBER() OVER (ORDER BY embedding <=> $${vecParamIdx}::vector) AS vrank
         FROM ${this.memoriesTable}
         ${whereClause}
@@ -758,7 +815,8 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         ORDER BY ts_rank_cd(search_vector, websearch_to_tsquery('english', $${queryParamIdx})) DESC
         LIMIT $${limitParamIdx} * 3
       )
-      SELECT v.*,
+      SELECT ${selectColumns(MEMORY_ROW_COLUMNS, 'v')},
+             v.similarity,
              k.kw_score AS keyword_score,
              (0.7 / (60 + v.vrank) + 0.3 / (60 + COALESCE(k.krank, 1000)))::double precision AS rrf_score
       FROM vector_ranked v
@@ -828,10 +886,10 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const tbl = unqualified(this.entitiesTable)
     const rows = await this.sqlWithRetry(
       `INSERT INTO ${this.entitiesTable}
-        (id, name, entity_type, aliases, properties, status, merged_into_entity_id, deleted_at, embedding, description_embedding, scope,
+        (id, name, entity_type, aliases, properties, status, merged_into_entity_id, deleted_at, embedding, description_embedding,
          tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
          valid_at, invalid_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::vector,$10::vector,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::vector,$10::vector,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name, entity_type = EXCLUDED.entity_type,
          aliases = EXCLUDED.aliases, properties = EXCLUDED.properties,
@@ -840,19 +898,18 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          deleted_at = EXCLUDED.deleted_at,
          embedding = COALESCE(EXCLUDED.embedding, ${tbl}.embedding),
          description_embedding = COALESCE(EXCLUDED.description_embedding, ${tbl}.description_embedding),
-         scope = EXCLUDED.scope,
          tenant_id = EXCLUDED.tenant_id, group_id = EXCLUDED.group_id,
          user_id = EXCLUDED.user_id, agent_id = EXCLUDED.agent_id,
          conversation_id = EXCLUDED.conversation_id, visibility = EXCLUDED.visibility,
          valid_at = EXCLUDED.valid_at, invalid_at = EXCLUDED.invalid_at, updated_at = NOW()
-       RETURNING *`,
+       RETURNING ${selectColumns(ENTITY_ROW_COLUMNS)}`,
       [
         entity.id, entity.name, entity.entityType,
         entity.aliases, JSON.stringify(cleanProps),
         entity.status ?? 'active',
         entity.mergedIntoEntityId ?? null,
         entity.deletedAt?.toISOString() ?? null,
-        embeddingStr, descEmbeddingStr, JSON.stringify(entity.scope),
+        embeddingStr, descEmbeddingStr,
         entity.scope.tenantId ?? null,
         entity.scope.groupId ?? null,
         entity.scope.userId ?? null,
@@ -887,7 +944,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       const normalized = normalizeExternalId(externalId)
       if (!normalized) continue
       const base = params.length
-      values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13})`)
+      values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12})`)
       params.push(
         generateId('xid'),
         entityId,
@@ -896,7 +953,6 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         normalized.normalizedValue,
         normalized.encoding,
         JSON.stringify(normalized.metadata ?? {}),
-        JSON.stringify(scope),
         scope.tenantId ?? null,
         scope.groupId ?? null,
         scope.userId ?? null,
@@ -910,7 +966,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const rows = await this.sqlWithRetry(
       `INSERT INTO ${this.entityExternalIdsTable}
         (id, entity_id, type, id_value, normalized_value, encoding, metadata,
-         scope, tenant_id, group_id, user_id, agent_id, conversation_id)
+         tenant_id, group_id, user_id, agent_id, conversation_id)
        VALUES ${values.join(',')}
        ON CONFLICT (
          type,
@@ -937,13 +993,10 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   async findEntityByExternalId(externalId: ExternalId, scope?: typegraphIdentity): Promise<SemanticEntity | null> {
     const normalized = normalizeExternalId(externalId)
     if (!normalized) return null
-    const identity = buildGraphVisibilityWhere(scope, 4, 'e')
+    const identity = buildGraphVisibilityWhere(scope, 3, 'e')
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
     const rows = await this.sqlWithRetry(
-      `SELECT e.id, e.name, e.entity_type, e.aliases, e.properties,
-              e.status, e.merged_into_entity_id, e.deleted_at, e.scope,
-              e.tenant_id, e.group_id, e.user_id, e.agent_id, e.conversation_id, e.visibility,
-              e.valid_at, e.invalid_at, e.created_at, e.updated_at
+      `SELECT ${selectColumns(ENTITY_ROW_COLUMNS, 'e')}
          FROM ${this.entityExternalIdsTable} xid
          JOIN ${this.entitiesTable} e ON e.id = xid.entity_id
         WHERE xid.type = $1
@@ -969,10 +1022,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const identity = buildGraphVisibilityWhere(scope, 1)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
     const rows = await this.sqlWithRetry(
-      `SELECT id, name, entity_type, aliases, properties,
-              status, merged_into_entity_id, deleted_at, scope,
-              tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
-              valid_at, invalid_at, created_at, updated_at
+      `SELECT ${selectColumns(ENTITY_ROW_COLUMNS)}
        FROM ${this.entitiesTable}
        WHERE id = $1
          ${scopeClause}`,
@@ -988,10 +1038,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const identity = buildGraphVisibilityWhere(scope, 1)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
     const rows = await this.sqlWithRetry(
-      `SELECT id, name, entity_type, aliases, properties,
-              status, merged_into_entity_id, deleted_at, scope,
-              tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
-              valid_at, invalid_at, created_at, updated_at
+      `SELECT ${selectColumns(ENTITY_ROW_COLUMNS)}
        FROM ${this.entitiesTable}
        WHERE id = ANY($1::text[])
          ${scopeClause}`,
@@ -1009,10 +1056,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const limitParam = `$${baseIdx + 2}`
     const scopeClause = where ? ` AND ${where}` : ''
     const rows = await this.sqlWithRetry(
-      `SELECT id, name, entity_type, aliases, properties,
-              status, merged_into_entity_id, deleted_at, scope,
-              tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
-              valid_at, invalid_at, created_at, updated_at
+      `SELECT ${selectColumns(ENTITY_ROW_COLUMNS)}
        FROM ${this.entitiesTable}
        WHERE (name ILIKE ${nameParam}
               OR EXISTS (SELECT 1 FROM unnest(aliases) AS a WHERE a ILIKE ${nameParam})
@@ -1037,7 +1081,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     params.push(limit ?? 20)
     const limitParam = `$${1 + params.length}`
     const rows = await this.sqlWithRetry(
-      `SELECT *, 1 - (embedding <=> $1::vector) AS similarity
+      `SELECT ${selectColumns(ENTITY_ROW_COLUMNS)}, 1 - (embedding <=> $1::vector) AS similarity
        FROM ${this.entitiesTable}
        WHERE embedding IS NOT NULL
          AND invalid_at IS NULL
@@ -1065,7 +1109,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const likeParam = '$3'
     const lexicalLimitParam = '$4'
     const lexicalRows = await this.sqlWithRetry(
-      `SELECT e.*,
+      `SELECT ${selectColumns(ENTITY_ROW_COLUMNS, 'e')},
               GREATEST(
                 CASE WHEN lower(e.name) = ${lowerParam} THEN 1.0 ELSE 0 END,
                 CASE WHEN EXISTS (SELECT 1 FROM unnest(e.aliases) AS a WHERE lower(a) = ${lowerParam}) THEN 0.98 ELSE 0 END,
@@ -1102,7 +1146,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const vectorScopeClause = vectorWhere.where ? ` AND ${vectorWhere.where}` : ''
     const vectorLimitParam = `$${2 + vectorWhere.params.length}`
     const vectorRows = await this.sqlWithRetry(
-      `SELECT *,
+      `SELECT ${selectColumns(ENTITY_ROW_COLUMNS)},
               GREATEST(
                 1 - (embedding <=> $1::vector),
                 COALESCE(1 - (description_embedding <=> $1::vector), 0)
@@ -1142,7 +1186,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     for (const edge of edges) {
       const base = params.length
       const scope = edge.scope ?? {}
-      values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17},$${base + 18},$${base + 19},$${base + 20},$${base + 21},$${base + 22},$${base + 23},$${base + 24},$${base + 25},$${base + 26},$${base + 27},$${base + 28})`)
+      values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17},$${base + 18},$${base + 19},$${base + 20},$${base + 21},$${base + 22},$${base + 23},$${base + 24},$${base + 25},$${base + 26},$${base + 27})`)
       params.push(
         edge.id,
         edge.sourceType,
@@ -1152,7 +1196,6 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         edge.relation,
         edge.weight,
         JSON.stringify(edge.properties ?? {}),
-        JSON.stringify(scope),
         edge.sourceChunkRef?.bucketId ?? null,
         edge.sourceChunkRef?.sourceId ?? null,
         edge.sourceChunkRef?.chunkIndex ?? null,
@@ -1178,7 +1221,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const tbl = unqualified(this.edgesTable)
     await this.sqlWithRetry(
       `INSERT INTO ${this.edgesTable}
-        (id, source_type, source_id, target_type, target_id, relation, weight, properties, scope,
+        (id, source_type, source_id, target_type, target_id, relation, weight, properties,
          from_bucket_id, from_source_id, from_chunk_index, from_embedding_model, from_chunk_id,
          to_bucket_id, to_source_id, to_chunk_index, to_embedding_model, to_chunk_id,
          tenant_id, group_id, user_id, agent_id, conversation_id, visibility, evidence, valid_at, invalid_at)
@@ -1186,7 +1229,6 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
        ON CONFLICT (source_type, source_id, target_type, target_id, relation) DO UPDATE SET
          weight = LEAST(5.0, ${tbl}.weight + EXCLUDED.weight),
          properties = ${tbl}.properties || EXCLUDED.properties,
-         scope = EXCLUDED.scope,
          from_bucket_id = COALESCE(EXCLUDED.from_bucket_id, ${tbl}.from_bucket_id),
          from_source_id = COALESCE(EXCLUDED.from_source_id, ${tbl}.from_source_id),
          from_chunk_index = COALESCE(EXCLUDED.from_chunk_index, ${tbl}.from_chunk_index),
@@ -1226,7 +1268,6 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       fact.weight,
       fact.evidenceCount,
       embeddingStr,
-      JSON.stringify(fact.scope),
       fact.scope.tenantId ?? null,
       fact.scope.groupId ?? null,
       fact.scope.userId ?? null,
@@ -1240,9 +1281,9 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const buildSql = (conflictTarget: 'edge_id' | 'id') => `INSERT INTO ${this.factRecordsTable}
         (id, edge_id, source_entity_id, target_entity_id, relation, fact_text,
          description, evidence_text, fact_search_text, from_chunk_id, weight,
-         evidence_count, embedding, scope, tenant_id, group_id, user_id, agent_id,
+         evidence_count, embedding, tenant_id, group_id, user_id, agent_id,
          conversation_id, visibility, invalid_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::vector,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::vector,$14,$15,$16,$17,$18,$19,$20,$21)
        ON CONFLICT (${conflictTarget}) DO UPDATE SET
          ${conflictTarget === 'id'
            ? `edge_id = EXCLUDED.edge_id,
@@ -1258,7 +1299,6 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          weight = GREATEST(${table}.weight, EXCLUDED.weight),
          evidence_count = GREATEST(${table}.evidence_count, EXCLUDED.evidence_count),
          embedding = COALESCE(EXCLUDED.embedding, ${table}.embedding),
-         scope = EXCLUDED.scope,
          tenant_id = EXCLUDED.tenant_id,
          group_id = EXCLUDED.group_id,
          user_id = EXCLUDED.user_id,
@@ -1267,7 +1307,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          visibility = EXCLUDED.visibility,
          invalid_at = EXCLUDED.invalid_at,
          updated_at = EXCLUDED.updated_at
-       RETURNING *`
+       RETURNING ${selectColumns(FACT_ROW_COLUMNS)}`
     let rows: Record<string, unknown>[]
     try {
       rows = await this.sqlWithRetry(buildSql('edge_id'), params)
@@ -1284,7 +1324,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const scopeClause = identity.where ? ` AND ${identity.where}` : ''
     const limitParam = `$${2 + identity.params.length}`
     const rows = await this.sqlWithRetry(
-      `SELECT *, 1 - (embedding <=> $1::vector) AS similarity
+      `SELECT ${selectColumns(FACT_ROW_COLUMNS)}, 1 - (embedding <=> $1::vector) AS similarity
          FROM ${this.factRecordsTable}
         WHERE embedding IS NOT NULL
           ${scopeClause}
@@ -1305,7 +1345,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          SELECT websearch_to_tsquery('english', $1::text) AS strict_q,
                 websearch_to_tsquery('english', $2::text) AS relaxed_q
        )
-       SELECT f.*,
+       SELECT ${selectColumns(FACT_ROW_COLUMNS, 'f')},
               GREATEST(ts_rank(f.search_vector, tsq.strict_q), ts_rank(f.search_vector, tsq.relaxed_q) * 0.75) AS similarity
          FROM ${this.factRecordsTable} f, tsq
         WHERE f.invalid_at IS NULL
@@ -1353,7 +1393,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const edgeScopeClause = edgeIdentity.where ? `AND ${edgeIdentity.where}` : ''
 
     const rows = await this.sqlWithRetry(
-      `SELECT e.*
+      `SELECT ${selectColumns(EDGE_ROW_COLUMNS, 'e')}
          FROM ${this.edgesTable} e
         WHERE e.source_type = 'entity'
           AND e.target_type = 'chunk'
@@ -1469,18 +1509,17 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const rows = await this.sqlWithRetry(
       `INSERT INTO ${this.edgesTable}
         (id, source_type, source_id, target_type, target_id, relation, weight, properties,
-         scope, tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
+         tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
          evidence, valid_at, invalid_at, updated_at)
-       VALUES ($1,'entity',$2,'entity',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
+       VALUES ($1,'entity',$2,'entity',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
        ON CONFLICT (source_type, source_id, target_type, target_id, relation) DO UPDATE SET
          weight = ${unqualified(this.edgesTable)}.weight + EXCLUDED.weight,
          valid_at = LEAST(${unqualified(this.edgesTable)}.valid_at, EXCLUDED.valid_at),
          updated_at = NOW()
-       RETURNING *`,
+       RETURNING ${selectColumns(EDGE_ROW_COLUMNS)}`,
       [
         edge.id, edge.sourceEntityId, edge.targetEntityId,
         edge.relation, edge.weight, JSON.stringify(edge.properties),
-        JSON.stringify(edge.scope),
         edge.scope.tenantId ?? null,
         edge.scope.groupId ?? null,
         edge.scope.userId ?? null,
@@ -1501,11 +1540,11 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
     const params = [entityId, ...identity.params]
     if (direction === 'in') {
-      query = `SELECT * FROM ${this.edgesTable} WHERE target_type = 'entity' AND target_id = $1 AND source_type = 'entity' AND invalid_at IS NULL ${scopeClause}`
+      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable} WHERE target_type = 'entity' AND target_id = $1 AND source_type = 'entity' AND invalid_at IS NULL ${scopeClause}`
     } else if (direction === 'out') {
-      query = `SELECT * FROM ${this.edgesTable} WHERE source_type = 'entity' AND source_id = $1 AND target_type = 'entity' AND invalid_at IS NULL ${scopeClause}`
+      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable} WHERE source_type = 'entity' AND source_id = $1 AND target_type = 'entity' AND invalid_at IS NULL ${scopeClause}`
     } else {
-      query = `SELECT * FROM ${this.edgesTable}
+      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable}
                WHERE ((source_type = 'entity' AND source_id = $1 AND target_type = 'entity')
                    OR (target_type = 'entity' AND target_id = $1 AND source_type = 'entity'))
                  AND invalid_at IS NULL ${scopeClause}`
@@ -1520,11 +1559,11 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
     let query: string
     if (direction === 'out') {
-      query = `SELECT * FROM ${this.edgesTable} WHERE source_type = 'entity' AND source_id = ANY($1::text[]) AND target_type = 'entity' AND invalid_at IS NULL ${scopeClause}`
+      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable} WHERE source_type = 'entity' AND source_id = ANY($1::text[]) AND target_type = 'entity' AND invalid_at IS NULL ${scopeClause}`
     } else if (direction === 'in') {
-      query = `SELECT * FROM ${this.edgesTable} WHERE target_type = 'entity' AND target_id = ANY($1::text[]) AND source_type = 'entity' AND invalid_at IS NULL ${scopeClause}`
+      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable} WHERE target_type = 'entity' AND target_id = ANY($1::text[]) AND source_type = 'entity' AND invalid_at IS NULL ${scopeClause}`
     } else {
-      query = `SELECT * FROM ${this.edgesTable}
+      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable}
                WHERE ((source_type = 'entity' AND source_id = ANY($1::text[]) AND target_type = 'entity')
                    OR (target_type = 'entity' AND target_id = ANY($1::text[]) AND source_type = 'entity'))
                  AND invalid_at IS NULL
@@ -1542,7 +1581,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       conditions.push(`relation = $${params.length}`)
     }
     const rows = await this.sqlWithRetry(
-      `SELECT * FROM ${this.edgesTable} WHERE ${conditions.join(' AND ')}`,
+      `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable} WHERE ${conditions.join(' AND ')}`,
       params
     )
     return rows.map(mapRowToEdge)
@@ -1667,7 +1706,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       )
 
       const edgeRows = await this.sqlWithRetry(
-        `SELECT *
+        `SELECT ${selectColumns(EDGE_ROW_COLUMNS)}
            FROM ${this.edgesTable}
           WHERE invalid_at IS NULL
             AND (
@@ -1753,7 +1792,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       }
 
       const factRows = await this.sqlWithRetry(
-        `SELECT *
+        `SELECT ${selectColumns(FACT_ROW_COLUMNS)}
            FROM ${this.factRecordsTable}
           WHERE invalid_at IS NULL
             AND (source_entity_id = $1 OR target_entity_id = $1)
@@ -2082,7 +2121,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const limitParam = `$${params.length - 1}`
     const offsetParam = `$${params.length}`
     const rows = await this.sqlWithRetry(
-      `SELECT *
+      `SELECT ${selectColumns(EDGE_ROW_COLUMNS)}
          FROM ${this.edgesTable}
         WHERE source_type = 'entity'
           AND target_type = 'entity'
@@ -2174,7 +2213,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
 // ── Row Mappers ──
 
 function mapRowToMemory(row: Record<string, unknown>): MemoryRecord {
-  // Build scope from explicit identity columns (preferred) with JSONB fallback
+  // Build the SDK compatibility scope from explicit identity columns.
   const scope = rowToIdentity(row)
   const metadata = parseJson(row.metadata)
   // Stash vector similarity score from search queries so callers can use it
@@ -2479,7 +2518,7 @@ function buildMemoryWhere(
     }
   }
 
-  // Explicit identity column filtering (preferred over JSONB scope)
+  // Compatibility identity filtering. filter.scope is an alias for explicit fields.
   if (filter.tenantId) {
     params.push(filter.tenantId)
     conditions.push(`tenant_id = ${p()}`)

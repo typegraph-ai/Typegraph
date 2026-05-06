@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ExternalId, SemanticFactRecord, SemanticGraphEdge } from '@typegraph-ai/sdk'
+import { PgJobStore } from '../src/job-store.js'
 import { PgMemoryStoreAdapter } from '../src/memory-store.js'
+import { PgSourceStore } from '../src/source-store.js'
 
 function makeFact(): SemanticFactRecord {
   return {
@@ -27,16 +29,35 @@ function rowFromParams(params: unknown[] = []): Record<string, unknown> {
     target_entity_id: params[3],
     relation: params[4],
     fact_text: params[5],
-    weight: params[6],
-    evidence_count: params[7],
-    tenant_id: params[10],
-    group_id: params[11],
-    user_id: params[12],
-    agent_id: params[13],
-    conversation_id: params[14],
-    visibility: params[15],
+    weight: params[10],
+    evidence_count: params[11],
+    tenant_id: params[13],
+    group_id: params[14],
+    user_id: params[15],
+    agent_id: params[16],
+    conversation_id: params[17],
+    visibility: params[18],
     created_at: '2026-04-16T00:00:00Z',
-    updated_at: params[16],
+    updated_at: params[20],
+  }
+}
+
+type SqlCall = { query: string; params: unknown[] }
+
+function placeholderIndexes(query: string): number[] {
+  return [...query.matchAll(/\$(\d+)/g)].map(match => Number(match[1]))
+}
+
+function expectBoundPlaceholders(calls: SqlCall[]): void {
+  for (const { query, params } of calls) {
+    const indexes = placeholderIndexes(query)
+    if (indexes.length === 0) continue
+    const unique = new Set(indexes)
+    const max = Math.max(...indexes)
+    expect(max).toBeLessThanOrEqual(params.length)
+    for (let i = 1; i <= max; i++) {
+      expect(unique.has(i)).toBe(true)
+    }
   }
 }
 
@@ -58,6 +79,7 @@ describe('PgMemoryStoreAdapter', () => {
     expect(ddl).toContain('target_type')
     expect(ddl).toContain("CHECK (source_type IN ('entity', 'chunk', 'memory'))")
     expect(ddl).toContain('typegraph_entity_chunk_mentions')
+    expect(ddl).not.toMatch(/\bscope\s+JSONB\b/)
     expect(ddl).not.toContain('typegraph_passage_nodes')
     expect(ddl).not.toContain('typegraph_passage_entity_edges')
   })
@@ -104,13 +126,13 @@ describe('PgMemoryStoreAdapter', () => {
     expect(capturedParams[2]).toBe('ent_pat')
     expect(capturedParams[3]).toBe('chunk')
     expect(capturedParams[4]).toBe('chunk_pat')
-    expect(capturedParams[14]).toBe('bucket-1')
-    expect(capturedParams[15]).toBe('doc-1')
-    expect(capturedParams[16]).toBe(2)
-    expect(capturedParams[17]).toBe('mock-embed')
-    expect(capturedParams[18]).toBe('chunk_pat')
-    expect(capturedParams[19]).toBe('tenant-1')
-    expect(capturedParams[24]).toBe('tenant')
+    expect(capturedParams[13]).toBe('bucket-1')
+    expect(capturedParams[14]).toBe('doc-1')
+    expect(capturedParams[15]).toBe(2)
+    expect(capturedParams[16]).toBe('mock-embed')
+    expect(capturedParams[17]).toBe('chunk_pat')
+    expect(capturedParams[18]).toBe('tenant-1')
+    expect(capturedParams[23]).toBe('tenant')
   })
 
   it('retries fact record upsert on duplicate deterministic fact id', async () => {
@@ -159,6 +181,147 @@ describe('PgMemoryStoreAdapter', () => {
     expect(capturedParams[3]).toBe('Alice@Example.com')
     expect(capturedParams[4]).toBe('alice@example.com')
     expect(capturedParams[5]).toBe('none')
-    expect(capturedParams[8]).toBe('tenant-1')
+    expect(capturedParams[7]).toBe('tenant-1')
+  })
+
+  it('looks up scoped external IDs without skipping SQL parameter positions', async () => {
+    let capturedQuery = ''
+    let capturedParams: unknown[] = []
+    const sql = vi.fn(async (query: string, params?: unknown[]) => {
+      capturedQuery = query
+      capturedParams = params ?? []
+      return []
+    })
+    const store = new PgMemoryStoreAdapter({ sql, embeddingDimensions: 4 })
+
+    const result = await store.findEntityByExternalId(
+      { type: 'crm_account_id', id: '001ACME' },
+      { groupId: 'customer_acme_corp' },
+    )
+
+    expect(result).toBeNull()
+    expect(capturedQuery).toContain('xid.type = $1')
+    expect(capturedQuery).toContain('xid.normalized_value = $2')
+    expect(capturedQuery).toContain('xid.encoding = $3')
+    expect(capturedQuery).toContain('e.group_id = $4')
+    expect(capturedQuery).not.toContain('$5')
+    expect(capturedParams).toEqual([
+      'crm_account_id',
+      '001ACME',
+      'none',
+      'customer_acme_corp',
+    ])
+  })
+
+  it('binds contiguous placeholders across high-risk dynamic SQL paths', async () => {
+    const calls: SqlCall[] = []
+    const sql = vi.fn(async (query: string, params?: unknown[]) => {
+      calls.push({ query, params: params ?? [] })
+      return []
+    })
+    const identity = {
+      tenantId: 'tenant-1',
+      groupId: 'group-1',
+      userId: 'user-1',
+      agentId: 'agent-1',
+      conversationId: 'conversation-1',
+    }
+    const store = new PgMemoryStoreAdapter({ sql, embeddingDimensions: 4 })
+
+    await store.findEntityByExternalId({ type: 'crm_account_id', id: '001ACME' }, identity)
+    await store.searchEntitiesHybrid('Acme SSO Marcus Priya', [0.1, 0.2, 0.3, 0.4], identity, 7)
+    await store.searchFactsHybrid('Acme SSO token refresh Marcus Priya', [0.1, 0.2, 0.3, 0.4], identity, 7)
+    await store.getChunkEdgesForEntities(['ent_acme', 'ent_bug'], { scope: identity, bucketIds: ['bkt_acme'], limit: 25 })
+    await store.getChunksByRefs(
+      [{ bucketId: 'bkt_acme', sourceId: 'src_slack', chunkIndex: 2 }],
+      { chunksTable: 'typegraph_chunks', scope: identity, bucketIds: ['bkt_acme'] },
+    )
+    await store.searchChunks(
+      [0.1, 0.2, 0.3, 0.4],
+      identity,
+      {
+        chunksTable: 'typegraph_chunks',
+        bucketIds: ['bkt_acme'],
+        limit: 20,
+        chunkRefs: [{ bucketId: 'bkt_acme', sourceId: 'src_slack', chunkIndex: 2 }],
+      },
+    )
+    await store.listChunkBackfillRecords({
+      chunksTable: 'typegraph_chunks',
+      scope: identity,
+      bucketIds: ['bkt_acme'],
+      limit: 10,
+      offset: 5,
+    })
+    await store.listChunkMentionBackfillRows({
+      chunksTable: 'typegraph_chunks',
+      scope: identity,
+      bucketIds: ['bkt_acme'],
+      limit: 10,
+      offset: 5,
+    })
+    await store.listSemanticEdgesForBackfill({ scope: identity, limit: 10, offset: 5 })
+    await store.search([0.1, 0.2, 0.3, 0.4], {
+      count: 5,
+      temporalAt: new Date('2026-04-16T00:00:00Z'),
+      filter: {
+        scope: identity,
+        category: 'episodic',
+        visibility: 'group',
+        activeAt: new Date('2026-04-16T00:00:00Z'),
+      },
+    })
+    await store.hybridSearch([0.1, 0.2, 0.3, 0.4], 'Acme auth risk', {
+      count: 5,
+      temporalAt: new Date('2026-04-16T00:00:00Z'),
+      filter: {
+        tenantId: identity.tenantId,
+        groupId: identity.groupId,
+        userId: identity.userId,
+        agentId: identity.agentId,
+        conversationId: identity.conversationId,
+        category: ['episodic', 'semantic'],
+        visibility: ['group', 'user'],
+        activeAt: new Date('2026-04-16T00:00:00Z'),
+      },
+    })
+
+    const sourceStore = new PgSourceStore(sql, 'typegraph_sources')
+    await sourceStore.list({
+      bucketId: 'bkt_acme',
+      tenantId: identity.tenantId,
+      groupId: identity.groupId,
+      userId: identity.userId,
+      agentId: identity.agentId,
+      conversationId: identity.conversationId,
+      status: ['complete', 'processing'],
+      visibility: ['group', 'user'],
+      sourceIds: ['src_slack'],
+      graphExtracted: false,
+    }, { limit: 10, offset: 5 })
+    await sourceStore.update('src_slack', {
+      title: 'Slack export',
+      url: 'https://demo.slack.local/thread',
+      visibility: 'group',
+      metadata: { source: 'slack' },
+      subject: { externalIds: [{ type: 'slack_conversation_id', id: 'C123' }] },
+    })
+
+    const jobStore = new PgJobStore(sql, 'typegraph_jobs')
+    await jobStore.list({
+      bucketId: 'bkt_acme',
+      status: 'processing',
+      type: 'ingest',
+    }, { limit: 10, offset: 5 })
+    await jobStore.updateStatus('job_1', {
+      status: 'complete',
+      completedAt: new Date('2026-04-16T00:00:00Z'),
+      result: { ok: true } as never,
+      error: 'none',
+      progressProcessed: 10,
+      progressTotal: 10,
+    })
+
+    expectBoundPlaceholders(calls)
   })
 })

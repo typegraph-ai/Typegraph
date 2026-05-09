@@ -1,42 +1,37 @@
-import type { typegraphIdentity } from './identity.js'
-import type { ConversationTurnResult, MemoryHealthReport } from './memory.js'
+import type { AccessScope, TypeGraphContext, TypeGraphOptions, typegraphIdentity } from './identity.js'
+import type { ThreadTurnResult, MemoryHealthReport } from './memory.js'
 import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
 import type { ChunkRef } from './chunk.js'
-import type { SourceSubject } from './connector.js'
 import type { QueryEntityScope, QuerySignals } from './query.js'
 import type { PaginationOpts } from './pagination.js'
 import type { TelemetryOpts } from './events.js'
-import type { Visibility } from './source.js'
 import type { PredicateTemporalStatus } from '../index-engine/ontology.js'
+import type { TypeCandidate } from '../index-engine/ontology.js'
 
-// ── Memory method opts ──
-// All memory ops take a unified (payload, opts) shape. `opts` extends
-// `typegraphIdentity` so identity fields are top-level alongside per-method knobs.
-
-export interface RememberOpts extends typegraphIdentity, TelemetryOpts {
+export interface RememberOpts extends TypeGraphOptions {
   category?: string | undefined
   importance?: number | undefined
   metadata?: Record<string, unknown> | undefined
   subject?: MemorySubject | undefined
   relatedEntities?: MemorySubject[] | undefined
-  visibility?: Visibility | undefined
+  graphExtraction?: boolean | undefined
 }
 
-export type ForgetOpts = typegraphIdentity & TelemetryOpts
+export interface ForgetOpts extends TypeGraphOptions {}
 
-export type CorrectOpts = typegraphIdentity & TelemetryOpts & {
+export interface CorrectOpts extends TypeGraphOptions {
+  subject?: MemorySubject | undefined
+  relatedEntities?: MemorySubject[] | undefined
+  graphExtraction?: boolean | undefined
+}
+
+export interface AddThreadTurnOpts extends TypeGraphOptions {
+  threadId?: string | undefined
   subject?: MemorySubject | undefined
   relatedEntities?: MemorySubject[] | undefined
 }
 
-export interface AddConversationTurnOpts extends typegraphIdentity, TelemetryOpts {
-  conversationId?: string | undefined
-  subject?: MemorySubject | undefined
-  relatedEntities?: MemorySubject[] | undefined
-  visibility?: Visibility | undefined
-}
-
-export interface RecallOpts extends typegraphIdentity, TelemetryOpts {
+export interface RecallOpts extends TypeGraphOptions {
   limit?: number | undefined
   types?: string[] | undefined
   /** Only return memories valid at this timestamp. */
@@ -48,18 +43,19 @@ export interface RecallOpts extends typegraphIdentity, TelemetryOpts {
   format?: 'xml' | 'markdown' | 'plain' | undefined
 }
 
-export type HealthCheckOpts = typegraphIdentity & TelemetryOpts
+export interface HealthCheckOpts extends TypeGraphOptions {}
 
 export interface MemorySubject {
   entityId?: string | undefined
   externalIds?: ExternalId[] | undefined
   name?: string | undefined
   entityType?: string | undefined
+  typeCandidates?: TypeCandidate[] | undefined
   aliases?: string[] | undefined
-  properties?: Record<string, unknown> | undefined
+  metadata?: Record<string, unknown> | undefined
 }
 
-export interface GraphEntityRef extends typegraphIdentity {
+export interface GraphEntityRef {
   /** Existing TypeGraph entity ID. */
   id?: string | undefined
   /** Deterministic identifier lookup. Takes priority over name/fuzzy matching. */
@@ -69,62 +65,59 @@ export interface GraphEntityRef extends typegraphIdentity {
   /** Entity name. Required when the reference must create a new entity. */
   name?: string | undefined
   entityType?: string | undefined
+  typeCandidates?: TypeCandidate[] | undefined
   aliases?: string[] | undefined
   description?: string | undefined
-  properties?: Record<string, unknown> | undefined
-  visibility?: Visibility | undefined
+  metadata?: Record<string, unknown> | undefined
 }
 
-export interface UpsertGraphEntityInput extends typegraphIdentity {
+export interface UpsertGraphEntityInput {
   id?: string | undefined
   name: string
   entityType?: string | undefined
+  typeCandidates?: TypeCandidate[] | undefined
   aliases?: string[] | undefined
   description?: string | undefined
-  properties?: Record<string, unknown> | undefined
+  metadata?: Record<string, unknown> | undefined
   externalIds?: ExternalId[] | undefined
-  visibility?: Visibility | undefined
 }
 
-export interface UpsertGraphEdgeInput extends typegraphIdentity {
+export interface UpsertGraphEdgeInput {
   /** Entity ref. A bare string reuses an existing entity ID when found, otherwise seeds by name. */
   source: GraphEntityRef | string
   /** Entity ref. A bare string reuses an existing entity ID when found, otherwise seeds by name. */
   target: GraphEntityRef | string
   relation: string
   weight?: number | undefined
-  properties?: Record<string, unknown> | undefined
+  metadata?: Record<string, unknown> | undefined
   description?: string | undefined
   evidenceText?: string | undefined
   temporalStatus?: PredicateTemporalStatus | undefined
   validFrom?: string | undefined
   validTo?: string | undefined
-  sourceChunkId?: string | undefined
-  visibility?: Visibility | undefined
+  chunkId?: string | undefined
 }
 
-export interface UpsertGraphFactInput extends typegraphIdentity {
+export interface UpsertGraphFactInput {
   /** Entity ref. A bare string reuses an existing entity ID when found, otherwise seeds by name. */
   source: GraphEntityRef | string
   /** Entity ref. A bare string reuses an existing entity ID when found, otherwise seeds by name. */
   target: GraphEntityRef | string
   relation: string
-  factText?: string | undefined
   description?: string | undefined
   evidenceText?: string | undefined
   temporalStatus?: PredicateTemporalStatus | undefined
   validFrom?: string | undefined
   validTo?: string | undefined
-  sourceChunkId?: string | undefined
+  chunkId?: string | undefined
   confidence?: number | undefined
-  properties?: Record<string, unknown> | undefined
-  visibility?: Visibility | undefined
+  metadata?: Record<string, unknown> | undefined
 }
 
-export interface MergeGraphEntitiesInput extends typegraphIdentity {
+export interface MergeGraphEntitiesInput {
   sourceEntityId: string
   targetEntityId: string
-  properties?: Record<string, unknown> | undefined
+  metadata?: Record<string, unknown> | undefined
 }
 
 export interface MergeGraphEntitiesResult {
@@ -139,7 +132,7 @@ export interface MergeGraphEntitiesResult {
   removedSelfEdges: number
 }
 
-export interface DeleteGraphEntityOpts extends typegraphIdentity {
+export interface DeleteGraphEntityOpts {
   mode?: 'invalidate' | 'purge' | undefined
 }
 
@@ -171,10 +164,10 @@ export interface MemoryBridge {
   correct(correction: string, opts?: CorrectOpts | null): Promise<{ invalidated: number; created: number; summary: string }>
 
   /** Ingest a conversation turn with extraction. */
-  addConversationTurn(
+  addThreadTurn(
     messages: Array<{ role: string; content: string; timestamp?: Date }>,
-    opts?: AddConversationTurnOpts | null,
-  ): Promise<ConversationTurnResult>
+    opts?: AddThreadTurnOpts | null,
+  ): Promise<ThreadTurnResult>
 
   /** Recall memories by semantic similarity. Returns a formatted string when `format` is set. */
   recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
@@ -202,54 +195,36 @@ export interface KnowledgeGraphBridge {
   /** Deploy graph tables (entities, edges). Called by typegraph.deploy() when graph is configured. */
   deploy?(): Promise<void>
 
-  /** Materialize the declared source subject and attach deterministic primary-source evidence to every chunk. */
-  addSourceSubject?(input: {
-    subject: SourceSubject
-    bucketId: string
-    sourceId: string
-    embeddingModel: string
-    chunks: Array<{
-      id?: string | undefined
-      chunkIndex: number
-      content: string
-      metadata?: Record<string, unknown> | undefined
-    }>
-    tenantId?: string | undefined
-    groupId?: string | undefined
-    userId?: string | undefined
-    agentId?: string | undefined
-    conversationId?: string | undefined
-    visibility?: Visibility | undefined
-  }): Promise<EntityDetail | null>
-
-  /** Store an extracted triple in the entity graph. Used during source indexing. */
+  /** Store an extracted triple in the entity graph. Used during document indexing. */
   addTriple?(triple: {
     subject: string
     subjectType?: string
+    subjectTypeCandidates?: TypeCandidate[] | undefined
     subjectAliases?: string[]
-    subjectDescription?: string
+    subjectDescription?: string | undefined
     predicate: string
     object: string
     objectType?: string
+    objectTypeCandidates?: TypeCandidate[] | undefined
     objectAliases?: string[]
-    objectDescription?: string
+    objectDescription?: string | undefined
     relationshipDescription?: string | undefined
     evidenceText?: string | undefined
     temporalStatus?: PredicateTemporalStatus | undefined
     validFrom?: string | undefined
     validTo?: string | undefined
-    sourceChunkId?: string | undefined
-    confidence?: number
+    chunkId?: string | undefined
+    confidence?: number | undefined
     content: string
     bucketId: string
     chunkIndex?: number
-    sourceId?: string
+    documentId?: string
     tenantId?: string | undefined
     groupId?: string | undefined
     userId?: string | undefined
     agentId?: string | undefined
-    conversationId?: string | undefined
-    visibility?: Visibility | undefined
+    threadId?: string | undefined
+    accessScope?: AccessScope | undefined
     metadata?: Record<string, unknown>
   }): Promise<void>
 
@@ -268,7 +243,7 @@ export interface KnowledgeGraphBridge {
   /** Merge a duplicate source entity into a surviving target entity and rewrite graph references. */
   mergeEntities?(input: MergeGraphEntitiesInput): Promise<MergeGraphEntitiesResult>
 
-  /** Invalidate or purge an entity and its graph references without deleting chunks/sources/memories. */
+  /** Invalidate or purge an entity and its graph references without deleting chunks/documents/memories. */
   deleteEntity?(entityId: string, opts?: DeleteGraphEntityOpts | null): Promise<DeleteGraphEntityResult>
 
   /** Create or update a deterministic developer-seeded edge. */
@@ -287,18 +262,19 @@ export interface KnowledgeGraphBridge {
   addEntityMentions?(mentions: Array<{
     name: string
     type?: string | undefined
+    typeCandidates?: TypeCandidate[] | undefined
     aliases?: string[] | undefined
     description?: string | undefined
     content: string
     bucketId: string
     chunkIndex?: number | undefined
-    sourceId?: string | undefined
+    documentId?: string | undefined
     tenantId?: string | undefined
     groupId?: string | undefined
     userId?: string | undefined
     agentId?: string | undefined
-    conversationId?: string | undefined
-    visibility?: Visibility | undefined
+    threadId?: string | undefined
+    accessScope?: AccessScope | undefined
     metadata?: Record<string, unknown> | undefined
     confidence?: number | undefined
   }>): Promise<void>
@@ -373,7 +349,7 @@ export interface EntityResult {
   similarity?: number | undefined
   /** Number of edges (degree centrality). */
   edgeCount: number
-  properties?: Record<string, unknown> | undefined
+  metadata?: Record<string, unknown> | undefined
 }
 
 export interface EntityDetail extends EntityResult {
@@ -393,7 +369,7 @@ export interface EdgeResult {
   targetEntityName: string
   relation: string
   weight: number
-  properties?: Record<string, unknown> | undefined
+  metadata?: Record<string, unknown> | undefined
 }
 
 export interface FactResult {
@@ -404,15 +380,12 @@ export interface FactResult {
   targetEntityId: string
   targetEntityName?: string | undefined
   relation: string
-  factText: string
   description?: string | undefined
   evidenceText?: string | undefined
-  factSearchText?: string | undefined
-  sourceChunkId?: string | undefined
+  chunkId?: string | undefined
   weight: number
-  evidenceCount: number
   similarity?: number | undefined
-  properties?: Record<string, unknown> | undefined
+  metadata?: Record<string, unknown> | undefined
 }
 
 export type FactRelevanceFilter = (query: string, facts: FactResult[]) => Promise<string[]>
@@ -524,7 +497,7 @@ export interface ChunkResult extends ChunkRef {
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
-  conversationId?: string | undefined
+  threadId?: string | undefined
 }
 
 export type GraphSearchProfile = 'fact-filtered-narrow'

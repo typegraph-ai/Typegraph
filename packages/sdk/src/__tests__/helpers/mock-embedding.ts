@@ -1,4 +1,4 @@
-import type { EmbeddingProvider } from '../../embedding/provider.js'
+import type { Embedder } from '../../embedding/provider.js'
 
 function createHashToVector(dimensions: number) {
   return function hashToVector(text: string): number[] {
@@ -17,19 +17,16 @@ function createHashToVector(dimensions: number) {
 export function createMockEmbedding(opts?: {
   dimensions?: number
   model?: string
-}): EmbeddingProvider {
+}): Embedder {
   const dimensions = opts?.dimensions ?? 4
   const model = opts?.model ?? 'mock-embed-v1'
   const hashToVector = createHashToVector(dimensions)
 
   return {
-    model,
+    name: model,
     dimensions,
-    async embed(text: string): Promise<number[]> {
-      return hashToVector(text)
-    },
-    async embedBatch(texts: string[]): Promise<number[][]> {
-      return texts.map(t => hashToVector(t))
+    async embed(input): Promise<number[][]> {
+      return input.texts.map(t => hashToVector(t))
     },
   }
 }

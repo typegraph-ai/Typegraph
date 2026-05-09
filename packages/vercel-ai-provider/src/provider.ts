@@ -3,13 +3,13 @@ import type {
   BucketListFilter,
   CorrectOpts,
   CreateBucketInput,
-  IngestOptions,
+  DocumentIngestOptions,
+  DocumentInput,
   JobFilter,
   PaginationOpts,
   QueryOpts,
   RememberOpts,
-  SourceInput,
-  typegraphIdentity,
+  TypeGraphContext,
   typegraphInstance,
 } from '@typegraph-ai/sdk'
 
@@ -17,10 +17,10 @@ export type TypegraphToolName =
   | 'typegraph_buckets_list'
   | 'typegraph_buckets_get'
   | 'typegraph_buckets_create'
-  | 'typegraph_source_ingest'
-  | 'typegraph_query'
-  | 'typegraph_memory_remember'
-  | 'typegraph_memory_correct'
+  | 'typegraph_document_ingest'
+  | 'typegraph_search'
+  | 'typegraph_remember'
+  | 'typegraph_correct'
   | 'typegraph_jobs_list'
   | 'typegraph_jobs_get'
 
@@ -30,7 +30,7 @@ export type ToolDefinition = TypegraphToolDefinition
 
 export type TypegraphToolsTarget = Pick<
   typegraphInstance,
-  'buckets' | 'ingest' | 'query' | 'remember' | 'correct' | 'jobs'
+  'bucket' | 'document' | 'search' | 'remember' | 'correct' | 'job'
 >
 
 export interface TypegraphMemoryToolsTarget {
@@ -40,10 +40,10 @@ export interface TypegraphMemoryToolsTarget {
 
 export interface TypegraphToolsOptions {
   /**
-   * Trusted request identity supplied by your server. This is merged into every
-   * scoped TypeGraph call so the model cannot select another tenant/user scope.
+   * Trusted request context supplied by your server. This is merged into every
+   * scoped TypeGraph call so the model cannot select another user/group/agent scope.
    */
-  identity?: typegraphIdentity | undefined
+  context?: TypeGraphContext | undefined
 }
 
 type JsonObject = Record<string, unknown>
@@ -57,29 +57,29 @@ interface BucketsGetInput {
   bucketId: string
 }
 
-interface BucketsCreateInput extends Omit<CreateBucketInput, keyof typegraphIdentity> {}
+interface BucketsCreateInput extends CreateBucketInput {}
 
-interface SourceIngestInput {
-  source?: SourceInput
-  sources?: SourceInput[]
-  options?: Omit<IngestOptions, keyof typegraphIdentity>
+interface DocumentIngestInput {
+  document?: DocumentInput
+  documents?: DocumentInput[]
+  options?: Omit<DocumentIngestOptions, 'context'>
 }
 
 interface QueryInput {
   text: string
-  options?: Omit<QueryOpts, keyof typegraphIdentity>
+  options?: Omit<QueryOpts, 'context'>
 }
 
-interface MemoryRememberInput extends Omit<RememberOpts, keyof typegraphIdentity> {
+interface MemoryRememberInput extends Omit<RememberOpts, 'context'> {
   content: string
 }
 
-interface MemoryCorrectInput extends Omit<CorrectOpts, keyof typegraphIdentity> {
+interface MemoryCorrectInput extends Omit<CorrectOpts, 'context'> {
   correction: string
 }
 
 interface JobsListInput {
-  filter?: Omit<JobFilter, 'identity'> & { identity?: never }
+  filter?: JobFilter
 }
 
 interface JobsGetInput {
@@ -87,14 +87,10 @@ interface JobsGetInput {
 }
 
 const IDENTITY_KEYS = [
-  'tenantId',
   'groupId',
   'userId',
   'agentId',
-  'conversationId',
-  'agentName',
-  'agentDescription',
-  'agentVersion',
+  'threadId',
 ] as const
 
 function compactObject<T extends JsonObject>(value: T): Partial<T> {
@@ -105,48 +101,43 @@ function compactObject<T extends JsonObject>(value: T): Partial<T> {
   return out as Partial<T>
 }
 
-function compactIdentity(identity?: typegraphIdentity): typegraphIdentity {
-  if (!identity) return {}
-  const out: typegraphIdentity = {}
+function compactContext(context?: TypeGraphContext): TypeGraphContext | undefined {
+  if (!context) return undefined
+  const out: TypeGraphContext = {}
   for (const key of IDENTITY_KEYS) {
-    const value = identity[key]
+    const value = context[key]
     if (value !== undefined && value !== null) {
-      out[key] = value
+      ;(out as JsonObject)[key] = value as unknown
     }
   }
-  return out
+  if (context.principals?.length) out.principals = context.principals
+  if (context.access?.length) out.access = context.access
+  if (context.traceId) out.traceId = context.traceId
+  if (context.spanId) out.spanId = context.spanId
+  if (context.agentName) out.agentName = context.agentName
+  if (context.agentDescription) out.agentDescription = context.agentDescription
+  if (context.agentVersion) out.agentVersion = context.agentVersion
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
-function hasKeys(value: object): boolean {
-  return Object.keys(value).length > 0
-}
-
-function scoped<T extends JsonObject>(value: T | undefined, opts: TypegraphToolsOptions): T & typegraphIdentity {
-  return {
+function scopedOptions<T extends JsonObject>(value: T | undefined, opts: TypegraphToolsOptions): T & { context?: TypeGraphContext | undefined } {
+  const context = compactContext(opts.context)
+  return compactObject({
     ...(value ?? {}),
-    ...compactIdentity(opts.identity),
-  } as T & typegraphIdentity
+    ...(context ? { context } : {}),
+  }) as T & { context?: TypeGraphContext | undefined }
 }
 
 function scopedQueryOptions(value: QueryInput['options'] | undefined, opts: TypegraphToolsOptions): QueryOpts {
-  const identity = compactIdentity(opts.identity)
-  const sourceFilter = value?.sourceFilter && typeof value.sourceFilter === 'object'
-    ? scoped(value.sourceFilter as JsonObject, opts)
-    : value?.sourceFilter
-
-  return compactObject({
-    ...(value ?? {}),
-    ...identity,
-    ...(sourceFilter ? { sourceFilter } : {}),
-  }) as QueryOpts
+  return scopedOptions((value ?? {}) as JsonObject, opts) as QueryOpts
 }
 
-function normalizeSource(source: SourceInput): SourceInput {
+function normalizeDocument(document: DocumentInput): DocumentInput {
   return compactObject({
-    ...source,
-    updatedAt: coerceDate(source.updatedAt),
-    createdAt: coerceDate(source.createdAt),
-  }) as SourceInput
+    ...document,
+    updatedAt: coerceDate(document.updatedAt),
+    createdAt: coerceDate(document.createdAt),
+  }) as DocumentInput
 }
 
 function coerceDate(value: unknown): Date | undefined {
@@ -155,18 +146,18 @@ function coerceDate(value: unknown): Date | undefined {
   return undefined
 }
 
-function assertMatchesIdentity(
+function assertMatchesContext(
   record: JsonObject | undefined | null,
-  identity: typegraphIdentity | undefined,
+  context: TypeGraphContext | undefined,
   label: string,
 ): void {
-  if (!record || !identity) return
+  if (!record || !context) return
   for (const key of IDENTITY_KEYS) {
-    const expected = identity[key]
+    const expected = context[key]
     if (expected === undefined) continue
     const actual = record[key] ?? (record['identity'] as JsonObject | undefined)?.[key]
     if (actual !== undefined && actual !== expected) {
-      throw new Error(`${label} is outside the configured TypeGraph identity scope.`)
+      throw new Error(`${label} is outside the configured TypeGraph context.`)
     }
   }
 }
@@ -197,28 +188,26 @@ const subjectSchema = {
     entityType: { type: 'string' },
     aliases: { type: 'array', items: { type: 'string' } },
     description: { type: 'string' },
-    properties: { type: 'object', additionalProperties: true },
+    metadata: { type: 'object', additionalProperties: true },
   },
 }
 
-const visibilitySchema = { type: 'string', enum: ['tenant', 'group', 'user', 'agent', 'conversation'] }
-
-const sourceSchema = {
+const documentSchema = {
   type: 'object',
   additionalProperties: true,
   properties: {
     id: { type: 'string' },
+    name: { type: 'string' },
+    description: { type: 'string' },
     content: { type: 'string' },
-    title: { type: 'string' },
     url: { type: 'string' },
     createdAt: { type: 'string', description: 'ISO timestamp.' },
     updatedAt: { type: 'string', description: 'ISO timestamp.' },
     mimeType: { type: 'string' },
     language: { type: 'string' },
     metadata: { type: 'object', additionalProperties: true },
-    subject: subjectSchema,
   },
-  required: ['content', 'title'],
+  required: ['content', 'name'],
 }
 
 const paginationSchema = {
@@ -236,7 +225,6 @@ const indexDefaultsSchema = {
   properties: {
     chunkSize: { type: 'number' },
     chunkOverlap: { type: 'number' },
-    visibility: visibilitySchema,
     stripMarkdownForEmbedding: { type: 'boolean' },
     propagateMetadata: { type: 'array', items: { type: 'string' } },
     graphExtraction: { type: 'boolean' },
@@ -256,13 +244,12 @@ function memoryRememberTool(target: TypegraphMemoryToolsTarget, opts: TypegraphT
         metadata: { type: 'object', additionalProperties: true },
         subject: subjectSchema,
         relatedEntities: { type: 'array', items: subjectSchema },
-        visibility: visibilitySchema,
       },
       required: ['content'],
     }),
     execute: async (input) => {
       const { content, ...rest } = input
-      return target.remember(content, scoped(rest as JsonObject, opts) as RememberOpts)
+      return target.remember(content, scopedOptions(rest as JsonObject, opts) as RememberOpts)
     },
   }
 }
@@ -282,7 +269,7 @@ function memoryCorrectTool(target: TypegraphMemoryToolsTarget, opts: TypegraphTo
     }),
     execute: async (input) => {
       const { correction, ...rest } = input
-      return target.correct(correction, scoped(rest as JsonObject, opts) as CorrectOpts)
+      return target.correct(correction, scopedOptions(rest as JsonObject, opts) as CorrectOpts)
     },
   }
 }
@@ -290,10 +277,10 @@ function memoryCorrectTool(target: TypegraphMemoryToolsTarget, opts: TypegraphTo
 export function typegraphMemoryTools(
   memory: TypegraphMemoryToolsTarget,
   opts: TypegraphToolsOptions = {},
-): Pick<Record<TypegraphToolName, TypegraphToolDefinition>, 'typegraph_memory_remember' | 'typegraph_memory_correct'> {
+): Pick<Record<TypegraphToolName, TypegraphToolDefinition>, 'typegraph_remember' | 'typegraph_correct'> {
   return {
-    typegraph_memory_remember: memoryRememberTool(memory, opts),
-    typegraph_memory_correct: memoryCorrectTool(memory, opts),
+    typegraph_remember: memoryRememberTool(memory, opts),
+    typegraph_correct: memoryCorrectTool(memory, opts),
   }
 }
 
@@ -303,7 +290,7 @@ export function typegraphTools(
 ): Record<TypegraphToolName, TypegraphToolDefinition> {
   return {
     typegraph_buckets_list: {
-      description: 'List TypeGraph buckets in the configured identity scope.',
+      description: 'List TypeGraph buckets in the configured context.',
       inputSchema: schema<BucketsListInput>({
         type: 'object',
         additionalProperties: false,
@@ -311,14 +298,16 @@ export function typegraphTools(
           filter: {
             type: 'object',
             additionalProperties: false,
-            properties: {},
-            description: 'Optional non-identity bucket filters. Identity is supplied by the server.',
+            properties: {
+              name: { type: 'string' },
+            },
+            description: 'Optional non-context bucket filters. Context is supplied by the server.',
           },
           pagination: paginationSchema,
         },
       }),
       execute: async (input) => {
-        return typegraph.buckets.list(scoped((input.filter ?? {}) as JsonObject, opts), input.pagination)
+        return typegraph.bucket.list(input.filter ?? {}, scopedOptions({}, opts), input.pagination)
       },
     },
 
@@ -333,14 +322,14 @@ export function typegraphTools(
         required: ['bucketId'],
       }),
       execute: async (input) => {
-        const bucket = await typegraph.buckets.get(input.bucketId)
-        assertMatchesIdentity(bucket as JsonObject | undefined, opts.identity, 'Bucket')
+        const bucket = await typegraph.bucket.get(input.bucketId)
+        assertMatchesContext(bucket as JsonObject | undefined, opts.context, 'Bucket')
         return bucket
       },
     },
 
     typegraph_buckets_create: {
-      description: 'Create a TypeGraph bucket in the configured identity scope.',
+      description: 'Create a TypeGraph bucket in the configured context.',
       inputSchema: schema<BucketsCreateInput>({
         type: 'object',
         additionalProperties: false,
@@ -348,24 +337,24 @@ export function typegraphTools(
           name: { type: 'string' },
           description: { type: 'string' },
           embeddingModel: { type: 'string' },
-          queryEmbeddingModel: { type: 'string' },
+          searchEmbeddingModel: { type: 'string' },
           indexDefaults: indexDefaultsSchema,
         },
         required: ['name'],
       }),
       execute: async (input) => {
-        return typegraph.buckets.create(scoped(input as unknown as JsonObject, opts) as unknown as CreateBucketInput)
+        return typegraph.bucket.create(input, scopedOptions({}, opts))
       },
     },
 
-    typegraph_source_ingest: {
-      description: 'Ingest one or more sources into TypeGraph in the configured identity scope.',
-      inputSchema: schema<SourceIngestInput>({
+    typegraph_document_ingest: {
+      description: 'Ingest one or more documents into TypeGraph in the configured context.',
+      inputSchema: schema<DocumentIngestInput>({
         type: 'object',
         additionalProperties: false,
         properties: {
-          source: sourceSchema,
-          sources: { type: 'array', items: sourceSchema },
+          document: documentSchema,
+          documents: { type: 'array', items: documentSchema },
           options: {
             type: 'object',
             additionalProperties: true,
@@ -374,33 +363,32 @@ export function typegraphTools(
               mode: { type: 'string', enum: ['upsert', 'replace'] },
               chunkSize: { type: 'number' },
               chunkOverlap: { type: 'number' },
-              visibility: visibilitySchema,
               stripMarkdownForEmbedding: { type: 'boolean' },
               graphExtraction: { type: 'boolean' },
               dryRun: { type: 'boolean' },
               concurrency: { type: 'number' },
-              traceId: { type: 'string' },
-              spanId: { type: 'string' },
             },
           },
         },
       }),
       execute: async (input) => {
-        const sources = [
-          ...(input.source ? [input.source] : []),
-          ...(input.sources ?? []),
-        ].map(normalizeSource)
+        const documents = [
+          ...(input.document ? [input.document] : []),
+          ...(input.documents ?? []),
+        ].map(normalizeDocument)
 
-        if (sources.length === 0) {
-          throw new Error('typegraph_source_ingest requires source or sources.')
+        if (documents.length === 0) {
+          throw new Error('typegraph_document_ingest requires document or documents.')
         }
 
-        return typegraph.ingest(sources, scoped((input.options ?? {}) as JsonObject, opts) as IngestOptions)
+        return typegraph.document.ingest(documents, {
+          ...scopedOptions((input.options ?? {}) as JsonObject, opts),
+        } as DocumentIngestOptions)
       },
     },
 
-    typegraph_query: {
-      description: 'Query TypeGraph retrieval results in the configured identity scope.',
+    typegraph_search: {
+      description: 'Search TypeGraph retrieval results in the configured context.',
       inputSchema: schema<QueryInput>({
         type: 'object',
         additionalProperties: false,
@@ -411,15 +399,30 @@ export function typegraphTools(
             additionalProperties: true,
             properties: {
               buckets: { type: 'array', items: { type: 'string' } },
-              count: { type: 'number' },
-              signals: {
+              limit: { type: 'number' },
+              resources: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                  enum: ['documents', 'events', 'threads', 'entities', 'facts', 'memories'],
+                },
+              },
+              weights: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  semantic: { type: 'boolean' },
-                  keyword: { type: 'boolean' },
-                  graph: { type: 'boolean' },
-                  memory: { type: 'boolean' },
+                  semantic: { anyOf: [{ type: 'number' }, { const: false }] },
+                  bm25: { anyOf: [{ type: 'number' }, { const: false }] },
+                  graph: { anyOf: [{ type: 'number' }, { const: false }] },
+                  recency: { anyOf: [{ type: 'number' }, { const: false }] },
+                },
+              },
+              fusion: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  method: { type: 'string', enum: ['rrf'] },
+                  k: { type: 'number' },
                 },
               },
               entityScope: {
@@ -431,7 +434,7 @@ export function typegraphTools(
                   mode: { type: 'string', enum: ['filter', 'boost'] },
                 },
               },
-              context: {
+              promptBuilder: {
                 anyOf: [
                   { type: 'boolean' },
                   {
@@ -449,23 +452,22 @@ export function typegraphTools(
                 ],
               },
               includeInvalidated: { type: 'boolean' },
-              traceId: { type: 'string' },
-              spanId: { type: 'string' },
+              explain: { type: 'boolean' },
             },
           },
         },
         required: ['text'],
       }),
       execute: async (input) => {
-        return typegraph.query(input.text, scopedQueryOptions(input.options, opts))
+        return typegraph.search(input.text, scopedQueryOptions(input.options, opts))
       },
     },
 
-    typegraph_memory_remember: memoryRememberTool(typegraph, opts),
-    typegraph_memory_correct: memoryCorrectTool(typegraph, opts),
+    typegraph_remember: memoryRememberTool(typegraph, opts),
+    typegraph_correct: memoryCorrectTool(typegraph, opts),
 
     typegraph_jobs_list: {
-      description: 'List TypeGraph jobs in the configured identity scope.',
+      description: 'List TypeGraph jobs in the configured context.',
       inputSchema: schema<JobsListInput>({
         type: 'object',
         additionalProperties: false,
@@ -476,17 +478,13 @@ export function typegraphTools(
             properties: {
               bucketId: { type: 'string' },
               status: { type: 'string', enum: ['pending', 'processing', 'complete', 'failed'] },
-              type: { type: 'string', enum: ['ingest', 'remember', 'conversation_turn', 'correct', 'forget'] },
+              type: { type: 'string', enum: ['ingest', 'remember', 'thread_turn', 'correct', 'forget'] },
             },
           },
         },
       }),
       execute: async (input) => {
-        const identity = compactIdentity(opts.identity)
-        return typegraph.jobs.list({
-          ...(input.filter ?? {}),
-          ...(hasKeys(identity) ? { identity } : {}),
-        } as JobFilter)
+        return typegraph.job.list((input.filter ?? {}) as JobFilter)
       },
     },
 
@@ -501,8 +499,8 @@ export function typegraphTools(
         required: ['jobId'],
       }),
       execute: async (input) => {
-        const job = await typegraph.jobs.get(input.jobId)
-        assertMatchesIdentity(job as unknown as JsonObject | undefined, opts.identity, 'Job')
+        const job = await typegraph.job.get(input.jobId)
+        assertMatchesContext(job as unknown as JsonObject | undefined, opts.context, 'Job')
         return job
       },
     },

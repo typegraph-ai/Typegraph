@@ -9,10 +9,10 @@ export function buildScope(parts: Partial<typegraphIdentity>): typegraphIdentity
   if (parts.groupId !== undefined) scope.groupId = parts.groupId
   if (parts.userId !== undefined) scope.userId = parts.userId
   if (parts.agentId !== undefined) scope.agentId = parts.agentId
-  if (parts.conversationId !== undefined) scope.conversationId = parts.conversationId
+  if (parts.threadId !== undefined) scope.threadId = parts.threadId
 
-  if (!scope.tenantId && !scope.groupId && !scope.userId && !scope.agentId && !scope.conversationId) {
-    throw new Error('Identity requires at least one identifier (tenantId, groupId, userId, agentId, or conversationId)')
+  if (!scope.tenantId && !scope.groupId && !scope.userId && !scope.agentId && !scope.threadId) {
+    throw new Error('Identity requires at least one identifier (tenantId, groupId, userId, agentId, or threadId)')
   }
 
   return scope
@@ -27,7 +27,7 @@ export function scopeKey(scope: typegraphIdentity): string {
   if (scope.groupId) parts.push(`g:${scope.groupId}`)
   if (scope.userId) parts.push(`u:${scope.userId}`)
   if (scope.agentId) parts.push(`a:${scope.agentId}`)
-  if (scope.conversationId) parts.push(`s:${scope.conversationId}`)
+  if (scope.threadId) parts.push(`s:${scope.threadId}`)
   return parts.join('|')
 }
 
@@ -41,7 +41,7 @@ export function scopeMatches(record: typegraphIdentity, query: typegraphIdentity
   if (query.groupId !== undefined && record.groupId !== query.groupId) return false
   if (query.userId !== undefined && record.userId !== query.userId) return false
   if (query.agentId !== undefined && record.agentId !== query.agentId) return false
-  if (query.conversationId !== undefined && record.conversationId !== query.conversationId) return false
+  if (query.threadId !== undefined && record.threadId !== query.threadId) return false
   return true
 }
 
@@ -55,6 +55,6 @@ export function scopeToFilter(scope: typegraphIdentity): Record<string, string> 
   if (scope.groupId) filter['groupId'] = scope.groupId
   if (scope.userId) filter['userId'] = scope.userId
   if (scope.agentId) filter['agentId'] = scope.agentId
-  if (scope.conversationId) filter['conversationId'] = scope.conversationId
+  if (scope.threadId) filter['threadId'] = scope.threadId
   return filter
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { isAISDKEmbeddingInput, aiSdkEmbeddingProvider } from '../embedding/ai-sdk-adapter.js'
+import { isAISDKEmbeddingInput, aiSdkEmbedder } from '../embedding/ai-sdk-adapter.js'
 import { createMockAISDKModel, createMockEmbedding } from './helpers/mock-embedding.js'
 
 describe('isAISDKEmbeddingInput', () => {
@@ -24,49 +24,49 @@ describe('isAISDKEmbeddingInput', () => {
     expect(isAISDKEmbeddingInput({ model: { doEmbed: () => {} } })).toBe(false)
   })
 
-  it('returns false for EmbeddingProvider objects', () => {
+  it('returns false for Embedder objects', () => {
     const provider = createMockEmbedding()
     expect(isAISDKEmbeddingInput(provider)).toBe(false)
   })
 })
 
-describe('aiSdkEmbeddingProvider', () => {
+describe('aiSdkEmbedder', () => {
   it('creates provider with correct model name', () => {
     const input = createMockAISDKModel({ provider: 'openai', modelId: 'text-embed-v3' })
-    const provider = aiSdkEmbeddingProvider(input)
-    expect(provider.model).toBe('openai/text-embed-v3')
+    const provider = aiSdkEmbedder(input)
+    expect(provider.name).toBe('openai/text-embed-v3')
   })
 
   it('embed() returns single vector', async () => {
     const input = createMockAISDKModel({ dimensions: 8 })
-    const provider = aiSdkEmbeddingProvider(input)
-    const result = await provider.embed('test')
-    expect(result).toHaveLength(8)
-    expect(result.every(v => typeof v === 'number')).toBe(true)
+    const provider = aiSdkEmbedder(input)
+    const result = await provider.embed({ texts: ['test'] })
+    expect(result[0]).toHaveLength(8)
+    expect(result[0]?.every(v => typeof v === 'number')).toBe(true)
   })
 
-  it('embedBatch() returns vectors for all texts', async () => {
+  it('embed() returns vectors for all texts', async () => {
     const input = createMockAISDKModel({ dimensions: 4 })
-    const provider = aiSdkEmbeddingProvider(input)
-    const result = await provider.embedBatch(['a', 'b', 'c'])
+    const provider = aiSdkEmbedder(input)
+    const result = await provider.embed({ texts: ['a', 'b', 'c'] })
     expect(result).toHaveLength(3)
     for (const vec of result) {
       expect(vec).toHaveLength(4)
     }
   })
 
-  it('embedBatch() returns empty array for empty input', async () => {
+  it('embed() returns empty array for empty input', async () => {
     const input = createMockAISDKModel()
-    const provider = aiSdkEmbeddingProvider(input)
-    const result = await provider.embedBatch([])
+    const provider = aiSdkEmbedder(input)
+    const result = await provider.embed({ texts: [] })
     expect(result).toEqual([])
   })
 
   it('respects maxEmbeddingsPerCall batching', async () => {
     const input = createMockAISDKModel({ maxEmbeddingsPerCall: 2, dimensions: 4 })
     const doEmbedSpy = vi.spyOn(input.model, 'doEmbed')
-    const provider = aiSdkEmbeddingProvider(input)
-    const result = await provider.embedBatch(['a', 'b', 'c', 'd', 'e'])
+    const provider = aiSdkEmbedder(input)
+    const result = await provider.embed({ texts: ['a', 'b', 'c', 'd', 'e'] })
     expect(result).toHaveLength(5)
     // 5 texts with batch size 2 → ceil(5/2) = 3 calls
     expect(doEmbedSpy).toHaveBeenCalledTimes(3)

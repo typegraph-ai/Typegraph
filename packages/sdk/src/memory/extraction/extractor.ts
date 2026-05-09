@@ -1,5 +1,5 @@
 import { z } from 'zod/v4-mini'
-import type { EmbeddingProvider } from '../../embedding/provider.js'
+import type { Embedder } from '../../embedding/provider.js'
 import type { typegraphIdentity } from '../../types/identity.js'
 import type { EpisodicMemory, SemanticFact } from '../types/memory.js'
 import type { LLMProvider } from './llm-provider.js'
@@ -65,7 +65,7 @@ export interface ExtractionResult {
 
 export interface ExtractionConfig {
   llm: LLMProvider
-  embedding: EmbeddingProvider
+  embedding: Embedder
   scope: typegraphIdentity
 }
 
@@ -76,7 +76,7 @@ export interface ExtractionConfig {
 
 export class MemoryExtractor {
   private readonly llm: LLMProvider
-  private readonly embedding: EmbeddingProvider
+  private readonly embedding: Embedder
   private readonly scope: typegraphIdentity
 
   constructor(config: ExtractionConfig) {
@@ -170,7 +170,7 @@ export class MemoryExtractor {
    */
   createEpisodicMemory(
     messages: ConversationMessage[],
-    conversationId?: string,
+    threadId?: string,
     sequence?: number,
   ): EpisodicMemory {
     const content = messages
@@ -192,7 +192,7 @@ export class MemoryExtractor {
       scope: this.scope,
       eventType: 'conversation',
       participants: [...new Set(messages.filter(m => m.role === 'user').map(() => this.scope.userId).filter(Boolean) as string[])],
-      conversationId,
+      threadId,
       sequence,
       ...temporal,
     }
@@ -229,11 +229,11 @@ export class MemoryExtractor {
   async processConversation(
     messages: ConversationMessage[],
     existingFacts: SemanticFact[] = [],
-    conversationId?: string,
+    threadId?: string,
     sequence?: number,
   ): Promise<ExtractionResult> {
     // Create episodic memory
-    const episode = this.createEpisodicMemory(messages, conversationId, sequence)
+    const episode = this.createEpisodicMemory(messages, threadId, sequence)
 
     // Phase 1: Extract candidate facts
     const candidates = await this.extractFacts(messages)

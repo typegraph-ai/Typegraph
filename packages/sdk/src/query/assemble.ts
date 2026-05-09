@@ -1,7 +1,7 @@
-import type { ContextFormat, ContextSection, QueryContextOptions, QueryContextStats, QueryResults } from '../types/query.js'
+import type { PromptFormat, PromptSection, PromptBuilderOptions, PromptStats, QueryResults } from '../types/query.js'
 import { formatFactEvidence } from '../graph/retrieval-primitives.js'
 
-const DEFAULT_CONTEXT_SECTIONS: ContextSection[] = ['chunks', 'facts', 'entities', 'memories']
+const DEFAULT_CONTEXT_SECTIONS: PromptSection[] = ['chunks', 'facts', 'entities', 'memories']
 const DEFAULT_MAX_TOTAL_TOKENS = 30_000
 const DEFAULT_MAX_FACT_TOKENS = 1_500
 const DEFAULT_MAX_ENTITY_TOKENS = 1_500
@@ -9,7 +9,7 @@ const DEFAULT_MAX_ENTITY_TOKENS = 1_500
 type TokenCounter = (text: string) => number
 
 interface ContextEntry {
-  section: ContextSection
+  section: PromptSection
   index: number
   content: string
   attributes: Record<string, string | number | boolean | undefined>
@@ -23,8 +23,8 @@ interface SelectedSection {
 }
 
 interface ResolvedContextOptions {
-  format: ContextFormat
-  sections: ContextSection[]
+  format: PromptFormat
+  sections: PromptSection[]
   includeAttributes: boolean
   maxTotalTokens: number
   maxChunkTokens?: number | undefined
@@ -33,20 +33,20 @@ interface ResolvedContextOptions {
   maxMemoryTokens?: number | undefined
 }
 
-export interface BuildContextResult {
-  context: string
-  stats: QueryContextStats
+export interface BuildPromptResult {
+  prompt: string
+  stats: PromptStats
 }
 
-export function buildContext(
+export function buildPrompt(
   results: QueryResults,
-  context: true | QueryContextOptions = true,
+  builder: true | PromptBuilderOptions = true,
   tokenizer?: TokenCounter,
-): BuildContextResult {
-  const opts = normalizeContextOptions(context)
+): BuildPromptResult {
+  const opts = normalizeContextOptions(builder)
   const countTokens = tokenizer ?? estimateTokens
   const entries = entriesBySection(results)
-  const selected: Record<ContextSection, SelectedSection> = {
+  const selected: Record<PromptSection, SelectedSection> = {
     chunks: selectSection(entries.chunks, opts.maxChunkTokens, countTokens, opts),
     facts: selectSection(entries.facts, opts.maxFactTokens, countTokens, opts),
     entities: selectSection(entries.entities, opts.maxEntityTokens, countTokens, opts),
@@ -55,12 +55,12 @@ export function buildContext(
 
   trimToTotalBudget(selected, opts.sections, opts.maxTotalTokens, countTokens, opts)
 
-  const contextString = renderContext(selected, opts)
-  const stats = contextStats(selected, opts, countTokens, contextString)
-  return { context: contextString, stats }
+  const prompt = renderContext(selected, opts)
+  const stats = promptStats(selected, opts, countTokens, prompt)
+  return { prompt, stats }
 }
 
-function normalizeContextOptions(context: true | QueryContextOptions): ResolvedContextOptions {
+function normalizeContextOptions(context: true | PromptBuilderOptions): ResolvedContextOptions {
   const opts = context === true ? {} : context
   return {
     format: opts.format ?? 'xml',
@@ -74,17 +74,17 @@ function normalizeContextOptions(context: true | QueryContextOptions): ResolvedC
   }
 }
 
-function normalizeSections(sections: ContextSection[] | undefined): ContextSection[] {
-  const seen = new Set<ContextSection>()
+function normalizeSections(sections: PromptSection[] | undefined): PromptSection[] {
+  const seen = new Set<PromptSection>()
   const requested = sections?.length ? sections : DEFAULT_CONTEXT_SECTIONS
-  return requested.filter((section): section is ContextSection => {
+  return requested.filter((section): section is PromptSection => {
     if (!DEFAULT_CONTEXT_SECTIONS.includes(section) || seen.has(section)) return false
     seen.add(section)
     return true
   })
 }
 
-function entriesBySection(results: QueryResults): Record<ContextSection, ContextEntry[]> {
+function entriesBySection(results: QueryResults): Record<PromptSection, ContextEntry[]> {
   return {
     chunks: results.chunks.map((chunk, index) => ({
       section: 'chunks',
@@ -92,10 +92,10 @@ function entriesBySection(results: QueryResults): Record<ContextSection, Context
       content: chunk.content,
       attributes: {
         score: formatScore(chunk.score),
-        bucketId: chunk.source.bucketId,
-        sourceId: chunk.source.id,
-        title: chunk.source.title || undefined,
-        url: chunk.source.url,
+        bucketId: chunk.document.bucketId,
+        documentId: chunk.document.id,
+        name: chunk.document.name || undefined,
+        url: chunk.document.url,
         chunkIndex: chunk.chunk.index,
         totalChunks: chunk.chunk.total,
       },
@@ -114,10 +114,9 @@ function entriesBySection(results: QueryResults): Record<ContextSection, Context
         targetEntityId: fact.targetEntityId,
         target: fact.targetEntityName,
         weight: formatScore(fact.weight),
-        evidenceCount: fact.evidenceCount,
         similarity: fact.similarity != null ? formatScore(fact.similarity) : undefined,
       },
-      metadata: nonEmptyRecord(fact.properties),
+      metadata: nonEmptyRecord(fact.metadata),
     })),
     entities: results.entities.map((entity, index) => ({
       section: 'entities',
@@ -130,7 +129,7 @@ function entriesBySection(results: QueryResults): Record<ContextSection, Context
         edgeCount: entity.edgeCount,
         similarity: entity.similarity != null ? formatScore(entity.similarity) : undefined,
       },
-      metadata: nonEmptyRecord(entity.properties),
+      metadata: nonEmptyRecord(entity.metadata),
     })),
     memories: results.memories.map((memory, index) => ({
       section: 'memories',
@@ -174,8 +173,8 @@ function selectSection(
 }
 
 function trimToTotalBudget(
-  selected: Record<ContextSection, SelectedSection>,
-  sections: ContextSection[],
+  selected: Record<PromptSection, SelectedSection>,
+  sections: PromptSection[],
   maxTotalTokens: number,
   countTokens: TokenCounter,
   opts: ResolvedContextOptions,
@@ -192,13 +191,13 @@ function trimToTotalBudget(
   }
 }
 
-function contextStats(
-  selected: Record<ContextSection, SelectedSection>,
+function promptStats(
+  selected: Record<PromptSection, SelectedSection>,
   opts: ResolvedContextOptions,
   countTokens: TokenCounter,
   context: string,
-): QueryContextStats {
-  const sections: QueryContextStats['sections'] = {}
+): PromptStats {
+  const sections: PromptStats['sections'] = {}
   for (const section of opts.sections) {
     const selectedSection = selected[section]
     const rendered = renderContext({ ...emptySelectedSections(), [section]: selectedSection }, { ...opts, sections: [section] })
@@ -219,7 +218,7 @@ function contextStats(
 }
 
 function renderContext(
-  selected: Record<ContextSection, SelectedSection>,
+  selected: Record<PromptSection, SelectedSection>,
   opts: ResolvedContextOptions,
 ): string {
   switch (opts.format) {
@@ -234,7 +233,7 @@ function renderContext(
 }
 
 function renderXml(
-  selected: Record<ContextSection, SelectedSection>,
+  selected: Record<PromptSection, SelectedSection>,
   opts: ResolvedContextOptions,
 ): string {
   const sections = opts.sections
@@ -260,7 +259,7 @@ function renderXmlEntry(entry: ContextEntry, opts: ResolvedContextOptions): stri
 }
 
 function renderMarkdown(
-  selected: Record<ContextSection, SelectedSection>,
+  selected: Record<PromptSection, SelectedSection>,
   opts: ResolvedContextOptions,
 ): string {
   const sections = opts.sections
@@ -286,7 +285,7 @@ function renderMarkdownEntry(entry: ContextEntry, opts: ResolvedContextOptions):
 }
 
 function renderPlain(
-  selected: Record<ContextSection, SelectedSection>,
+  selected: Record<PromptSection, SelectedSection>,
   opts: ResolvedContextOptions,
 ): string {
   const sections = opts.sections
@@ -328,7 +327,7 @@ function renderMarkdownAttributes(entry: ContextEntry): string[] {
   return attrs
 }
 
-function emptySelectedSections(): Record<ContextSection, SelectedSection> {
+function emptySelectedSections(): Record<PromptSection, SelectedSection> {
   return {
     chunks: { entries: [], available: 0, truncated: false },
     facts: { entries: [], available: 0, truncated: false },
@@ -337,7 +336,7 @@ function emptySelectedSections(): Record<ContextSection, SelectedSection> {
   }
 }
 
-function sectionTag(section: ContextSection): string {
+function sectionTag(section: PromptSection): string {
   return `context_${section}`
 }
 
@@ -345,7 +344,7 @@ function entryTag(entry: ContextEntry): string {
   return `context_${singular(entry.section)}_${entry.index}`
 }
 
-function sectionTitle(section: ContextSection): string {
+function sectionTitle(section: PromptSection): string {
   return `Context ${capitalize(section)}`
 }
 
@@ -353,7 +352,7 @@ function entryTitle(entry: ContextEntry): string {
   return `Context ${capitalize(singular(entry.section))} ${entry.index}`
 }
 
-function singular(section: ContextSection): string {
+function singular(section: PromptSection): string {
   switch (section) {
     case 'chunks': return 'chunk'
     case 'facts': return 'fact'

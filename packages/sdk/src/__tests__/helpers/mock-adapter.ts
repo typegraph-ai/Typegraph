@@ -1,6 +1,7 @@
-import type { VectorStoreAdapter, HashStoreAdapter, SearchOpts, HashRecord, UndeployResult } from '../../types/adapter.js'
+import type { VectorStoreAdapter, HashStoreAdapter, SearchOpts, HashRecord, UndeployResult, ScoredChunkWithDocument } from '../../types/adapter.js'
 import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '../../types/chunk.js'
-import type { typegraphSource, SourceStatus, SourceFilter, UpsertSourceInput, UpsertedSourceRecord } from '../../types/source.js'
+import type { DocumentFilter, DocumentStatus, typegraphDocument, UpsertDocumentInput, UpsertedDocumentRecord } from '../../types/document.js'
+import { accessScopeKeys } from '../../types/identity.js'
 import { createHash } from 'crypto'
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -16,14 +17,24 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return mag === 0 ? 0 : dot / mag
 }
 
-function matchesFilter(chunk: EmbeddedChunk, filter: ChunkFilter): boolean {
+function matchesAccessScope(recordScope: EmbeddedChunk['accessScope'], filterScope: ChunkFilter['accessScope']): boolean {
+  const recordKeys = accessScopeKeys(recordScope)
+  if (recordKeys.length === 0) return true
+  if (filterScope === undefined) return true
+  const filterKeys = new Set(accessScopeKeys(filterScope))
+  if (filterKeys.size === 0) return false
+  return recordKeys.some(key => filterKeys.has(key))
+}
+
+function matchesFilter(chunk: EmbeddedChunk, filter: ChunkFilter | null | undefined): boolean {
+  if (!filter) return true
   if (filter.bucketId && chunk.bucketId !== filter.bucketId) return false
   if (filter.bucketIds && filter.bucketIds.length > 0 && !filter.bucketIds.includes(chunk.bucketId)) return false
   if (filter.chunkRefs) {
     if (filter.chunkRefs.length === 0) return false
     const matched = filter.chunkRefs.some(ref =>
       ref.bucketId === chunk.bucketId &&
-      ref.sourceId === chunk.sourceId &&
+      ref.documentId === chunk.documentId &&
       ref.chunkIndex === chunk.chunkIndex &&
       (ref.embeddingModel == null || ref.embeddingModel === chunk.embeddingModel)
     )
@@ -33,26 +44,31 @@ function matchesFilter(chunk: EmbeddedChunk, filter: ChunkFilter): boolean {
   if (filter.groupId && chunk.groupId !== filter.groupId) return false
   if (filter.userId && chunk.userId !== filter.userId) return false
   if (filter.agentId && chunk.agentId !== filter.agentId) return false
-  if (filter.conversationId && chunk.conversationId !== filter.conversationId) return false
-  if (filter.sourceId && chunk.sourceId !== filter.sourceId) return false
+  if (filter.threadId && chunk.threadId !== filter.threadId) return false
+  if (filter.documentId && chunk.documentId !== filter.documentId) return false
   if (filter.idempotencyKey && chunk.idempotencyKey !== filter.idempotencyKey) return false
   if (filter.metadata) {
     for (const [k, v] of Object.entries(filter.metadata)) {
       if (chunk.metadata[k] !== v) return false
     }
   }
+  return matchesAccessScope(chunk.accessScope, filter.accessScope)
+}
 
-  // Visibility gate — must mirror PgVectorAdapter.buildWhere() behavior.
-  // NULL/undefined visibility = public (always visible). Every other level
-  // requires the caller to supply a matching identity at that level.
-  const vis = chunk.visibility
-  if (vis == null) return true
-  if (vis === 'tenant') return filter.tenantId != null && chunk.tenantId === filter.tenantId
-  if (vis === 'group') return filter.groupId != null && chunk.groupId === filter.groupId
-  if (vis === 'user') return filter.userId != null && chunk.userId === filter.userId
-  if (vis === 'agent') return filter.agentId != null && chunk.agentId === filter.agentId
-  if (vis === 'conversation') return filter.conversationId != null && chunk.conversationId === filter.conversationId
-  return false
+function matchesDocumentFilter(document: typegraphDocument, filter: DocumentFilter | null | undefined): boolean {
+  if (!filter) return true
+  if (filter.bucketId && document.bucketId !== filter.bucketId) return false
+  if (filter.tenantId && document.tenantId !== filter.tenantId) return false
+  if (filter.groupId && document.groupId !== filter.groupId) return false
+  if (filter.userId && document.userId !== filter.userId) return false
+  if (filter.agentId && document.agentId !== filter.agentId) return false
+  if (filter.threadId && document.threadId !== filter.threadId) return false
+  if (filter.documentIds && !filter.documentIds.includes(document.id)) return false
+  if (filter.status) {
+    const statuses = Array.isArray(filter.status) ? filter.status : [filter.status]
+    if (!statuses.includes(document.status)) return false
+  }
+  return matchesAccessScope(document.accessScope, filter.accessScope)
 }
 
 export function createMockHashStore(): HashStoreAdapter & {
@@ -70,6 +86,15 @@ export function createMockHashStore(): HashStoreAdapter & {
 
     async get(key: string) {
       return data.get(key) ?? null
+    },
+
+    async getMany(keys: string[]) {
+      const out = new Map<string, HashRecord>()
+      for (const key of keys) {
+        const record = data.get(key)
+        if (record) out.set(key, record)
+      }
+      return out
     },
 
     async set(key: string, record: HashRecord) {
@@ -114,21 +139,71 @@ export interface MockAdapterCall {
 export function createMockAdapter(): VectorStoreAdapter & {
   calls: MockAdapterCall[]
   _chunks: Map<string, EmbeddedChunk[]>
-  _sources: Map<string, typegraphSource>
+  _documents: Map<string, typegraphDocument>
 } {
   const chunks = new Map<string, EmbeddedChunk[]>()
-  const sources = new Map<string, typegraphSource>()
+  const documents = new Map<string, typegraphDocument>()
   const calls: MockAdapterCall[] = []
   const hashStore = createMockHashStore()
+
+  function scoreChunks(model: string, embedding: number[], opts: SearchOpts | null): ScoredChunk[] {
+    const store = chunks.get(model) ?? []
+    const filtered = opts?.filter ? store.filter(c => matchesFilter(c, opts.filter)) : store
+    const count = opts?.count ?? 10
+    return filtered
+      .map(c => ({
+        ...c,
+        scores: {
+          semantic: cosineSimilarity(embedding, c.embedding),
+        },
+      }))
+      .sort((a, b) => (b.scores.semantic ?? 0) - (a.scores.semantic ?? 0))
+      .slice(0, count)
+  }
+
+  function hybridScoreChunks(model: string, embedding: number[], query: string, opts: SearchOpts | null): ScoredChunk[] {
+    const store = chunks.get(model) ?? []
+    const filtered = opts?.filter ? store.filter(c => matchesFilter(c, opts.filter)) : store
+    const count = opts?.count ?? 10
+    const queryTerms = query.toLowerCase().split(/\s+/)
+    const useSemantic = opts?.signals?.semantic !== false
+    const useKeyword = opts?.signals?.keyword ?? true
+    if (!useSemantic && !useKeyword) return []
+
+    return filtered
+      .map(c => {
+        const vectorScore = cosineSimilarity(embedding, c.embedding)
+        const contentLower = c.content.toLowerCase()
+        const keywordHits = queryTerms.filter(t => contentLower.includes(t)).length
+        const keywordScore = keywordHits / Math.max(queryTerms.length, 1)
+        const activeScores = [
+          useSemantic ? vectorScore : undefined,
+          useKeyword ? keywordScore : undefined,
+        ].filter((score): score is number => score != null)
+        const rrf = activeScores.length > 0
+          ? activeScores.reduce((sum, score) => sum + score, 0) / activeScores.length
+          : 0
+        return {
+          ...c,
+          scores: {
+            semantic: useSemantic ? vectorScore : undefined,
+            keyword: useKeyword ? keywordScore : undefined,
+            rrf,
+          },
+        }
+      })
+      .sort((a, b) => (b.scores.rrf ?? 0) - (a.scores.rrf ?? 0))
+      .slice(0, count)
+  }
 
   const adapter: VectorStoreAdapter & {
     calls: MockAdapterCall[]
     _chunks: Map<string, EmbeddedChunk[]>
-    _sources: Map<string, typegraphSource>
+    _documents: Map<string, typegraphDocument>
   } = {
     calls,
     _chunks: chunks,
-    _sources: sources,
+    _documents: documents,
     hashStore,
 
     async deploy() {
@@ -150,19 +225,14 @@ export function createMockAdapter(): VectorStoreAdapter & {
 
     async ensureModel(model: string, dimensions: number) {
       calls.push({ method: 'ensureModel', args: [model, dimensions] })
-      if (!chunks.has(model)) {
-        chunks.set(model, [])
-      }
+      if (!chunks.has(model)) chunks.set(model, [])
     },
 
-    async upsertSourceChunks(model: string, newChunks: EmbeddedChunk[]) {
-      calls.push({ method: 'upsertSourceChunks', args: [model, newChunks] })
-      if (!chunks.has(model)) {
-        chunks.set(model, [])
-      }
+    async upsertDocumentChunks(model: string, newChunks: EmbeddedChunk[]) {
+      calls.push({ method: 'upsertDocumentChunks', args: [model, newChunks] })
+      if (!chunks.has(model)) chunks.set(model, [])
       const store = chunks.get(model)!
       for (const chunk of newChunks) {
-        // Replace existing chunk with same idempotencyKey + chunkIndex
         const existingIdx = store.findIndex(
           c => c.idempotencyKey === chunk.idempotencyKey && c.chunkIndex === chunk.chunkIndex
         )
@@ -174,7 +244,7 @@ export function createMockAdapter(): VectorStoreAdapter & {
       }
     },
 
-    async delete(model: string, filter: ChunkFilter) {
+    async delete(model: string, filter: ChunkFilter | null) {
       calls.push({ method: 'delete', args: [model, filter] })
       const store = chunks.get(model)
       if (!store) return
@@ -182,159 +252,134 @@ export function createMockAdapter(): VectorStoreAdapter & {
       chunks.set(model, remaining)
     },
 
-    async search(model: string, embedding: number[], opts: SearchOpts): Promise<ScoredChunk[]> {
+    async search(model: string, embedding: number[], opts: SearchOpts | null): Promise<ScoredChunk[]> {
       calls.push({ method: 'search', args: [model, embedding, opts] })
-      const store = chunks.get(model) ?? []
-      let filtered = store
-      if (opts.filter) {
-        filtered = store.filter(c => matchesFilter(c, opts.filter!))
-      }
-      return filtered
-        .map(c => ({
-          ...c,
-          scores: {
-            semantic: cosineSimilarity(embedding, c.embedding),
-          },
-        }))
-        .sort((a, b) => (b.scores.semantic ?? 0) - (a.scores.semantic ?? 0))
-        .slice(0, opts.count)
+      return scoreChunks(model, embedding, opts)
     },
 
-    async hybridSearch(model: string, embedding: number[], query: string, opts: SearchOpts): Promise<ScoredChunk[]> {
+    async hybridSearch(model: string, embedding: number[], query: string, opts: SearchOpts | null): Promise<ScoredChunk[]> {
       calls.push({ method: 'hybridSearch', args: [model, embedding, query, opts] })
-      const store = chunks.get(model) ?? []
-      let filtered = store
-      if (opts.filter) {
-        filtered = store.filter(c => matchesFilter(c, opts.filter!))
-      }
-
-      const queryTerms = query.toLowerCase().split(/\s+/)
-      const useSemantic = opts.signals?.semantic !== false
-      const useKeyword = opts.signals?.keyword ?? true
-      if (!useSemantic && !useKeyword) return []
-
-      return filtered
-        .map(c => {
-          const vectorScore = cosineSimilarity(embedding, c.embedding)
-          const contentLower = c.content.toLowerCase()
-          const keywordHits = queryTerms.filter(t => contentLower.includes(t)).length
-          const keywordScore = keywordHits / Math.max(queryTerms.length, 1)
-          const activeScores = [
-            useSemantic ? vectorScore : undefined,
-            useKeyword ? keywordScore : undefined,
-          ].filter((score): score is number => score != null)
-          const rrf = activeScores.length > 0
-            ? activeScores.reduce((sum, score) => sum + score, 0) / activeScores.length
-            : 0
-          return {
-            ...c,
-            scores: {
-              semantic: useSemantic ? vectorScore : undefined,
-              keyword: useKeyword ? keywordScore : undefined,
-              rrf,
-            },
-          }
-        })
-        .sort((a, b) => (b.scores.rrf ?? 0) - (a.scores.rrf ?? 0))
-        .slice(0, opts.count)
+      return hybridScoreChunks(model, embedding, query, opts)
     },
 
-    async countChunks(model: string, filter: ChunkFilter): Promise<number> {
+    async countChunks(model: string, filter: ChunkFilter | null): Promise<number> {
       calls.push({ method: 'countChunks', args: [model, filter] })
       const store = chunks.get(model) ?? []
       return store.filter(c => matchesFilter(c, filter)).length
     },
 
-    async upsertSourceRecord(input: UpsertSourceInput): Promise<UpsertedSourceRecord> {
-      calls.push({ method: 'upsertSourceRecord', args: [input] })
-      const existing = [...sources.values()].find(source =>
-        source.bucketId === input.bucketId &&
-        source.tenantId === input.tenantId &&
-        source.contentHash === input.contentHash
+    async upsertDocumentRecord(input: UpsertDocumentInput): Promise<UpsertedDocumentRecord> {
+      calls.push({ method: 'upsertDocumentRecord', args: [input] })
+      const existing = [...documents.values()].find(document =>
+        document.bucketId === input.bucketId &&
+        document.tenantId === input.tenantId &&
+        document.contentHash === input.contentHash
       )
       const id = existing?.id ?? input.id ?? createHash('sha256')
-        .update(`${input.bucketId}::${input.tenantId ?? ''}::${input.contentHash}`)
+        .update(`${input.bucketId}::${input.tenantId}::${input.contentHash}`)
         .digest('hex')
         .slice(0, 16)
       const now = new Date()
-      const source: typegraphSource = {
+      const document: typegraphDocument = {
         id,
         bucketId: input.bucketId,
         tenantId: input.tenantId,
-        title: input.title,
+        name: input.name,
+        description: input.description,
         url: input.url,
         contentHash: input.contentHash,
         chunkCount: input.chunkCount,
         status: input.status,
-        visibility: input.visibility,
+        accessScope: input.accessScope,
         groupId: input.groupId,
         userId: input.userId,
         agentId: input.agentId,
-        conversationId: input.conversationId,
-        graphExtracted: input.graphExtracted ?? false,
+        threadId: input.threadId,
         indexedAt: now,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
         metadata: input.metadata ?? {},
-        subject: input.subject,
       }
-      sources.set(id, source)
-      return { ...source, wasCreated: !existing }
+      documents.set(id, document)
+      return { ...document, wasCreated: !existing }
     },
 
-    async getSource(id: string): Promise<typegraphSource | null> {
-      calls.push({ method: 'getSource', args: [id] })
-      return sources.get(id) ?? null
+    async getDocument(id: string): Promise<typegraphDocument | null> {
+      calls.push({ method: 'getDocument', args: [id] })
+      return documents.get(id) ?? null
     },
 
-    async listSources(filter: SourceFilter): Promise<typegraphSource[]> {
-      calls.push({ method: 'listSources', args: [filter] })
-      return [...sources.values()].filter(d => {
-        if (filter.bucketId && d.bucketId !== filter.bucketId) return false
-        if (filter.tenantId && d.tenantId !== filter.tenantId) return false
-        if (filter.status) {
-          const statuses = Array.isArray(filter.status) ? filter.status : [filter.status]
-          if (!statuses.includes(d.status)) return false
-        }
-        return true
-      })
+    async listDocuments(filter?: DocumentFilter | null): Promise<typegraphDocument[]> {
+      calls.push({ method: 'listDocuments', args: [filter] })
+      return [...documents.values()].filter(document => matchesDocumentFilter(document, filter))
     },
 
-    async deleteSources(filter: SourceFilter): Promise<number> {
-      calls.push({ method: 'deleteSources', args: [filter] })
+    async deleteDocuments(filter: DocumentFilter | null): Promise<number> {
+      calls.push({ method: 'deleteDocuments', args: [filter] })
       let count = 0
-      for (const [id, d] of sources) {
-        let match = true
-        if (filter.bucketId && d.bucketId !== filter.bucketId) match = false
-        if (filter.tenantId && d.tenantId !== filter.tenantId) match = false
-        if (match) {
-          sources.delete(id)
+      for (const [id, document] of documents) {
+        if (matchesDocumentFilter(document, filter)) {
+          documents.delete(id)
           count++
         }
+      }
+      for (const [model, store] of chunks) {
+        chunks.set(model, store.filter(chunk => documents.has(chunk.documentId)))
       }
       return count
     },
 
-    async updateSourceStatus(id: string, status: SourceStatus, chunkCount?: number) {
-      calls.push({ method: 'updateSourceStatus', args: [id, status, chunkCount] })
-      const source = sources.get(id)
-      if (source) {
-        source.status = status
-        if (chunkCount !== undefined) source.chunkCount = chunkCount
-        source.updatedAt = new Date()
+    async updateDocumentStatus(id: string, status: DocumentStatus, chunkCount?: number) {
+      calls.push({ method: 'updateDocumentStatus', args: [id, status, chunkCount] })
+      const document = documents.get(id)
+      if (document) {
+        document.status = status
+        if (chunkCount !== undefined) document.chunkCount = chunkCount
+        document.updatedAt = new Date()
       }
+    },
+
+    async updateDocument(
+      id: string,
+      input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'accessScope' | 'metadata'>>
+    ): Promise<typegraphDocument> {
+      calls.push({ method: 'updateDocument', args: [id, input] })
+      const document = documents.get(id)
+      if (!document) throw new Error(`Document ${id} not found`)
+      Object.assign(document, input, { updatedAt: new Date() })
+      for (const store of chunks.values()) {
+        for (const chunk of store) {
+          if (chunk.documentId === id && input.accessScope !== undefined) {
+            chunk.accessScope = input.accessScope
+          }
+        }
+      }
+      return document
+    },
+
+    async searchWithDocuments(
+      model: string,
+      embedding: number[],
+      query: string,
+      opts: (SearchOpts & { documentFilter?: DocumentFilter | undefined }) | null
+    ): Promise<ScoredChunkWithDocument[]> {
+      calls.push({ method: 'searchWithDocuments', args: [model, embedding, query, opts] })
+      const scored = hybridScoreChunks(model, embedding, query, opts)
+      return scored
+        .map(chunk => ({ ...chunk, document: documents.get(chunk.documentId) }))
+        .filter(chunk => chunk.document && matchesDocumentFilter(chunk.document, opts?.documentFilter))
     },
 
     async getChunksByRange(
       model: string,
-      sourceId: string,
+      documentId: string,
       fromIndex: number,
       toIndex: number
     ): Promise<ScoredChunk[]> {
-      calls.push({ method: 'getChunksByRange', args: [model, sourceId, fromIndex, toIndex] })
+      calls.push({ method: 'getChunksByRange', args: [model, documentId, fromIndex, toIndex] })
       const store = chunks.get(model) ?? []
       return store
-        .filter(c => c.sourceId === sourceId && c.chunkIndex >= fromIndex && c.chunkIndex <= toIndex)
+        .filter(c => c.documentId === documentId && c.chunkIndex >= fromIndex && c.chunkIndex <= toIndex)
         .map(c => ({ ...c, scores: { semantic: 0 } }))
         .sort((a, b) => a.chunkIndex - b.chunkIndex)
     },

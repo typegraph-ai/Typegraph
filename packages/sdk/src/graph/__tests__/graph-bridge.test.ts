@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createKnowledgeGraphBridge } from '../graph-bridge.js'
-import type { ExternalId, MemoryStoreAdapter, SemanticEntity, SemanticEdge, SemanticEntityChunkEdge, SemanticFactRecord, SemanticGraphEdge } from '../../memory/types/index.js'
+import type { ExternalId, MemoryStoreAdapter, SemanticEntity, SemanticEdge, SemanticEntityChunkEdge, SemanticFactRecord } from '../../memory/types/index.js'
 import { buildScope } from '../../memory/index.js'
+import { GraphSelfEdgeError } from '../../types/errors.js'
 
 const testScope = buildScope({ userId: 'test-user' })
 
@@ -11,7 +12,7 @@ function makeEntity(id: string, name: string, type: string = 'concept'): Semanti
     name,
     entityType: type,
     aliases: [],
-    properties: {},
+    metadata: {},
     embedding: [0.1, 0.2, 0.3],
     scope: testScope,
     temporal: { validAt: new Date(), createdAt: new Date() },
@@ -23,7 +24,7 @@ function makeEdge(
   sourceId: string,
   targetId: string,
   relation: string,
-  properties: Record<string, unknown> = {},
+  metadata: Record<string, unknown> = {},
 ): SemanticEdge {
   return {
     id,
@@ -31,7 +32,7 @@ function makeEdge(
     targetEntityId: targetId,
     relation,
     weight: 1.0,
-    properties,
+    metadata,
     scope: testScope,
     temporal: { validAt: new Date(), createdAt: new Date() },
     evidence: [],
@@ -40,10 +41,10 @@ function makeEdge(
 
 interface MockMention {
   entityId: string
-  sourceId: string
+  documentId: string
   chunkIndex: number
   bucketId: string
-  mentionType: 'subject' | 'object' | 'co_occurrence' | 'entity' | 'alias' | 'source_subject'
+  mentionType: 'subject' | 'object' | 'co_occurrence' | 'entity' | 'alias' | 'document_subject'
   surfaceText?: string | undefined
   normalizedSurfaceText?: string | undefined
   confidence?: number | undefined
@@ -130,7 +131,7 @@ function mockStore(
       const entity = entityId ? entities.get(entityId) : undefined
       return entity ? attachExternalIds(entity) : null
     }),
-    mergeEntityReferences: vi.fn().mockImplementation(async ({ sourceEntityId, targetEntityId, properties }) => {
+    mergeEntityReferences: vi.fn().mockImplementation(async ({ sourceEntityId, targetEntityId, metadata }) => {
       const source = entities.get(sourceEntityId)
       const target = entities.get(targetEntityId)
       if (!source || !target) throw new Error('entity not found')
@@ -175,7 +176,7 @@ function mockStore(
         ...target,
         aliases: [...new Set([...target.aliases, source.name, ...source.aliases])],
         externalIds: mergedExternalIds,
-        properties: { ...source.properties, ...target.properties, ...(properties ?? {}) },
+        metadata: { ...source.metadata, ...target.metadata, ...(metadata ?? {}) },
       }
       const mergedSource: SemanticEntity = {
         ...source,
@@ -193,7 +194,7 @@ function mockStore(
           aliases: updatedTarget.aliases,
           externalIds: mergedExternalIds,
           edgeCount: edges.filter(edge => edge.sourceEntityId === targetEntityId || edge.targetEntityId === targetEntityId).length,
-          properties: updatedTarget.properties,
+          metadata: updatedTarget.metadata,
           createdAt: updatedTarget.temporal.createdAt,
           validAt: updatedTarget.temporal.validAt,
           topEdges: [],
@@ -254,10 +255,10 @@ function mockStore(
           || e.aliases.some(a => a.toLowerCase() === query.toLowerCase())
           || mentions.some(m => m.entityId === e.id && m.normalizedSurfaceText === normalized)
         )
-        .map(e => ({ ...attachExternalIds(e), properties: { ...e.properties, _similarity: 1 } }))
+        .map(e => ({ ...attachExternalIds(e), metadata: { ...e.metadata, _similarity: 1 } }))
       return exact.length > 0
         ? exact
-        : [...entities.values()].map(e => ({ ...attachExternalIds(e), properties: { ...e.properties, _similarity: 0.5 } }))
+        : [...entities.values()].map(e => ({ ...attachExternalIds(e), metadata: { ...e.metadata, _similarity: 0.5 } }))
     }),
     upsertEdge: vi.fn().mockImplementation(async (e: SemanticEdge) => {
       edges.push(e)
@@ -297,16 +298,10 @@ function mockStore(
 function mockEmbedding() {
   let counter = 0
   return {
-    model: 'mock-embed',
+    name: 'mock-embed',
     dimensions: 10,
-    embed: vi.fn().mockImplementation(async () => {
-      counter++
-      const vec = new Array(10).fill(0)
-      vec[counter % 10] = 1.0
-      return vec
-    }),
-    embedBatch: vi.fn().mockImplementation(async (texts: string[]) => {
-      return texts.map(() => {
+    embed: vi.fn().mockImplementation(async (input: { texts: string[] }) => {
+      return input.texts.map(() => {
         counter++
         const vec = new Array(10).fill(0)
         vec[counter % 10] = 1.0
@@ -385,6 +380,153 @@ describe('createKnowledgeGraphBridge', () => {
       expect(fact.relation).toBe('WORKS_FOR')
     })
 
+    it('does not fuzzy-merge distinct explicit external IDs even when names match', async () => {
+      const entities = new Map<string, SemanticEntity>()
+      const store = mockStore(entities)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      const first = await bridge.upsertEntity!({
+        name: 'Enterprise SSO reliability',
+        entityType: 'issue',
+        externalIds: [{ type: 'demo_concept_id', id: 'enterprise_sso_reliability' }],
+      })
+      const second = await bridge.upsertEntity!({
+        name: 'Enterprise SSO reliability',
+        entityType: 'issue',
+        externalIds: [{ type: 'linear_issue_id', id: 'SE-245' }],
+      })
+
+      expect(second.id).not.toBe(first.id)
+      expect(entities.size).toBe(2)
+      expect(await bridge.resolveEntity!({ externalId: { type: 'demo_concept_id', id: 'enterprise_sso_reliability' } }, testScope))
+        .toMatchObject({ id: first.id })
+      expect(await bridge.resolveEntity!({ externalId: { type: 'linear_issue_id', id: 'SE-245' } }, testScope))
+        .toMatchObject({ id: second.id })
+    })
+
+    it('keeps SE-245 and enterprise SSO reliability separate when seeding references', async () => {
+      const entities = new Map<string, SemanticEntity>()
+      const edges: SemanticEdge[] = []
+      const store = mockStore(entities, edges)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      await bridge.upsertEntity!({
+        name: 'Enterprise SSO reliability',
+        entityType: 'concept',
+        description: 'Reliability criterion for enterprise SSO, session timeout, and auth token refresh behavior.',
+        externalIds: [{ type: 'demo_concept_id', id: 'enterprise_sso_reliability' }],
+      })
+
+      const fact = await bridge.upsertFact!({
+        source: {
+          name: 'SE-245 Beacon SSO technical Q&A',
+          entityType: 'issue',
+          description: 'Beacon sales engineering task about enterprise SSO timeout behavior.',
+          externalIds: [{ type: 'linear_issue_id', id: 'SE-245' }],
+        },
+        relation: 'REFERENCES',
+        target: {
+          name: 'Enterprise SSO reliability',
+          entityType: 'concept',
+          externalIds: [{ type: 'demo_concept_id', id: 'enterprise_sso_reliability' }],
+        },
+        description: 'SE-245 references enterprise SSO reliability concerns.',
+      })
+
+      expect(fact.sourceEntityId).not.toBe(fact.targetEntityId)
+      expect(edges).toHaveLength(1)
+      expect(entities.size).toBe(2)
+    })
+
+    it('returns typed client errors for single self-edge writes', async () => {
+      const entities = new Map<string, SemanticEntity>()
+      const store = mockStore(entities)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+      const externalId: ExternalId = { type: 'demo_id', id: 'same-entity' }
+
+      await bridge.upsertEntity!({
+        name: 'Same Entity',
+        entityType: 'concept',
+        externalIds: [externalId],
+      })
+
+      await expect(bridge.upsertFact!({
+        source: { name: 'Same Entity', entityType: 'concept', externalId },
+        relation: 'REFERENCES',
+        target: { name: 'Same Entity', entityType: 'concept', externalId },
+      })).rejects.toMatchObject({
+        name: 'GraphSelfEdgeError',
+        code: 'GRAPH_SELF_EDGE',
+        statusHint: 400,
+      })
+
+      await expect(bridge.upsertEdge!({
+        source: { name: 'Same Entity', entityType: 'concept', externalId },
+        relation: 'REFERENCES',
+        target: { name: 'Same Entity', entityType: 'concept', externalId },
+      })).rejects.toBeInstanceOf(GraphSelfEdgeError)
+    })
+
+    it('skips recoverable self-edges in bulk graph writes and continues valid items', async () => {
+      const entities = new Map<string, SemanticEntity>()
+      const edges: SemanticEdge[] = []
+      const store = mockStore(entities, edges)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+      const same: ExternalId = { type: 'demo_id', id: 'same-entity' }
+      const alice: ExternalId = { type: 'email', id: 'alice@example.com' }
+
+      await bridge.upsertEntity!({ name: 'Same Entity', entityType: 'concept', externalIds: [same] })
+
+      const facts = await bridge.upsertFacts!([
+        {
+          source: { name: 'Same Entity', entityType: 'concept', externalId: same },
+          relation: 'REFERENCES',
+          target: { name: 'Same Entity', entityType: 'concept', externalId: same },
+        },
+        {
+          source: { name: 'Alice', entityType: 'person', externalId: alice },
+          relation: 'WORKS_FOR',
+          target: { name: 'TypeGraph', entityType: 'organization' },
+          description: 'Alice works for TypeGraph.',
+        },
+      ])
+
+      const seededEdges = await bridge.upsertEdges!([
+        {
+          source: { name: 'Same Entity', entityType: 'concept', externalId: same },
+          relation: 'REFERENCES',
+          target: { name: 'Same Entity', entityType: 'concept', externalId: same },
+        },
+        {
+          source: { name: 'Alice', entityType: 'person', externalId: alice },
+          relation: 'SUPPORTS',
+          target: { name: 'TypeGraph', entityType: 'organization' },
+        },
+      ])
+
+      expect(facts).toHaveLength(1)
+      expect(facts[0]?.description).toBe('Alice works for TypeGraph.')
+      expect(seededEdges).toHaveLength(1)
+      expect(seededEdges[0]?.relation).toBe('SUPPORTS')
+      expect(edges.filter(edge => edge.sourceEntityId === edge.targetEntityId)).toHaveLength(0)
+    })
+
     it('merges entities through the graph bridge and rewrites references', async () => {
       const entities = new Map<string, SemanticEntity>([
         ['source', makeEntity('source', 'Pat Old', 'person')],
@@ -394,7 +536,7 @@ describe('createKnowledgeGraphBridge', () => {
       const edges = [makeEdge('edge-1', 'source', 'acme', 'WORKS_FOR')]
       const mentions: MockMention[] = [{
         entityId: 'source',
-        sourceId: 'source-1',
+        documentId: 'document-1',
         chunkIndex: 0,
         bucketId: 'bucket-1',
         mentionType: 'entity',
@@ -411,7 +553,7 @@ describe('createKnowledgeGraphBridge', () => {
       const result = await bridge.mergeEntities!({
         sourceEntityId: 'source',
         targetEntityId: 'target',
-        properties: { reviewed: true },
+        metadata: { reviewed: true },
       })
 
       expect(result.sourceEntityId).toBe('source')
@@ -423,7 +565,7 @@ describe('createKnowledgeGraphBridge', () => {
       expect(entities.get('source')?.status).toBe('merged')
       expect(entities.get('source')?.mergedIntoEntityId).toBe('target')
       expect(entities.get('target')?.aliases).toContain('Pat Old')
-      expect(entities.get('target')?.properties.reviewed).toBe(true)
+      expect(entities.get('target')?.metadata.reviewed).toBe(true)
     })
 
     it('invalidates and purges entities through the graph bridge', async () => {
@@ -511,7 +653,7 @@ describe('createKnowledgeGraphBridge', () => {
         {
           id: 'edge-manual',
           entityId: 'ent-manual',
-          chunkRef: { bucketId: 'bucket-1', sourceId: 'source-1', chunkIndex: 0, embeddingModel: 'mock-embed' },
+          chunkRef: { bucketId: 'bucket-1', documentId: 'document-1', chunkIndex: 0, embeddingModel: 'mock-embed' },
           weight: 1,
           mentionCount: 1,
           surfaceTexts: ['Manual Anchor'],
@@ -520,7 +662,7 @@ describe('createKnowledgeGraphBridge', () => {
         {
           id: 'edge-email',
           entityId: 'ent-email',
-          chunkRef: { bucketId: 'bucket-1', sourceId: 'source-2', chunkIndex: 0, embeddingModel: 'mock-embed' },
+          chunkRef: { bucketId: 'bucket-1', documentId: 'document-2', chunkIndex: 0, embeddingModel: 'mock-embed' },
           weight: 1,
           mentionCount: 1,
           surfaceTexts: ['Pat Email'],
@@ -529,7 +671,7 @@ describe('createKnowledgeGraphBridge', () => {
         {
           id: 'edge-github',
           entityId: 'ent-github',
-          chunkRef: { bucketId: 'bucket-1', sourceId: 'source-3', chunkIndex: 0, embeddingModel: 'mock-embed' },
+          chunkRef: { bucketId: 'bucket-1', documentId: 'document-3', chunkIndex: 0, embeddingModel: 'mock-embed' },
           weight: 1,
           mentionCount: 1,
           surfaceTexts: ['Pat GitHub'],
@@ -554,79 +696,14 @@ describe('createKnowledgeGraphBridge', () => {
 
       expect(resolved.entityIds).toEqual(expect.arrayContaining(['ent-manual', 'ent-email', 'ent-github']))
       expect(resolved.chunkRefs).toEqual(expect.arrayContaining([
-        expect.objectContaining({ sourceId: 'source-1' }),
-        expect.objectContaining({ sourceId: 'source-2' }),
-        expect.objectContaining({ sourceId: 'source-3' }),
+        expect.objectContaining({ documentId: 'document-1' }),
+        expect.objectContaining({ documentId: 'document-2' }),
+        expect.objectContaining({ documentId: 'document-3' }),
       ]))
       expect(store.getChunkEdgesForEntities).toHaveBeenCalledWith(
         expect.arrayContaining(['ent-manual', 'ent-email', 'ent-github']),
         expect.objectContaining({ scope: testScope }),
       )
-    })
-  })
-
-  describe('addSourceSubject', () => {
-    it('materializes a source subject as primary-source chunk evidence', async () => {
-      const entities = new Map<string, SemanticEntity>()
-      const mentions: MockMention[] = []
-      const graphEdges: SemanticGraphEdge[] = []
-      const store = mockStore(entities, [], mentions)
-      store.upsertGraphEdges = vi.fn().mockImplementation(async (rows: SemanticGraphEdge[]) => {
-        graphEdges.push(...rows)
-      })
-      const bridge = createKnowledgeGraphBridge({
-        memoryStore: store,
-        embedding: mockEmbedding(),
-        scope: testScope,
-      })
-
-      const entity = await bridge.addSourceSubject!({
-        subject: {
-          name: 'Acme demo',
-          entityType: 'meeting',
-          externalIds: [{ type: 'calendar_event_id', id: 'evt_123' }],
-        },
-        bucketId: 'bucket-1',
-        sourceId: 'source-1',
-        embeddingModel: 'mock-embed',
-        chunks: [
-          { id: 'chunk-1', content: 'Intro.', chunkIndex: 0 },
-          { id: 'chunk-2', content: 'Next steps.', chunkIndex: 1 },
-        ],
-        tenantId: 'tenant-1',
-        visibility: 'tenant',
-      })
-
-      expect(entity).toEqual(expect.objectContaining({
-        name: 'Acme demo',
-        entityType: 'meeting',
-      }))
-      expect([...entities.values()][0]!.externalIds).toEqual([
-        expect.objectContaining({
-          type: 'calendar_event_id',
-          id: 'evt_123',
-        }),
-      ])
-      expect(mentions).toHaveLength(2)
-      expect(mentions).toEqual(expect.arrayContaining([
-        expect.objectContaining({ mentionType: 'source_subject', sourceId: 'source-1', chunkIndex: 0, confidence: 1.0 }),
-        expect.objectContaining({ mentionType: 'source_subject', sourceId: 'source-1', chunkIndex: 1, confidence: 1.0 }),
-      ]))
-      expect(graphEdges).toHaveLength(2)
-      expect(graphEdges).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          sourceType: 'entity',
-          targetType: 'chunk',
-          relation: 'PRIMARY_SOURCE_CHUNK',
-          targetChunkRef: expect.objectContaining({ sourceId: 'source-1', chunkIndex: 0, chunkId: 'chunk-1' }),
-          visibility: 'tenant',
-          scope: expect.objectContaining({ tenantId: 'tenant-1' }),
-        }),
-        expect.objectContaining({
-          relation: 'PRIMARY_SOURCE_CHUNK',
-          targetChunkRef: expect.objectContaining({ sourceId: 'source-1', chunkIndex: 1, chunkId: 'chunk-2' }),
-        }),
-      ]))
     })
   })
 
@@ -648,10 +725,10 @@ describe('createKnowledgeGraphBridge', () => {
         object: 'bone health',
         relationshipDescription: 'Vitamin D supports bone health in elderly patients.',
         evidenceText: 'Vitamin D supports bone health in elderly patients.',
-        sourceChunkId: 'chk-vitd-0',
+        chunkId: 'chk-vitd-0',
         content: 'Vitamin D supports bone health in elderly patients.',
         bucketId: 'bucket-1',
-        sourceId: 'source-1',
+        documentId: 'document-1',
         chunkIndex: 0,
       })
 
@@ -659,35 +736,73 @@ describe('createKnowledgeGraphBridge', () => {
       expect(store.upsertEntity).toHaveBeenCalledTimes(4)
       expect(entities.size).toBe(2)
 
-      // One edge created — content is NOT embedded in properties anymore
+      // One edge created: content is not embedded in metadata.
       expect(store.upsertEdge).toHaveBeenCalledTimes(1)
       expect(edges).toHaveLength(1)
 
       const edge = edges[0]!
       expect(edge.relation).toBe('SUPPORTS')
-      expect(edge.properties.content).toBeUndefined()
-      expect(edge.properties.bucketId).toBeUndefined()
-      expect(edge.properties.chunkIndex).toBeUndefined()
-      expect(edge.properties).toEqual(expect.objectContaining({
+      expect(edge.metadata.content).toBeUndefined()
+      expect(edge.metadata.bucketId).toBeUndefined()
+      expect(edge.metadata.chunkIndex).toBeUndefined()
+      expect(edge.metadata).toEqual(expect.objectContaining({
         relationshipDescription: 'Vitamin D supports bone health in elderly patients.',
         evidenceText: 'Vitamin D supports bone health in elderly patients.',
-        sourceChunkId: 'chk-vitd-0',
+        chunkId: 'chk-vitd-0',
       }))
 
       // Two mentions written to the junction (subject + object for the same chunk)
       expect(store.upsertEntityChunkMentions).toHaveBeenCalled()
       expect(mentions).toHaveLength(2)
-      expect(mentions.every(m => m.sourceId === 'source-1' && m.chunkIndex === 0 && m.bucketId === 'bucket-1')).toBe(true)
+      expect(mentions.every(m => m.documentId === 'document-1' && m.chunkIndex === 0 && m.bucketId === 'bucket-1')).toBe(true)
 	      expect(mentions.map(m => m.mentionType).sort()).toEqual(['object', 'subject'])
 	    })
 
-    it('propagates visibility and identity scope to graph rows from a triple', async () => {
+    it('uses high-confidence secondary types for predicate validation without changing canonical type', async () => {
+      const entities = new Map<string, SemanticEntity>()
+      const edges: SemanticEdge[] = []
+      const store = mockStore(entities, edges)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      await bridge.addTriple!({
+        subject: 'TypeGraph',
+        subjectType: 'organization',
+        subjectTypeCandidates: [
+          { type: 'organization', confidence: 0.8 },
+          { type: 'product', confidence: 0.72 },
+          { type: 'technology', confidence: 0.68 },
+        ],
+        predicate: 'INTEGRATES_WITH',
+        object: 'Okta SSO',
+        objectType: 'technology',
+        relationshipDescription: 'TypeGraph integrates with Okta SSO.',
+        evidenceText: 'TypeGraph integrates with Okta SSO.',
+        content: 'TypeGraph integrates with Okta SSO.',
+        bucketId: 'bucket-1',
+        documentId: 'document-1',
+        chunkIndex: 0,
+      })
+
+      const typegraph = [...entities.values()].find(entity => entity.name === 'TypeGraph')!
+      expect(typegraph.entityType).toBe('organization')
+      expect(typegraph.metadata.typeCandidates).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'product' }),
+        expect.objectContaining({ type: 'technology' }),
+      ]))
+      expect(edges[0]!.metadata.predicateValidation).toBeUndefined()
+    })
+
+    it('propagates access scope and identity scope to graph rows from a triple', async () => {
       const cases = [
-        { visibility: 'tenant' as const, identity: { tenantId: 'tenant-1' } },
-        { visibility: 'group' as const, identity: { groupId: 'group-1' } },
-        { visibility: 'user' as const, identity: { userId: 'user-1' } },
-        { visibility: 'agent' as const, identity: { agentId: 'agent-1' } },
-        { visibility: 'conversation' as const, identity: { conversationId: 'conversation-1' } },
+        { label: 'tenant', identity: { tenantId: 'tenant-1' }, accessScope: [{ type: 'organization', id: 'org-1' }] },
+        { label: 'group', identity: { groupId: 'group-1' }, accessScope: [{ type: 'group', id: 'group-1' }] },
+        { label: 'user', identity: { userId: 'user-1' }, accessScope: [{ type: 'user', id: 'user-1' }] },
+        { label: 'agent', identity: { agentId: 'agent-1' }, accessScope: [{ type: 'agent', id: 'agent-1' }] },
+        { label: 'thread', identity: { threadId: 'thread-1' }, accessScope: [{ type: 'thread', id: 'thread-1' }] },
       ]
 
       for (const item of cases) {
@@ -703,41 +818,41 @@ describe('createKnowledgeGraphBridge', () => {
         })
 
         await bridge.addTriple!({
-          subject: `Subject ${item.visibility}`,
+          subject: `Subject ${item.label}`,
           subjectType: 'person',
           predicate: 'leads',
-          object: `Object ${item.visibility}`,
+          object: `Object ${item.label}`,
           objectType: 'organization',
-          content: `Subject ${item.visibility} leads Object ${item.visibility}.`,
+          content: `Subject ${item.label} leads Object ${item.label}.`,
           bucketId: 'bucket-1',
-          sourceId: `source-${item.visibility}`,
+          documentId: `document-${item.label}`,
           chunkIndex: 0,
           ...item.identity,
-          visibility: item.visibility,
+          accessScope: item.accessScope,
         })
 
         expect([...entities.values()].every(entity =>
-          entity.visibility === item.visibility
+          entity.accessScope === item.accessScope
           && Object.entries(item.identity).every(([key, value]) => entity.scope[key as keyof typeof item.identity] === value)
         )).toBe(true)
         expect(edges.every(edge =>
-          edge.visibility === item.visibility
+          edge.accessScope === item.accessScope
           && Object.entries(item.identity).every(([key, value]) => edge.scope[key as keyof typeof item.identity] === value)
         )).toBe(true)
         expect(store.upsertFactRecord).toHaveBeenCalledWith(expect.objectContaining({
-          visibility: item.visibility,
+          accessScope: item.accessScope,
           scope: expect.objectContaining(item.identity),
         }))
         expect(store.upsertGraphEdges).toHaveBeenCalledWith(expect.arrayContaining([
           expect.objectContaining({
-            visibility: item.visibility,
+            accessScope: item.accessScope,
             scope: expect.objectContaining(item.identity),
           }),
         ]))
       }
     })
 
-    it('does not merge same-name group-visible entities across groups in one process', async () => {
+    it('does not merge same-name entities across groups in one process', async () => {
       const entities = new Map<string, SemanticEntity>()
       const store = mockStore(entities)
       const bridge = createKnowledgeGraphBridge({
@@ -751,20 +866,18 @@ describe('createKnowledgeGraphBridge', () => {
         type: 'organization',
         content: 'TypeGraph appears in group A.',
         bucketId: 'bucket-1',
-        sourceId: 'source-a',
+        documentId: 'document-a',
         chunkIndex: 0,
         groupId: 'group-a',
-        visibility: 'group',
       }])
       await bridge.addEntityMentions!([{
         name: 'TypeGraph',
         type: 'organization',
         content: 'TypeGraph appears in group B.',
         bucketId: 'bucket-1',
-        sourceId: 'source-b',
+        documentId: 'document-b',
         chunkIndex: 0,
         groupId: 'group-b',
-        visibility: 'group',
       }])
 
       const typegraphEntities = [...entities.values()].filter(entity => entity.name === 'TypeGraph')
@@ -792,7 +905,7 @@ describe('createKnowledgeGraphBridge', () => {
         objectType: 'person',
         content: 'Cæsar Simon was calling himself Cole Conway in company with Steve Sharp.',
         bucketId: 'bucket-1',
-        sourceId: 'source-47558',
+        documentId: 'document-47558',
         chunkIndex: 24,
       })
 
@@ -837,7 +950,7 @@ describe('createKnowledgeGraphBridge', () => {
         objectAliases: ['Cæsar Simon'],
         content: 'Cæsar Simon was known as Conway.',
         bucketId: 'bucket-1',
-        sourceId: 'source-1',
+        documentId: 'document-1',
         chunkIndex: 0,
       })
 
@@ -863,7 +976,7 @@ describe('createKnowledgeGraphBridge', () => {
         description: 'A name used by Cæsar Simon in Paducah.',
         content: 'At twenty years of age Cousin Cæsar was calling himself Cole Conway.',
         bucketId: 'bucket-1',
-        sourceId: 'source-1',
+        documentId: 'document-1',
         chunkIndex: 0,
       }])
 
@@ -1044,7 +1157,7 @@ describe('createKnowledgeGraphBridge', () => {
           return [{
             chunkId: 'chk-1',
             bucketId: 'bucket-1',
-            sourceId: 'source-1',
+            documentId: 'document-1',
             chunkIndex: 0,
             embeddingModel: 'mock-embed',
             content: 'Alice works at Beta Inc.',
@@ -1058,7 +1171,7 @@ describe('createKnowledgeGraphBridge', () => {
             {
               chunkId: 'chk-1',
               bucketId: 'bucket-1',
-              sourceId: 'source-1',
+              documentId: 'document-1',
               chunkIndex: 0,
               embeddingModel: 'mock-embed',
               content: 'Alice works at Beta Inc.',
@@ -1072,7 +1185,7 @@ describe('createKnowledgeGraphBridge', () => {
             {
               chunkId: 'chk-1',
               bucketId: 'bucket-1',
-              sourceId: 'source-1',
+              documentId: 'document-1',
               chunkIndex: 0,
               embeddingModel: 'mock-embed',
               content: 'Alice works at Beta Inc.',
@@ -1107,7 +1220,7 @@ describe('createKnowledgeGraphBridge', () => {
       expect(result.entityProfilesUpdated).toBe(2)
       expect(store.upsertGraphEdges).toHaveBeenCalled()
       expect(store.upsertFactRecord).toHaveBeenCalledWith(expect.objectContaining({
-        factText: 'Alice works for Beta Inc',
+        description: 'Alice works for Beta Inc',
       }))
     })
   })
@@ -1118,7 +1231,7 @@ describe('createKnowledgeGraphBridge', () => {
       entities.set('e1', {
         ...makeEntity('e1', 'Vitamin D', 'supplement'),
         aliases: ['cholecalciferol'],
-        properties: { source: 'test fixture' },
+        metadata: { source: 'test fixture' },
       })
       entities.set('e2', makeEntity('e2', 'Calcium'))
       const edges = [
@@ -1141,7 +1254,7 @@ describe('createKnowledgeGraphBridge', () => {
 
       const results = await bridge.searchEntities!('vitamin supplements', testScope, 5)
 
-      expect(emb.embed).toHaveBeenCalledWith('vitamin supplements')
+      expect(emb.embed).toHaveBeenCalledWith({ texts: ['vitamin supplements'], inputType: 'document' })
       expect(store.searchEntitiesHybrid).toHaveBeenCalled()
       expect(results).toHaveLength(2)
       expect(results[0]).toHaveProperty('id')
@@ -1151,9 +1264,9 @@ describe('createKnowledgeGraphBridge', () => {
         aliases: ['cholecalciferol'],
         similarity: 0.5,
         edgeCount: 2,
-        properties: expect.objectContaining({ source: 'test fixture' }),
+        metadata: expect.objectContaining({ source: 'test fixture' }),
       }))
-      expect(results[0]?.properties).not.toHaveProperty('_similarity')
+      expect(results[0]?.metadata).not.toHaveProperty('_similarity')
       expect(results[1]).toEqual(expect.objectContaining({ edgeCount: 1 }))
     })
 
@@ -1178,12 +1291,12 @@ describe('createKnowledgeGraphBridge', () => {
         ['adarsh', {
           ...makeEntity('adarsh', 'Adarsh Tadimari', 'person'),
           aliases: [],
-          properties: { description: 'Technical team member at Plotline.' },
+          metadata: { description: 'Technical team member at Plotline.' },
         }],
       ])
       const mentions: MockMention[] = [{
         entityId: 'adarsh',
-        sourceId: 'source-1',
+        documentId: 'document-1',
         chunkIndex: 0,
         bucketId: 'bucket-1',
         mentionType: 'entity',
@@ -1200,7 +1313,7 @@ describe('createKnowledgeGraphBridge', () => {
           chunkRef: {
             chunkId: 'chunk_test',
             bucketId: 'bucket-1',
-            sourceId: 'source-1',
+            documentId: 'document-1',
             chunkIndex: 0,
             embeddingModel: 'mock-embed',
           },
@@ -1214,7 +1327,7 @@ describe('createKnowledgeGraphBridge', () => {
           chunkId: 'chunk_test',
           content: 'Adarsh Tadimari is debugging Plotline SDK initialization issues.',
           bucketId: 'bucket-1',
-          sourceId: 'source-1',
+          documentId: 'document-1',
           chunkIndex: 0,
           embeddingModel: 'mock-embed',
           totalChunks: 1,
@@ -1237,7 +1350,7 @@ describe('createKnowledgeGraphBridge', () => {
       expect(result.results[0]).toEqual(expect.objectContaining({
         chunkId: 'chunk_test',
         bucketId: 'bucket-1',
-        sourceId: 'source-1',
+        documentId: 'document-1',
         chunkIndex: 0,
       }))
       expect(result.results[0]!.score).toBeGreaterThan(0)
@@ -1257,9 +1370,8 @@ describe('createKnowledgeGraphBridge', () => {
         sourceEntityId: 'tennyson',
         targetEntityId: 'maud',
         relation: 'AUTHORED',
-        factText: 'Tennyson wrote Maud',
+        description: 'Tennyson wrote Maud',
         weight: 1,
-        evidenceCount: 1,
         scope: testScope,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -1276,7 +1388,7 @@ describe('createKnowledgeGraphBridge', () => {
             chunkRef: {
               chunkId: 'chunk_maud',
               bucketId: 'bucket-1',
-              sourceId: 'source-1',
+              documentId: 'document-1',
               chunkIndex: 0,
               embeddingModel: 'mock-embed',
             },
@@ -1291,7 +1403,7 @@ describe('createKnowledgeGraphBridge', () => {
             chunkRef: {
               chunkId: 'chunk_maud',
               bucketId: 'bucket-1',
-              sourceId: 'source-1',
+              documentId: 'document-1',
               chunkIndex: 0,
               embeddingModel: 'mock-embed',
             },
@@ -1305,7 +1417,7 @@ describe('createKnowledgeGraphBridge', () => {
           chunkId: 'chunk_maud',
           content: 'A tiny shell was moralised over by Tennyson in Maud.',
           bucketId: 'bucket-1',
-          sourceId: 'source-1',
+          documentId: 'document-1',
           chunkIndex: 0,
           embeddingModel: 'mock-embed',
           totalChunks: 1,
@@ -1323,8 +1435,8 @@ describe('createKnowledgeGraphBridge', () => {
 
       const result = await bridge.searchGraphChunks!('Who wrote Maud?', testScope, { count: 5 })
 
-      expect(result.facts).toEqual([expect.objectContaining({ id: 'fact-1', factText: 'Tennyson wrote Maud' })])
-      expect(result.facts[0]!.properties?.relevanceScore).toEqual(expect.any(Number))
+      expect(result.facts).toEqual([expect.objectContaining({ id: 'fact-1', description: 'Tennyson wrote Maud' })])
+      expect(result.facts[0]!.metadata?.relevanceScore).toEqual(expect.any(Number))
       expect(result.entities).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: 'tennyson', name: 'Tennyson' }),
         expect.objectContaining({ id: 'maud', name: 'Maud' }),
@@ -1358,9 +1470,8 @@ describe('createKnowledgeGraphBridge', () => {
           sourceEntityId: 'lizard',
           targetEntityId: 'shell',
           relation: 'CONTAINS',
-          factText: 'Lizard contains a tiny shell',
+          description: 'Lizard contains a tiny shell',
           weight: 1,
-          evidenceCount: 1,
           scope: testScope,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -1372,9 +1483,8 @@ describe('createKnowledgeGraphBridge', () => {
           sourceEntityId: 'tennyson',
           targetEntityId: 'maud',
           relation: 'AUTHORED',
-          factText: 'Tennyson wrote Maud',
+          description: 'Tennyson wrote Maud',
           weight: 1,
-          evidenceCount: 1,
           scope: testScope,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -1386,9 +1496,8 @@ describe('createKnowledgeGraphBridge', () => {
           sourceEntityId: 'maud',
           targetEntityId: 'shell',
           relation: 'MORALISED',
-          factText: 'Maud moralised a tiny shell',
+          description: 'Maud moralised a tiny shell',
           weight: 1,
-          evidenceCount: 1,
           scope: testScope,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -1406,7 +1515,7 @@ describe('createKnowledgeGraphBridge', () => {
             chunkRef: {
               chunkId: 'chunk_maud',
               bucketId: 'bucket-1',
-              sourceId: 'source-1',
+              documentId: 'document-1',
               chunkIndex: 0,
               embeddingModel: 'mock-embed',
             },
@@ -1421,7 +1530,7 @@ describe('createKnowledgeGraphBridge', () => {
             chunkRef: {
               chunkId: 'chunk_maud',
               bucketId: 'bucket-1',
-              sourceId: 'source-1',
+              documentId: 'document-1',
               chunkIndex: 0,
               embeddingModel: 'mock-embed',
             },
@@ -1436,7 +1545,7 @@ describe('createKnowledgeGraphBridge', () => {
             chunkRef: {
               chunkId: 'chunk_shell',
               bucketId: 'bucket-1',
-              sourceId: 'source-2',
+              documentId: 'document-2',
               chunkIndex: 0,
               embeddingModel: 'mock-embed',
             },
@@ -1451,7 +1560,7 @@ describe('createKnowledgeGraphBridge', () => {
             chunkId: 'chunk_maud',
             content: 'A tiny shell was moralised over by Tennyson in Maud.',
             bucketId: 'bucket-1',
-            sourceId: 'source-1',
+            documentId: 'document-1',
             chunkIndex: 0,
             embeddingModel: 'mock-embed',
             totalChunks: 1,
@@ -1462,7 +1571,7 @@ describe('createKnowledgeGraphBridge', () => {
             chunkId: 'chunk_shell',
             content: 'The Lizard coast contains shells.',
             bucketId: 'bucket-1',
-            sourceId: 'source-2',
+            documentId: 'document-2',
             chunkIndex: 0,
             embeddingModel: 'mock-embed',
             totalChunks: 1,
@@ -1486,7 +1595,7 @@ describe('createKnowledgeGraphBridge', () => {
       })
 
       expect(result.trace.selectedFactIds[0]).toBe('fact-maud')
-      expect(result.facts[0]).toEqual(expect.objectContaining({ id: 'fact-maud', factText: 'Tennyson wrote Maud' }))
+      expect(result.facts[0]).toEqual(expect.objectContaining({ id: 'fact-maud', description: 'Tennyson wrote Maud' }))
       expect(result.facts.map(fact => fact.id)).not.toContain('fact-noisy')
       expect(result.facts.map(fact => fact.id)).not.toContain('fact-shell')
       expect(result.factChains).toEqual([])

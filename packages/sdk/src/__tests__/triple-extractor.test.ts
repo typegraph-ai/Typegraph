@@ -71,7 +71,7 @@ describe('TripleExtractor', () => {
       object: 'Steve Sharp',
       relationshipDescription: 'Cæsar Simon and Steve Sharp were companions in Paducah.',
       evidenceText: 'in Paducah, Kentucky, calling himself Cole Conway, in company with one Steve Sharp',
-      sourceChunkId: 'chk-1',
+      chunkId: 'chk-1',
     }))
   })
 
@@ -353,5 +353,146 @@ describe('TripleExtractor', () => {
 
     await expect(extractor.extractFromChunk('Alice met Bob.', 'bucket-1', 0, 'source-1'))
       .rejects.toThrow('No output generated.')
+  })
+
+  it('passes type candidates through so effective type validation can keep brand-platform facts', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          {
+            name: 'TypeGraph',
+            type: 'organization',
+            typeCandidates: [
+              { type: 'organization', confidence: 0.8 },
+              { type: 'product', confidence: 0.72 },
+              { type: 'technology', confidence: 0.68 },
+            ],
+            description: 'A B2B SaaS platform used for graph-backed memory and retrieval.',
+            aliases: ['TG'],
+          },
+          {
+            name: 'Okta SSO',
+            type: 'technology',
+            description: 'An enterprise SSO technology used by Acme.',
+            aliases: ['Okta'],
+          },
+        ],
+        relationships: [
+          {
+            subject: 'TypeGraph',
+            predicate: 'INTEGRATES_WITH',
+            object: 'Okta SSO',
+            confidence: 0.86,
+            description: 'TypeGraph integrates with Okta SSO.',
+            evidenceText: 'TypeGraph integrates with Okta SSO for Acme.',
+          },
+        ],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk('TypeGraph integrates with Okta SSO for Acme.', 'bucket-1', 0, 'source-1')
+
+    expect(graph.addTriple).toHaveBeenCalledWith(expect.objectContaining({
+      subject: 'TypeGraph',
+      subjectType: 'organization',
+      subjectTypeCandidates: expect.arrayContaining([
+        expect.objectContaining({ type: 'product' }),
+        expect.objectContaining({ type: 'technology' }),
+      ]),
+      predicate: 'INTEGRATES_WITH',
+      object: 'Okta SSO',
+    }))
+  })
+
+  it('canonicalizes aliases from typed entity context before relationship persistence', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          {
+            name: 'TG',
+            type: 'product',
+            description: 'A short reference to the TypeGraph platform.',
+            aliases: [],
+          },
+          {
+            name: 'Okta SSO',
+            type: 'technology',
+            description: 'An enterprise SSO technology.',
+            aliases: ['Okta'],
+          },
+        ],
+        relationships: [
+          {
+            subject: 'TG',
+            predicate: 'INTEGRATES_WITH',
+            object: 'Okta SSO',
+            confidence: 0.9,
+            description: 'TypeGraph integrates with Okta SSO.',
+            evidenceText: 'TG integrates with Okta SSO.',
+          },
+        ],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'TG integrates with Okta SSO.',
+      'bucket-1',
+      0,
+      'source-1',
+      undefined,
+      [{ name: 'TypeGraph', type: 'organization', aliases: ['TG'], typeCandidates: [{ type: 'product', confidence: 0.8 }] }],
+    )
+
+    expect(graph.addTriple).toHaveBeenCalledWith(expect.objectContaining({
+      subject: 'TypeGraph',
+      subjectAliases: expect.arrayContaining(['TG']),
+      object: 'Okta SSO',
+    }))
+  })
+
+  it('drops reflected triples below threshold without failing the chunk', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          { name: 'Acme Corp', type: 'organization', description: 'A prospect.', aliases: [] },
+          { name: 'Okta SSO', type: 'technology', description: 'An SSO technology.', aliases: [] },
+        ],
+        relationships: [
+          {
+            subject: 'Acme Corp',
+            predicate: 'USES',
+            object: 'Okta SSO',
+            confidence: 0.9,
+            description: 'Acme Corp uses Okta SSO.',
+            evidenceText: 'Acme Corp mentioned auth.',
+          },
+        ],
+      }),
+      relationshipLlm: mockLLM({ results: [{ index: 0, keep: false, score: 0.1 }] }),
+      graph,
+      twoPass: false,
+    })
+
+    const result = await extractor.extractFromChunk('Acme Corp mentioned auth.', 'bucket-1', 0, 'source-1')
+
+    expect(result?.entities).toHaveLength(2)
+    expect(graph.addEntityMentions).toHaveBeenCalled()
+    expect(graph.addTriple).not.toHaveBeenCalled()
   })
 })

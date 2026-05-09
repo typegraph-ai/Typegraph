@@ -1,16 +1,17 @@
 import type { EntityResult, FactResult, GraphSearchOpts, GraphSearchTrace } from './graph-bridge.js'
 import type { MemoryRecord } from '../memory/types/memory.js'
 import type { ExternalId } from '../memory/types/memory.js'
-import type { SourceSubject } from './connector.js'
+import type { AccessScope, TypeGraphContext } from './identity.js'
+import type { DocumentFilter } from './document.js'
 
 export type QueryGraphOptions = GraphSearchOpts
 
-export type ContextFormat = 'xml' | 'markdown' | 'plain'
-export type ContextSection = 'facts' | 'entities' | 'chunks' | 'memories'
+export type PromptFormat = 'xml' | 'markdown' | 'plain'
+export type PromptSection = 'facts' | 'entities' | 'chunks' | 'memories'
 
-export interface QueryContextOptions {
-  format?: ContextFormat | undefined
-  sections?: ContextSection[] | undefined
+export interface PromptBuilderOptions {
+  format?: PromptFormat | undefined
+  sections?: PromptSection[] | undefined
   includeAttributes?: boolean | undefined
   maxTotalTokens?: number | undefined
   maxChunkTokens?: number | undefined
@@ -19,11 +20,11 @@ export interface QueryContextOptions {
   maxMemoryTokens?: number | undefined
 }
 
-export interface QueryContextStats {
-  format: ContextFormat
+export interface PromptStats {
+  format: PromptFormat
   totalTokens: number
   truncated: boolean
-  sections: Partial<Record<ContextSection, {
+  sections: Partial<Record<PromptSection, {
     available: number
     included: number
     tokens: number
@@ -31,16 +32,56 @@ export interface QueryContextStats {
   }>>
 }
 
-/** Which retrieval signals to activate. All fields default to false except `semantic` which defaults to true. */
+export type SearchResource =
+  | 'documents'
+  | 'events'
+  | 'threads'
+  | 'entities'
+  | 'facts'
+  | 'memories'
+
+export type SearchWeights = {
+  semantic?: number | false | undefined
+  bm25?: number | false | undefined
+  graph?: number | false | undefined
+  recency?: number | false | undefined
+}
+
+export type SearchFusion = {
+  method?: 'rrf' | undefined
+  k?: number | undefined
+}
+
+export type SearchRerankOptions =
+  | boolean
+  | {
+      topK?: number | undefined
+      domain?: 'general' | 'legal' | 'code' | 'medical' | undefined
+    }
+
+export interface SearchExplanation {
+  activeResources: SearchResource[]
+  activeWeights: Required<Record<keyof SearchWeights, number | false>>
+  fusion: Required<SearchFusion>
+  candidateCounts: Partial<Record<SearchResource, number>>
+  timings: Record<string, number>
+  graphTrace?: GraphSearchTrace | undefined
+  warnings?: string[] | undefined
+  skippedResources?: Partial<Record<SearchResource, string>> | undefined
+}
+
+/** Internal retrieval switches derived from public resources/weights. */
 export interface QuerySignals {
   /** Semantic embedding search against chunk embeddings. Default: true */
   semantic?: boolean | undefined
-  /** BM25 keyword search (requires adapter.hybridSearch). Default: false */
+  /** BM25 keyword search (requires adapter.hybridSearch). */
   keyword?: boolean | undefined
-  /** PPR graph traversal via entity embeddings. Requires graph bridge. Default: false */
+  /** PPR graph traversal via entity embeddings. Requires graph bridge. */
   graph?: boolean | undefined
-  /** Cognitive memory recall. Requires graph bridge. Default: false */
+  /** Cognitive memory recall. Requires memory bridge. */
   memory?: boolean | undefined
+  /** Recency score. */
+  recency?: boolean | undefined
 }
 
 /** Raw algorithm-level scores — mixed ranges, not normalized */
@@ -50,6 +91,7 @@ export interface RawScores {
   rrf?: number | undefined
   ppr?: number | undefined
   importance?: number | undefined
+  recency?: number | undefined
   /** Memory sub-signals — exposed for observability when memory signal is active */
   memorySimilarity?: number | undefined
   memoryImportance?: number | undefined
@@ -63,6 +105,16 @@ export interface NormalizedScores {
   rrf?: number | undefined
   graph?: number | undefined
   memory?: number | undefined
+  recency?: number | undefined
+}
+
+export interface OutputScores {
+  semantic?: number | undefined
+  bm25?: number | undefined
+  graph?: number | undefined
+  recency?: number | undefined
+  fused: number
+  reranker?: number | undefined
 }
 
 export interface QueryChunkResult {
@@ -74,24 +126,25 @@ export interface QueryChunkResult {
   scores: {
     raw: RawScores
     normalized: NormalizedScores
+    output: OutputScores
   }
   /** Which retrieval systems contributed to this result (e.g. ["semantic"], ["semantic", "graph"]) */
   sources: string[]
 
-  source: {
+  document: {
     id: string
     bucketId: string
-    title: string
+    name: string
+    description?: string | undefined
     url?: string | undefined
     updatedAt: Date
     status?: string | undefined
-    visibility?: string | undefined
+    accessScope?: AccessScope | undefined
     tenantId?: string | undefined
     groupId?: string | undefined
     userId?: string | undefined
     agentId?: string | undefined
-    conversationId?: string | undefined
-    subject?: SourceSubject | undefined
+    threadId?: string | undefined
   }
 
   chunk: {
@@ -110,6 +163,7 @@ export type QueryMemoryResult = QueryMemoryRecord & {
   scores: {
     raw: RawScores
     normalized: NormalizedScores
+    output: OutputScores
   }
 }
 
@@ -128,31 +182,26 @@ export interface QueryEntityScope {
 }
 
 export interface QueryOpts {
-  /** Which retrieval signals to activate. Default: { semantic: true } (semantic-only search). */
-  signals?: QuerySignals | undefined
+  context?: TypeGraphContext | undefined
+  resources?: SearchResource[] | undefined
+  weights?: SearchWeights | undefined
+  fusion?: SearchFusion | undefined
+  rerank?: SearchRerankOptions | undefined
   buckets?: string[] | undefined
-  count?: number | undefined
+  limit?: number | undefined
+  offset?: number | undefined
+  abortSignal?: AbortSignal | undefined
 
-  // Identity fields (per-call scoping)
-  tenantId?: string | undefined
-  groupId?: string | undefined
-  userId?: string | undefined
-  agentId?: string | undefined
-  conversationId?: string | undefined
-  /** Filter results by source-level fields (status, scope, type, etc.). */
-  sourceFilter?: import('./source.js').SourceFilter | undefined
+  /** Filter results by document-level fields. */
+  documentFilter?: DocumentFilter | undefined
   /** Relevance scope by TypeGraph entity IDs or deterministic external IDs. */
   entityScope?: QueryEntityScope | undefined
-
-  /** Override composite score weights. Keys are signal names; values are 0-1 weights.
-   *  When omitted, defaults are derived from active signals. */
-  scoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory', number>> | undefined
 
   /** When true, automatically adjust score weights based on query type classification.
    *  Uses pure heuristics (no LLM call) to detect factual-lookup, entity-centric,
    *  relational, temporal, or exploratory queries and applies optimized weight profiles.
-   *  This never enables or disables retrieval signals; `signals` remains the source of truth.
-   *  User-provided `scoreWeights` always override. Default: false. */
+   *  This never enables or disables resources; `resources` remains the source of truth.
+   *  User-provided `weights` always override. Default: false. */
   autoWeights?: boolean | undefined
 
   /** Controls how graph results interact with indexed results.
@@ -181,17 +230,14 @@ export interface QueryOpts {
   onBucketError?: 'omit' | 'warn' | 'throw' | undefined
 
   /** Point-in-time query: only return results indexed before this timestamp. */
-  temporalAt?: Date | undefined
+  asOf?: Date | 'now' | undefined
+  validBetween?: [Date, Date] | undefined
   /** Include invalidated/expired results (memories, graph edges). Default: false. */
   includeInvalidated?: boolean | undefined
 
-  /** Build an LLM-ready context string from query results. When set, response includes `context`. */
-  context?: true | QueryContextOptions | undefined
-
-  /** OpenTelemetry trace ID for distributed tracing correlation. */
-  traceId?: string | undefined
-  /** OpenTelemetry span ID for distributed tracing correlation. */
-  spanId?: string | undefined
+  /** Build an LLM-ready prompt string from query results. When set, response includes `prompt`. */
+  promptBuilder?: true | PromptBuilderOptions | undefined
+  explain?: boolean | undefined
 }
 
 export interface QueryResponse {
@@ -209,8 +255,11 @@ export interface QueryResponse {
     durationMs: number
     mergeStrategy: string
   }
-  /** Formatted context string. Present when `context` is specified in query opts. */
-  context?: string | undefined
-  contextStats?: QueryContextStats | undefined
+  /** Formatted prompt string. Present when `promptBuilder` is specified in search opts. */
+  prompt?: string | undefined
+  promptStats?: PromptStats | undefined
+  explanation?: SearchExplanation | undefined
   warnings?: string[] | undefined
 }
+
+export type SearchOptions = QueryOpts

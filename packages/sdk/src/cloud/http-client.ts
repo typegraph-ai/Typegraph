@@ -7,7 +7,7 @@ export interface CloudConfig {
   /** Base URL for the cloud API. Defaults to 'https://typegraph.ai/api'. */
   baseUrl?: string | undefined
   /** Default tenant ID for all operations. */
-  tenantId?: string | undefined
+  tenantId: string
   /** Request timeout in milliseconds. Default: 30000. */
   timeout?: number | undefined
 }
@@ -26,7 +26,7 @@ export class TypegraphApiError extends Error {
 export class HttpClient {
   private baseUrl: string
   private apiKey: string
-  private tenantId: string | undefined
+  private tenantId: string
   private timeout: number
 
   constructor(config: CloudConfig) {

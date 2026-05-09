@@ -1,6 +1,7 @@
 import { z } from 'zod/v4-mini'
 import { generateId } from '../../utils/id.js'
-import type { EmbeddingProvider } from '../../embedding/provider.js'
+import type { Embedder } from '../../embedding/provider.js'
+import { embedText } from '../../embedding/provider.js'
 import type { LLMProvider } from '../../types/llm-provider.js'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
 import type { typegraphIdentity } from '../../types/identity.js'
@@ -28,7 +29,7 @@ const proceduralSchema = z.array(z.object({
 export interface ConsolidationConfig {
   memoryStore: MemoryStoreAdapter
   llm: LLMProvider
-  embedding: EmbeddingProvider
+  embedding: Embedder
 }
 
 export type ConsolidationStrategy =
@@ -59,7 +60,7 @@ export interface ConsolidationResult {
 export class ConsolidationEngine {
   private readonly store: MemoryStoreAdapter
   private readonly llm: LLMProvider
-  private readonly embedding: EmbeddingProvider
+  private readonly embedding: Embedder
 
   constructor(config: ConsolidationConfig) {
     this.store = config.memoryStore
@@ -160,7 +161,7 @@ Respond with only valid JSON: [{"content": "...", "subject": "...", "predicate":
 
         if (Array.isArray(facts)) {
           for (const fact of facts) {
-            const embedding = await this.embedding.embed(fact.content)
+            const embedding = await embedText(this.embedding, fact.content)
             const semanticFact: SemanticFact = {
               id: generateId('fact'),
               category: 'semantic',

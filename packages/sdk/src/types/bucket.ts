@@ -1,9 +1,10 @@
-import type { SourceInput } from './connector.js'
-import type { EmbeddingProvider } from '../embedding/provider.js'
+import type { DocumentInput } from './document.js'
+import type { AccessScope } from './identity.js'
+import type { Embedder } from '../embedding/provider.js'
 import type { AISDKEmbeddingInput } from '../embedding/ai-sdk-adapter.js'
 
 /**
- * A bucket is a named container for sources.
+ * A bucket is a named container for documents and events.
  * Buckets have no type - they are user-defined namespaces for organizing sources.
  * A bucket named "Marketing Content" could receive sources from a URL scrape,
  * a domain crawl, file uploads, and a Slack sync - all at the same time.
@@ -17,14 +18,15 @@ export interface Bucket {
   status: 'active' | 'inactive'
   /** Embedding model for this bucket (ingest). Set at creation, immutable. */
   embeddingModel?: string | undefined
-  /** Query embedding model for this bucket. Must embed into same vector space as embeddingModel. */
-  queryEmbeddingModel?: string | undefined
+  /** Search embedding model for this bucket. Must embed into same vector space as embeddingModel. */
+  searchEmbeddingModel?: string | undefined
   indexDefaults?: IndexDefaults | undefined
-  tenantId?: string | undefined
+  tenantId: string
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
-  conversationId?: string | undefined
+  threadId?: string | undefined
+  accessScope?: AccessScope | undefined
 }
 
 /**
@@ -38,8 +40,7 @@ export interface Bucket {
 export interface IndexDefaults {
   chunkSize?: number | undefined
   chunkOverlap?: number | undefined
-  deduplicateBy?: string[] | ((source: SourceInput) => string) | undefined
-  visibility?: import('./source.js').Visibility | undefined
+  deduplicateBy?: string[] | ((document: DocumentInput) => string) | undefined
   stripMarkdownForEmbedding?: boolean | undefined
   preprocessForEmbedding?: ((content: string) => string) | undefined
   propagateMetadata?: string[] | undefined
@@ -52,29 +53,27 @@ export interface IndexDefaults {
 }
 
 export interface CreateBucketInput {
+  id?: string | undefined
   name: string
   description?: string | undefined
   /** Embedding model for this bucket (ingest). Once set, cannot be changed. Defaults to the instance's default embedding. */
   embeddingModel?: string | undefined
-  /** Query embedding model for this bucket. Must embed into same vector space as embeddingModel.
-   *  Defaults to the instance's queryEmbedding, or the ingest embeddingModel if not set. */
-  queryEmbeddingModel?: string | undefined
+  /** Search embedding model for this bucket. Must embed into same vector space as embeddingModel.
+   *  Defaults to the instance's searchEmbedding, or the ingest embeddingModel if not set. */
+  searchEmbeddingModel?: string | undefined
   indexDefaults?: IndexDefaults | undefined
-  tenantId?: string | undefined
-  groupId?: string | undefined
-  userId?: string | undefined
-  agentId?: string | undefined
-  conversationId?: string | undefined
 }
 
 export interface BucketListFilter {
+  name?: string | undefined
+}
+
+export interface BucketStorageFilter extends BucketListFilter {
   tenantId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
-  conversationId?: string | undefined
+  threadId?: string | undefined
 }
 
-/** @deprecated Use EmbeddingConfig instead. */
-export type EmbeddingInput = EmbeddingConfig
-export type EmbeddingConfig = EmbeddingProvider | AISDKEmbeddingInput
+export type EmbeddingConfig = Embedder | AISDKEmbeddingInput

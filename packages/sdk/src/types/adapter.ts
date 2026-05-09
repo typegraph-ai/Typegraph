@@ -1,8 +1,12 @@
 import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from './chunk.js'
-import type { typegraphSource, SourceFilter, SourceStatus, UpsertSourceInput, UpsertedSourceRecord } from './source.js'
-import type { Bucket, BucketListFilter } from './bucket.js'
+import type { DocumentFilter, DocumentStatus, DocumentStorageFilter, typegraphDocument, UpsertDocumentInput, UpsertedDocumentRecord } from './document.js'
+import type { EventStorageFilter, typegraphEventRecord, UpsertEventInput } from './event.js'
+import type { ThreadStorageFilter, typegraphThread, UpsertThreadInput } from './thread.js'
+import type { UpsertLinkInput } from './link.js'
+import type { Bucket, BucketStorageFilter } from './bucket.js'
 import type { PaginationOpts, PaginatedResult } from './pagination.js'
 import type { Job, JobFilter, UpsertJobInput, JobStatusPatch } from './job.js'
+import type { MemoryStoreAdapter } from '../memory/types/adapter.js'
 
 export interface SearchOpts {
   count: number
@@ -38,8 +42,8 @@ export interface HashStoreAdapter {
   deleteByBucket(bucketId: string, tenantId?: string | undefined): Promise<void>
 }
 
-export interface ScoredChunkWithSource extends ScoredChunk {
-  source?: typegraphSource | undefined
+export interface ScoredChunkWithDocument extends ScoredChunk {
+  document?: typegraphDocument | undefined
 }
 
 export interface UndeployResult {
@@ -61,9 +65,11 @@ export interface VectorStoreAdapter {
 
   /** Ensure a model's storage (e.g., table) exists. Called lazily before first write. */
   ensureModel(model: string, dimensions: number): Promise<void>
+  getTable?(model: string): string | Promise<string>
+  createMemoryStore?(config?: { embeddingDimensions?: number | undefined }): MemoryStoreAdapter
 
-  /** Upsert chunks for a source into the vector store. */
-  upsertSourceChunks(model: string, chunks: EmbeddedChunk[]): Promise<void>
+  /** Upsert chunks for a document into the vector store. */
+  upsertDocumentChunks(model: string, chunks: EmbeddedChunk[]): Promise<void>
   delete(model: string, filter: ChunkFilter | null): Promise<void>
 
   search(model: string, embedding: number[], opts: SearchOpts | null): Promise<ScoredChunk[]>
@@ -72,20 +78,28 @@ export interface VectorStoreAdapter {
 
   hashStore: HashStoreAdapter
 
-  // --- Source record methods (optional - adapters that support sources implement these) ---
+  // --- Document record methods (optional - adapters that support documents implement these) ---
 
-  /** Create or update a source record. Returns the canonical source row. */
-  upsertSourceRecord?(input: UpsertSourceInput): Promise<UpsertedSourceRecord>
-  /** Get a source by UUID. */
-  getSource?(id: string): Promise<typegraphSource | null>
-  /** List sources matching a filter. Supports optional pagination. */
-  listSources?(filter?: SourceFilter | null, pagination?: PaginationOpts | null): Promise<typegraphSource[] | PaginatedResult<typegraphSource>>
-  /** Delete sources matching a filter. Returns count deleted. */
-  deleteSources?(filter: SourceFilter | null): Promise<number>
-  /** Update a source's status and optionally its chunk count. */
-  updateSourceStatus?(id: string, status: SourceStatus, chunkCount?: number): Promise<void>
-  /** Update source metadata fields (title, url, visibility, subject, etc.). Returns updated source. */
-  updateSource?(id: string, input: Partial<Pick<typegraphSource, 'title' | 'url' | 'visibility' | 'metadata' | 'subject'>>): Promise<typegraphSource>
+  /** Create or update a document record. Returns the canonical document row. */
+  upsertDocumentRecord?(input: UpsertDocumentInput): Promise<UpsertedDocumentRecord>
+  /** Get a document by ID. */
+  getDocument?(id: string): Promise<typegraphDocument | null>
+  /** List documents matching a filter. Supports optional pagination. */
+  listDocuments?(filter?: DocumentStorageFilter | null, pagination?: PaginationOpts | null): Promise<typegraphDocument[] | PaginatedResult<typegraphDocument>>
+  /** Delete documents matching a filter. Returns count deleted. */
+  deleteDocuments?(filter: DocumentStorageFilter | null): Promise<number>
+  /** Update a document's status and optionally its chunk count. */
+  updateDocumentStatus?(id: string, status: DocumentStatus, chunkCount?: number): Promise<void>
+  /** Update document metadata fields. Returns updated document. */
+  updateDocument?(id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'accessScope' | 'metadata'>>): Promise<typegraphDocument>
+
+  upsertEvent?(input: UpsertEventInput): Promise<typegraphEventRecord>
+  getEvent?(tenantId: string, id: string): Promise<typegraphEventRecord | null>
+  listEvents?(filter?: EventStorageFilter | null): Promise<typegraphEventRecord[]>
+  upsertThread?(input: UpsertThreadInput): Promise<typegraphThread>
+  getThread?(tenantId: string, id: string): Promise<typegraphThread | null>
+  listThreads?(filter?: ThreadStorageFilter | null): Promise<typegraphThread[]>
+  upsertLink?(input: UpsertLinkInput): Promise<void>
 
   // --- Job record methods (optional - adapters that persist job state implement these) ---
 
@@ -100,18 +114,18 @@ export interface VectorStoreAdapter {
   /** Atomically add to a job's progress_processed counter. Safe under concurrent workers. */
   incrementJobProgress?(id: string, processedDelta: number): Promise<void>
 
-  /** Hybrid search with source-level filtering via JOIN to typegraph_sources. */
-  searchWithSources?(
+  /** Hybrid search with document-level filtering via JOIN to typegraph_documents. */
+  searchWithDocuments?(
     model: string,
     embedding: number[],
     query: string,
-    opts: (SearchOpts & { sourceFilter?: SourceFilter | undefined }) | null
-  ): Promise<ScoredChunkWithSource[]>
+    opts: (SearchOpts & { documentFilter?: DocumentStorageFilter | undefined }) | null
+  ): Promise<ScoredChunkWithDocument[]>
 
-  /** Fetch chunks by source and index range (for neighbor expansion). No vector search. */
+  /** Fetch chunks by document and index range (for neighbor expansion). No vector search. */
   getChunksByRange?(
     model: string,
-    sourceId: string,
+    documentId: string,
     fromIndex: number,
     toIndex: number
   ): Promise<ScoredChunk[]>
@@ -125,7 +139,7 @@ export interface VectorStoreAdapter {
   /** Get multiple buckets by ID in a single round-trip. Missing ids are simply absent from the result. */
   getBuckets?(ids: string[]): Promise<Bucket[]>
   /** List buckets, optionally filtered by identity fields. Supports optional pagination. */
-  listBuckets?(filter?: BucketListFilter, pagination?: PaginationOpts): Promise<Bucket[] | PaginatedResult<Bucket>>
+  listBuckets?(filter?: BucketStorageFilter, pagination?: PaginationOpts): Promise<Bucket[] | PaginatedResult<Bucket>>
   /** Delete a bucket by ID. */
   deleteBucket?(id: string): Promise<void>
 

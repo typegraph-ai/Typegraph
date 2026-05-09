@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { MemoryExtractor } from '../extraction/extractor.js'
 import type { LLMProvider } from '../extraction/llm-provider.js'
-import type { EmbeddingProvider } from '../../embedding/provider.js'
+import type { Embedder } from '../../embedding/provider.js'
 import type { SemanticFact } from '../types/memory.js'
 import { buildScope } from '../types/scope.js'
 
@@ -13,12 +13,11 @@ function mockLLM(overrides?: Partial<LLMProvider>): LLMProvider {
   }
 }
 
-function mockEmbedding(): EmbeddingProvider {
+function mockEmbedding(): Embedder {
   return {
-    model: 'test-model',
+    name: 'test-model',
     dimensions: 3,
-    embed: vi.fn().mockResolvedValue([0.1, 0.2, 0.3]),
-    embedBatch: vi.fn().mockResolvedValue([[0.1, 0.2, 0.3]]),
+    embed: vi.fn().mockResolvedValue([[0.1, 0.2, 0.3]]),
   }
 }
 
@@ -183,7 +182,7 @@ describe('MemoryExtractor', () => {
 
       expect(episode.category).toBe('episodic')
       expect(episode.eventType).toBe('conversation')
-      expect(episode.conversationId).toBe('session-1')
+      expect(episode.threadId).toBe('session-1')
       expect(episode.sequence).toBe(1)
       expect(episode.content).toContain('Hello world')
       expect(episode.scope).toEqual(testScope)

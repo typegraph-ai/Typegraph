@@ -72,8 +72,8 @@ export function getToolDefinitions(): MCPToolDefinition[] {
       },
     },
     {
-      name: 'typegraph_add_conversation',
-      description: 'Ingest conversation messages into memory. Extracts episodic and semantic memories.',
+      name: 'typegraph_add_thread_turn',
+      description: 'Ingest thread messages into memory. Extracts episodic and semantic memories.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -87,9 +87,9 @@ export function getToolDefinitions(): MCPToolDefinition[] {
               },
               required: ['role', 'content'],
             },
-            description: 'Conversation messages to ingest',
+            description: 'Thread messages to ingest',
           },
-          conversationId: { type: 'string', description: 'Optional session identifier' },
+          threadId: { type: 'string', description: 'Optional thread identifier' },
         },
         required: ['messages'],
       },
@@ -161,10 +161,10 @@ export async function executeTool(
         result = await memory.correct(args['correction'] as string)
         break
 
-      case 'typegraph_add_conversation':
-        result = await memory.addConversationTurn(
+      case 'typegraph_add_thread_turn':
+        result = await memory.addThreadTurn(
           args['messages'] as { role: 'user' | 'assistant' | 'system' | 'tool'; content: string }[],
-          { conversationId: args['conversationId'] as string | undefined },
+          { threadId: args['threadId'] as string | undefined },
         )
         break
 

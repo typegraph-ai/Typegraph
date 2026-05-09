@@ -70,6 +70,11 @@ export interface PredicateTypeValidation {
   reason?: string | undefined
 }
 
+export interface TypeCandidate {
+  type: string
+  confidence: number
+}
+
 const ALL_TYPES = ['*'] as const
 
 export const ENTITY_TYPE_SPECS: readonly EntityTypeSpec[] = [
@@ -306,6 +311,57 @@ export const ALIAS_ASSIGNMENT_CUES = new Set([
   'CALLED',
 ])
 
+const TYPE_AFFINITY_GROUPS: readonly (readonly EntityType[])[] = [
+  ['organization', 'product', 'technology'],
+  ['project', 'issue'],
+  ['event', 'meeting'],
+  ['document', 'creative_work'],
+]
+
+export function typeAffinityGroup(type: string | undefined): readonly EntityType[] | undefined {
+  if (!type || !VALID_ENTITY_TYPES.has(type)) return undefined
+  return TYPE_AFFINITY_GROUPS.find(group => group.includes(type as EntityType))
+}
+
+export function typesShareAffinity(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b || a === b) return true
+  const group = typeAffinityGroup(a)
+  return !!group && group.includes(b as EntityType)
+}
+
+export function normalizeTypeCandidates(
+  primaryType: string | undefined,
+  candidates?: TypeCandidate[] | undefined,
+): TypeCandidate[] {
+  const byType = new Map<string, number>()
+  const add = (type: string | undefined, confidence: number) => {
+    if (!type || !VALID_ENTITY_TYPES.has(type)) return
+    const current = byType.get(type) ?? 0
+    byType.set(type, Math.max(current, Math.max(0, Math.min(1, confidence))))
+  }
+  add(primaryType, 1)
+  for (const candidate of candidates ?? []) {
+    add(candidate.type, candidate.confidence)
+  }
+  return [...byType.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([type, confidence]) => ({ type, confidence }))
+}
+
+export function effectiveEntityTypes(
+  primaryType: string | undefined,
+  candidates?: TypeCandidate[] | undefined,
+  minConfidence = 0.6,
+): string[] {
+  const normalized = normalizeTypeCandidates(primaryType, candidates)
+  const types = normalized
+    .filter(candidate => candidate.type === primaryType || candidate.confidence >= minConfidence)
+    .map(candidate => candidate.type)
+  return [...new Set(types.length > 0 ? types : [primaryType ?? DEFAULT_ENTITY_TYPE])]
+    .filter(type => VALID_ENTITY_TYPES.has(type))
+}
+
 const PREDICATE_ALIAS_BY_NAME = buildPredicateAliasMap()
 
 function buildPredicateAliasMap(): Map<string, { canonical: string; alias: PredicateAliasSpec }> {
@@ -391,6 +447,24 @@ export function validatePredicateTypes(
     rangeValid,
     ...(!domainValid || !rangeValid ? { reason: 'domain-range-mismatch' } : {}),
   }
+}
+
+export function validatePredicateEffectiveTypes(
+  predicate: string,
+  subjectTypes: readonly string[],
+  objectTypes: readonly string[],
+): PredicateTypeValidation {
+  const source = subjectTypes.length > 0 ? subjectTypes : [DEFAULT_ENTITY_TYPE]
+  const target = objectTypes.length > 0 ? objectTypes : [DEFAULT_ENTITY_TYPE]
+  let lastValidation: PredicateTypeValidation | undefined
+  for (const subjectType of source) {
+    for (const objectType of target) {
+      const validation = validatePredicateTypes(predicate, subjectType, objectType)
+      if (validation.valid) return validation
+      lastValidation = validation
+    }
+  }
+  return lastValidation ?? validatePredicateTypes(predicate, source[0], target[0])
 }
 
 function typeAllowed(allowed: readonly EntityType[] | readonly ['*'], type?: string | undefined): boolean {

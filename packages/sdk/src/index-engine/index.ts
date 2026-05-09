@@ -1,5 +1,6 @@
 export { IndexEngine } from './engine.js'
 export { defaultChunker } from './chunker.js'
+export { DefaultGraphExtractor, TripleExtractor } from './triple-extractor.js'
 export { sha256, resolveIdempotencyKey, buildHashStoreKey } from './hash.js'
 export { stripMarkdown } from './strip-markdown.js'
 export {
@@ -18,7 +19,12 @@ export {
   sanitizePredicate,
   isSymmetricPredicate,
   getPredicatesForPrompt,
+  effectiveEntityTypes,
   normalizePredicateWithDirection,
+  normalizeTypeCandidates,
+  typeAffinityGroup,
+  typesShareAffinity,
+  validatePredicateEffectiveTypes,
   validatePredicateTypes,
 } from './ontology.js'
 export type {
@@ -29,4 +35,5 @@ export type {
   PredicateTemporalStatus,
   PredicateNormalization,
   PredicateTypeValidation,
+  TypeCandidate,
 } from './ontology.js'

@@ -9,7 +9,7 @@ describe('GraphRunner', () => {
         chunkId: 'chunk-1',
         content: 'Adarsh Tadimari is debugging Plotline SDK initialization.',
         bucketId: 'bucket-1',
-        sourceId: 'source-1',
+        documentId: 'doc-1',
         chunkIndex: 2,
         totalChunks: 5,
         score: 0.42,
@@ -24,9 +24,9 @@ describe('GraphRunner', () => {
         targetEntityId: 'ent-2',
         targetEntityName: 'Plotline SDK',
         relation: 'WORKS_ON',
-        factText: 'Adarsh works on Plotline SDK',
+        description: 'Adarsh works on Plotline SDK',
         weight: 1,
-        evidenceCount: 1,
+        
       }],
       entities: [{
         id: 'ent-1',
@@ -78,13 +78,13 @@ describe('GraphRunner', () => {
         bucketIds: ['bucket-1'],
       }
     )
-    expect(run.facts).toEqual([expect.objectContaining({ id: 'fact-1', factText: 'Adarsh works on Plotline SDK' })])
+    expect(run.facts).toEqual([expect.objectContaining({ id: 'fact-1', description: 'Adarsh works on Plotline SDK' })])
     expect(run.entities).toEqual([expect.objectContaining({ id: 'ent-1', name: 'Adarsh Tadimari' })])
     expect(run.results).toEqual([
       expect.objectContaining({
         content: 'Adarsh Tadimari is debugging Plotline SDK initialization.',
         bucketId: 'bucket-1',
-        sourceId: 'source-1',
+        documentId: 'doc-1',
         rawScores: { graph: 0.42 },
         mode: 'graph',
         chunk: { index: 2, total: 5 },

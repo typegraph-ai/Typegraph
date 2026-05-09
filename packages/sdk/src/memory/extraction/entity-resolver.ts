@@ -1,10 +1,11 @@
-import type { EmbeddingProvider } from '../../embedding/provider.js'
-import type { typegraphIdentity } from '../../types/identity.js'
-import type { Visibility } from '../../types/source.js'
+import type { Embedder } from '../../embedding/provider.js'
+import { embedText } from '../../embedding/provider.js'
+import type { AccessScope, typegraphIdentity } from '../../types/identity.js'
 import type { ExternalId, SemanticEntity } from '../types/memory.js'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
 import { createTemporal } from '../temporal.js'
 import { generateId } from '../../utils/id.js'
+import { normalizeTypeCandidates, type TypeCandidate, typesShareAffinity } from '../../index-engine/ontology.js'
 
 // ── Alias validation ──
 
@@ -267,14 +268,14 @@ const DESC_SIMILARITY_THRESHOLD = 0.8
 
 export interface EntityResolverConfig {
   store: MemoryStoreAdapter
-  embedding: EmbeddingProvider
+  embedding: Embedder
   /** Cosine similarity threshold for considering entities as duplicates. Default: 0.68 */
   similarityThreshold?: number | undefined
 }
 
 export class EntityResolver {
   private readonly store: MemoryStoreAdapter
-  private readonly embedding: EmbeddingProvider
+  private readonly embedding: Embedder
   private readonly threshold: number
   // In-memory cache: scoped normalized name → entity. Eliminates duplicates from
   // DB LIMIT misses and timing races between addTriple calls.
@@ -286,23 +287,23 @@ export class EntityResolver {
     this.threshold = config.similarityThreshold ?? 0.85
   }
 
-  private cacheKey(name: string, scope: typegraphIdentity, visibility?: Visibility): string {
+  private cacheKey(name: string, scope: typegraphIdentity, accessScope?: AccessScope): string {
     return [
-      visibility ?? '__public__',
+      accessScope ?? '__public__',
       scope.tenantId ?? '',
       scope.groupId ?? '',
       scope.userId ?? '',
       scope.agentId ?? '',
-      scope.conversationId ?? '',
+      scope.threadId ?? '',
       normalizeForComparison(name),
     ].join('|')
   }
 
   private cacheEntity(entity: SemanticEntity): void {
-    this.nameCache.set(this.cacheKey(entity.name, entity.scope, entity.visibility), entity)
+    this.nameCache.set(this.cacheKey(entity.name, entity.scope, entity.accessScope), entity)
     for (const alias of entity.aliases) {
       if (!isStrongAliasForMerge(alias, entity.entityType, entity.name, entity.aliases)) continue
-      this.nameCache.set(this.cacheKey(alias, entity.scope, entity.visibility), entity)
+      this.nameCache.set(this.cacheKey(alias, entity.scope, entity.accessScope), entity)
     }
   }
 
@@ -316,8 +317,9 @@ export class EntityResolver {
     aliases: string[],
     scope: typegraphIdentity,
     description?: string,
-    visibility?: Visibility,
+    accessScope?: AccessScope,
     externalIds: ExternalId[] = [],
+    typeCandidates?: TypeCandidate[],
   ): Promise<{ entity: SemanticEntity; isNew: boolean }> {
     const normalizedName = normalizeForComparison(name)
 
@@ -329,8 +331,7 @@ export class EntityResolver {
       for (const externalId of externalIds) {
         const candidate = await this.store.findEntityByExternalId(externalId, scope)
         if (!candidate) continue
-        if (!candidateMatchesWriteScope(candidate, scope, visibility)) continue
-        if (!typesCompatible(entityType, candidate.entityType)) continue
+        if (!candidateMatchesWriteScope(candidate, scope, accessScope)) continue
         if (externalMatch && externalMatch.id !== candidate.id) {
           throw new Error(
             `Conflicting external IDs resolve to multiple entities: ${externalMatch.id} and ${candidate.id}`,
@@ -339,25 +340,25 @@ export class EntityResolver {
         externalMatch = candidate
       }
       if (externalMatch) {
-        const merged = await this.merge(externalMatch, { name, entityType, aliases, description, externalIds })
+        const merged = await this.merge(externalMatch, { name, entityType, aliases, description, externalIds, typeCandidates })
         this.cacheEntity(merged)
         return { entity: merged, isNew: false }
       }
     }
 
     // Phase 1: In-memory cache (instant — catches all prior entities in this session)
-    const cached = this.nameCache.get(this.cacheKey(name, scope, visibility))
-    if (cached && typesCompatible(entityType, cached.entityType)) {
-      const merged = await this.merge(cached, { name, entityType, aliases, description, externalIds })
+    const cached = this.nameCache.get(this.cacheKey(name, scope, accessScope))
+    if (cached && typesCompatibleForExact(entityType, cached.entityType)) {
+      const merged = await this.merge(cached, { name, entityType, aliases, description, externalIds, typeCandidates })
       this.cacheEntity(merged)
       return { entity: merged, isNew: false }
     }
     // Also check aliases against cache (skip invalid aliases to prevent false cache hits)
     for (const alias of aliases) {
       if (!isStrongAliasForMerge(alias, entityType, name, aliases)) continue
-      const cachedByAlias = this.nameCache.get(this.cacheKey(alias, scope, visibility))
-      if (cachedByAlias && typesCompatible(entityType, cachedByAlias.entityType)) {
-        const merged = await this.merge(cachedByAlias, { name, entityType, aliases, description, externalIds })
+      const cachedByAlias = this.nameCache.get(this.cacheKey(alias, scope, accessScope))
+      if (cachedByAlias && typesCompatibleForExact(entityType, cachedByAlias.entityType)) {
+        const merged = await this.merge(cachedByAlias, { name, entityType, aliases, description, externalIds, typeCandidates })
         this.cacheEntity(merged)
         return { entity: merged, isNew: false }
       }
@@ -366,26 +367,26 @@ export class EntityResolver {
     // Phase 1: Alias matching (cheap — uses ILIKE + ANY index)
     if (this.store.findEntities) {
       const candidates = (await this.store.findEntities(name, scope, 10))
-        .filter(candidate => candidateMatchesWriteScope(candidate, scope, visibility))
+        .filter(candidate => candidateMatchesWriteScope(candidate, scope, accessScope))
       const aliasMatch = this.findByAlias(name, aliases, entityType, candidates)
       if (aliasMatch) {
-        const merged = await this.merge(aliasMatch, { name, entityType, aliases, description, externalIds })
+        const merged = await this.merge(aliasMatch, { name, entityType, aliases, description, externalIds, typeCandidates })
         this.cacheEntity(merged)
         return { entity: merged, isNew: false }
       }
 
       // Phase 2: Normalized string matching (catches case/punctuation variants)
       for (const candidate of candidates) {
-        if (!typesCompatible(entityType, candidate.entityType)) continue
+        if (!typesCompatibleForExact(entityType, candidate.entityType)) continue
         if (normalizeForComparison(candidate.name) === normalizedName) {
-          const merged = await this.merge(candidate, { name, entityType, aliases, description, externalIds })
+          const merged = await this.merge(candidate, { name, entityType, aliases, description, externalIds, typeCandidates })
           this.cacheEntity(merged)
           return { entity: merged, isNew: false }
         }
         for (const alias of candidate.aliases) {
           if (!isStrongAliasForMerge(alias, candidate.entityType, candidate.name, candidate.aliases)) continue
           if (normalizeForComparison(alias) === normalizedName) {
-            const merged = await this.merge(candidate, { name, entityType, aliases, description, externalIds })
+            const merged = await this.merge(candidate, { name, entityType, aliases, description, externalIds, typeCandidates })
             this.cacheEntity(merged)
             return { entity: merged, isNew: false }
           }
@@ -396,7 +397,7 @@ export class EntityResolver {
       // e.g., "NY Times" vs "New York Times", "J.K. Rowling" vs "JK Rowling"
       const fuzzyMatch = this.findByFuzzy(name, aliases, entityType, candidates)
       if (fuzzyMatch) {
-        const merged = await this.merge(fuzzyMatch, { name, entityType, aliases, description, externalIds })
+          const merged = await this.merge(fuzzyMatch, { name, entityType, aliases, description, externalIds, typeCandidates })
         this.cacheEntity(merged)
         return { entity: merged, isNew: false }
       }
@@ -405,13 +406,13 @@ export class EntityResolver {
     // Phase 3 + 3.5: Vector similarity with optional description confirmation
     let nameEmbedding: number[] | undefined
     if (this.store.searchEntities) {
-      nameEmbedding = await this.embedding.embed(name)
+      nameEmbedding = await embedText(this.embedding, name)
       const similar = (await this.store.searchEntities(nameEmbedding, scope, 5))
-        .filter(candidate => candidateMatchesWriteScope(candidate, scope, visibility))
+        .filter(candidate => candidateMatchesWriteScope(candidate, scope, accessScope))
 
       // Phase 3: Direct name-embedding match
       for (const candidate of similar) {
-        if (!typesCompatible(entityType, candidate.entityType)) continue
+        if (!typesCompatibleForFuzzy(entityType, candidate.entityType)) continue
         if (entityType === 'person' && candidate.entityType === 'person') {
           if (!hasMatchingLastToken(name, candidate.name)) continue
           if (hasWeakPersonNameMergeEvidence(name, candidate.name)) continue
@@ -419,10 +420,10 @@ export class EntityResolver {
         if (hasConflictingDistinguishers(name, candidate.name)) continue
         if (!hasSharedNameToken(name, candidate.name)) continue
 
-        const similarity = (candidate.properties._similarity as number | undefined)
+        const similarity = (candidate.metadata?._similarity as number | undefined)
           ?? this.cosineSimilarity(nameEmbedding, candidate.embedding ?? [])
         if (similarity >= this.threshold) {
-          const merged = await this.merge(candidate, { name, entityType, aliases, description, externalIds })
+          const merged = await this.merge(candidate, { name, entityType, aliases, description, externalIds, typeCandidates })
           this.cacheEntity(merged)
           return { entity: merged, isNew: false }
         }
@@ -436,7 +437,7 @@ export class EntityResolver {
           name, entityType, description, similar, nameEmbedding,
         )
         if (descMatch) {
-          const merged = await this.merge(descMatch, { name, entityType, aliases, description, externalIds })
+          const merged = await this.merge(descMatch, { name, entityType, aliases, description, externalIds, typeCandidates })
           this.cacheEntity(merged)
           return { entity: merged, isNew: false }
         }
@@ -445,10 +446,10 @@ export class EntityResolver {
 
     // No match found - create new entity (reuse embedding from Phase 3 if available)
     if (!nameEmbedding) {
-      nameEmbedding = await this.embedding.embed(name)
+      nameEmbedding = await embedText(this.embedding, name)
     }
     const descriptionEmbedding = description
-      ? await this.embedding.embed(description)
+      ? await embedText(this.embedding, description)
       : undefined
     const entity: SemanticEntity = {
       id: generateId('ent'),
@@ -456,11 +457,14 @@ export class EntityResolver {
       entityType,
       aliases,
       externalIds,
-      properties: description ? { description } : {},
+      metadata: {
+        ...(description ? { description } : {}),
+        ...((typeCandidates?.length ?? 0) > 0 ? { typeCandidates: normalizeTypeCandidates(entityType, typeCandidates) } : {}),
+      },
       embedding: nameEmbedding,
       descriptionEmbedding,
       scope,
-      visibility,
+      accessScope,
       temporal: createTemporal(),
     }
 
@@ -483,7 +487,7 @@ export class EntityResolver {
     ].map(normalizeForComparison)
 
     for (const candidate of candidates) {
-      if (!typesCompatible(entityType, candidate.entityType)) continue
+      if (!typesCompatibleForExact(entityType, candidate.entityType)) continue
       const candidateNames = [
         candidate.name,
         ...candidate.aliases.filter(alias =>
@@ -511,6 +515,7 @@ export class EntityResolver {
       aliases: string[]
       description?: string | undefined
       externalIds?: ExternalId[] | undefined
+      typeCandidates?: TypeCandidate[] | undefined
     },
   ): Promise<SemanticEntity> {
     const existingAliases = new Set<string>()
@@ -545,33 +550,43 @@ export class EntityResolver {
 
     // Merge descriptions at fact/sentence boundaries, capped to prevent runaway growth.
     const MAX_DESCRIPTION_LENGTH = 320
-    const properties = { ...existing.properties }
-    const existingDesc = (properties.description as string | undefined) ?? ''
+    const canonical = isCanonicalEntity(existing)
+    const metadata = { ...(existing.metadata ?? {}) }
+    const mergedTypeCandidates = normalizeTypeCandidates(existing.entityType, [
+      ...metadataTypeCandidates(metadata),
+      ...(incoming.typeCandidates ?? []),
+      { type: incoming.entityType, confidence: 0.85 },
+    ])
+    if (mergedTypeCandidates.length > 0) {
+      metadata.typeCandidates = mergedTypeCandidates
+    }
+    const existingDesc = (metadata.description as string | undefined) ?? ''
     const incomingDescription = incoming.description
+      && !canonical
       && !descriptionAppearsAboutDifferentPerson(existing, incoming)
       && !isLowValueEntityDescription(incoming.description)
       ? incoming.description
       : undefined
     const mergedDescription = mergeDescriptions(existingDesc, incomingDescription, MAX_DESCRIPTION_LENGTH)
     if (mergedDescription) {
-      properties.description = mergedDescription
+      metadata.description = mergedDescription
     }
 
     // Re-embed description if it changed (so stored description_embedding stays fresh)
     const descriptionChanged = incoming.description
-      && (properties.description as string | undefined) !== (existing.properties.description as string | undefined)
+      && (metadata.description as string | undefined) !== (existing.metadata?.description as string | undefined)
     const descriptionEmbedding = descriptionChanged
-      ? await this.embedding.embed(properties.description as string)
+      ? await embedText(this.embedding, metadata.description as string)
       : existing.descriptionEmbedding
 
     return {
       ...existing,
       aliases: newAliases,
       externalIds: mergeExternalIds(existing.externalIds, incoming.externalIds),
-      properties,
+      metadata,
       descriptionEmbedding,
       // Keep existing type unless it is a generic/fallback type and incoming is more specific.
-      entityType: (existing.entityType === 'entity' || existing.entityType === 'other' || existing.entityType === 'concept')
+      entityType: (!canonical && (existing.entityType === 'entity' || existing.entityType === 'other' || existing.entityType === ''))
         ? incoming.entityType
         : existing.entityType,
     }
@@ -595,7 +610,7 @@ export class EntityResolver {
     ]
 
     for (const candidate of candidates) {
-      if (!typesCompatible(entityType, candidate.entityType)) continue
+      if (!typesCompatibleForFuzzy(entityType, candidate.entityType)) continue
       if (entityType === 'person' && candidate.entityType === 'person') {
         if (!hasMatchingLastToken(name, candidate.name)) continue
         if (hasWeakPersonNameMergeEvidence(name, candidate.name)) continue
@@ -633,17 +648,17 @@ export class EntityResolver {
   ): Promise<SemanticEntity | undefined> {
     // Filter to near-miss candidates that have descriptions and stored description embeddings
     const nearMisses = candidates.filter(c => {
-      if (!typesCompatible(entityType, c.entityType)) return false
+      if (!typesCompatibleForFuzzy(entityType, c.entityType)) return false
       if (entityType === 'person' && c.entityType === 'person') {
         if (!hasMatchingLastToken(name, c.name)) return false
         if (isWeakSingleTokenPersonNamePair(name, c.name)) return false
       }
       if (hasConflictingDistinguishers(name, c.name)) return false
       if (!hasSharedNameToken(name, c.name)) return false
-      const nameSim = (c.properties._similarity as number | undefined)
+      const nameSim = (c.metadata._similarity as number | undefined)
         ?? this.cosineSimilarity(nameEmbedding, c.embedding ?? [])
       if (nameSim < NEAR_MISS_NAME_THRESHOLD || nameSim >= this.threshold) return false
-      const desc = c.properties.description as string | undefined
+      const desc = c.metadata.description as string | undefined
       if (!desc || !c.descriptionEmbedding) return false
       return true
     })
@@ -651,7 +666,7 @@ export class EntityResolver {
     if (nearMisses.length === 0) return undefined
 
     // Embed the incoming description once, then compare against each candidate's stored embedding
-    const incomingDescEmbedding = await this.embedding.embed(description)
+    const incomingDescEmbedding = await embedText(this.embedding, description)
 
     for (const candidate of nearMisses) {
       const descSim = this.cosineSimilarity(incomingDescEmbedding, candidate.descriptionEmbedding!)
@@ -747,17 +762,37 @@ function mergeExternalIds(
   return merged.size > 0 ? [...merged.values()] : undefined
 }
 
+function metadataTypeCandidates(metadata: Record<string, unknown>): TypeCandidate[] {
+  const raw = metadata.typeCandidates ?? metadata.semanticTypes
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map(item => {
+      if (!item || typeof item !== 'object') return undefined
+      const candidate = item as Record<string, unknown>
+      if (typeof candidate.type !== 'string' || typeof candidate.confidence !== 'number') return undefined
+      return { type: candidate.type, confidence: candidate.confidence }
+    })
+    .filter((item): item is TypeCandidate => !!item)
+}
+
+function isCanonicalEntity(entity: SemanticEntity): boolean {
+  if ((entity.externalIds?.length ?? 0) > 0) return true
+  if (entity.entityType === 'concept') return true
+  const metadata = entity.metadata ?? {}
+  return metadata.seeded === true || metadata.canonical === true || typeof metadata.seededBy === 'string'
+}
+
 function candidateMatchesWriteScope(
   candidate: SemanticEntity,
   scope: typegraphIdentity,
-  visibility?: Visibility,
+  accessScope?: AccessScope,
 ): boolean {
-  if (candidate.visibility !== visibility) return false
+  if (candidate.accessScope !== accessScope) return false
   if (scope.tenantId && candidate.scope.tenantId !== scope.tenantId) return false
   if (scope.groupId && candidate.scope.groupId !== scope.groupId) return false
   if (scope.userId && candidate.scope.userId !== scope.userId) return false
   if (scope.agentId && candidate.scope.agentId !== scope.agentId) return false
-  if (scope.conversationId && candidate.scope.conversationId !== scope.conversationId) return false
+  if (scope.threadId && candidate.scope.threadId !== scope.threadId) return false
   return true
 }
 
@@ -954,7 +989,7 @@ function isLowValueEntityDescription(text: string): boolean {
     'tagged in the',
     'mentioned in the',
     'copied on the',
-    'for visibility',
+    'for accessScope',
   ]
   if (boilerplatePhrases.some(phrase => normalized.includes(phrase))) return true
   const roleOnly = [
@@ -1024,14 +1059,26 @@ function trigramJaccard(a: string, b: string): number {
   return union === 0 ? 0 : intersection / union
 }
 
+function isGenericType(type: string | undefined): boolean {
+  return type === undefined || type === '' || type === 'entity' || type === 'other'
+}
+
 /**
- * Check if two entity types are compatible for merging.
- * Prevents merging a person with a location, etc.
- * Generic/fallback types are compatible with anything.
+ * Exact names and strong aliases may merge within a narrow affinity group.
+ * `concept` is intentionally not generic: curated concepts should not drift into
+ * products, technologies, or organizations through extraction.
  */
-function typesCompatible(a: string, b: string): boolean {
-  const GENERIC_TYPES = new Set(['entity', 'other', 'concept', ''])
-  return a === b || GENERIC_TYPES.has(a) || GENERIC_TYPES.has(b)
+function typesCompatibleForExact(a: string, b: string): boolean {
+  return a === b || isGenericType(a) || isGenericType(b) || typesShareAffinity(a, b)
+}
+
+/**
+ * Fuzzy/vector resolution is stricter than exact alias resolution. Semantic
+ * similarity can put organizations, products, and technologies near each other,
+ * so cross-type fuzzy merges stay disabled by default.
+ */
+function typesCompatibleForFuzzy(a: string, b: string): boolean {
+  return a === b || isGenericType(a) || isGenericType(b)
 }
 
 /**

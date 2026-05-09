@@ -19,6 +19,24 @@ export function generateId(prefix: string): string {
   return `${prefix}_${randomUUID()}`
 }
 
+export interface StableInternalIdInput {
+  tenantId: string
+  kind: string
+  id: string
+}
+
+export function stableInternalId(input: StableInternalIdInput): string {
+  const hash = createHash('sha256')
+    .update([input.tenantId, input.kind, input.id].join('\u001f'))
+    .digest('hex')
+    .slice(0, 32)
+  return `${input.kind}_${hash}`
+}
+
+export function stableEntityId(tenantId: string, type: string, id: string): string {
+  return stableInternalId({ tenantId, kind: 'entity', id: `${type}:${id}` })
+}
+
 export interface ChunkIdInput {
   embeddingModel: string
   bucketId: string

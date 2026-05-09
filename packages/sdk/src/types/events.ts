@@ -16,7 +16,7 @@ export type typegraphEventType =
   // Indexing
   | 'index.start'
   | 'index.complete'
-  | 'index.source'
+  | 'index.document'
   // Extraction
   | 'extraction.facts'
   | 'extraction.contradiction'
@@ -27,9 +27,12 @@ export type typegraphEventType =
   | 'bucket.create'
   | 'bucket.update'
   | 'bucket.delete'
-  // Source lifecycle
-  | 'source.update'
-  | 'source.delete'
+  // Document lifecycle
+  | 'document.update'
+  | 'document.delete'
+  // Business event lifecycle
+  | 'event.ingest'
+  | 'thread.upsert'
   // Governance
   | 'policy.create'
   | 'policy.update'
@@ -43,10 +46,10 @@ export interface typegraphEvent {
   eventType: typegraphEventType
   /** Identity context for who/what triggered the event. */
   identity: typegraphIdentity
-  /** ID of the target object (memory, entity, edge, source, bucket). */
+  /** ID of the target object (memory, entity, edge, document, event, thread, bucket). */
   targetId?: string | undefined
   /** Type of the target object. */
-  targetType?: 'memory' | 'entity' | 'edge' | 'source' | 'bucket' | undefined
+  targetType?: 'memory' | 'entity' | 'edge' | 'document' | 'event' | 'thread' | 'bucket' | undefined
   /** Arbitrary event payload (scores, counts, error messages, etc.). */
   payload: Record<string, unknown>
   /** Duration of the operation in milliseconds. */
@@ -72,7 +75,7 @@ export interface TokenUsage {
 
 /**
  * Optional OpenTelemetry correlation fields that SDK methods accept so callers
- * can link emitted `typegraph_events` rows to their parent trace/span. Spread
+ * can link emitted `typegraph_telemetry` rows to their parent trace/span. Spread
  * into any per-call options interface to keep the API consistent.
  */
 export interface TelemetryOpts {

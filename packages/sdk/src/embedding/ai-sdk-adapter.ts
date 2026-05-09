@@ -1,6 +1,6 @@
 import { embed, embedMany } from 'ai'
 import type { EmbeddingModelV3 } from '@ai-sdk/provider'
-import type { EmbeddingProvider } from './provider.js'
+import type { Embedder } from './provider.js'
 
 /**
  * Configuration for using an AI SDK embedding model with typegraph.
@@ -32,32 +32,44 @@ export interface AISDKEmbeddingInput {
 }
 
 /**
- * Wraps an AI SDK embedding model into typegraph's EmbeddingProvider interface.
+ * Wraps an AI SDK embedding model into typegraph's Embedder interface.
  * Uses the AI SDK's `embed` and `embedMany` for automatic batching and retries.
  */
-export function aiSdkEmbeddingProvider(config: AISDKEmbeddingInput): EmbeddingProvider {
+export function aiSdkEmbedder(config: AISDKEmbeddingInput): Embedder {
   const { model, dimensions, providerOptions } = config
 
   return {
-    model: `${model.provider}/${model.modelId}`,
+    name: `${model.provider}/${model.modelId}`,
     dimensions,
+    supportsAsymmetric: true,
 
-    async embed(text: string): Promise<number[]> {
-      const result = await embed({
-        model,
-        value: text,
-        ...(providerOptions ? { providerOptions: providerOptions as any } : {}),
-      })
-      return result.embedding as number[]
-    },
-
-    async embedBatch(texts: string[]): Promise<number[][]> {
+    async embed(input): Promise<number[][]> {
+      const texts = input.texts
       if (texts.length === 0) return []
+      const providerOptionsWithInput = input.outputDimensions || input.inputType
+        ? {
+            ...(providerOptions ?? {}),
+            typegraph: {
+              ...(input.outputDimensions ? { outputDimensions: input.outputDimensions } : {}),
+              ...(input.inputType ? { inputType: input.inputType } : {}),
+            },
+          }
+        : providerOptions
+      if (texts.length === 1) {
+        const result = await embed({
+          model,
+          value: texts[0]!,
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+          ...(providerOptionsWithInput ? { providerOptions: providerOptionsWithInput as any } : {}),
+        })
+        return [result.embedding as number[]]
+      }
 
       const result = await embedMany({
         model,
         values: texts,
-        ...(providerOptions ? { providerOptions: providerOptions as any } : {}),
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+        ...(providerOptionsWithInput ? { providerOptions: providerOptionsWithInput as any } : {}),
       })
       return result.embeddings as number[][]
     },

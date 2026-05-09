@@ -3,7 +3,7 @@ import type { typegraphEvent, typegraphEventSink } from '@typegraph-ai/sdk'
 export interface PgEventSinkConfig {
   /** Postgres query function (same pool as the adapter). */
   sql: (query: string, params?: unknown[]) => Promise<unknown[]>
-  /** Table name for events. Defaults to 'typegraph_events'. */
+  /** Table name for telemetry. Defaults to 'typegraph_telemetry'. */
   eventsTable?: string | undefined
   /** Max events to buffer before flushing. Default: 50. */
   bufferSize?: number | undefined
@@ -29,7 +29,7 @@ export class PgEventSink implements typegraphEventSink {
 
   constructor(config: PgEventSinkConfig) {
     this.sql = config.sql
-    this.eventsTable = config.eventsTable ?? 'typegraph_events'
+    this.eventsTable = config.eventsTable ?? 'typegraph_telemetry'
     this.bufferSize = config.bufferSize ?? 50
     this.flushIntervalMs = config.flushIntervalMs ?? 100
 
@@ -107,7 +107,7 @@ export class PgEventSink implements typegraphEventSink {
       const groupIds: (string | null)[] = []
       const userIds: (string | null)[] = []
       const agentIds: (string | null)[] = []
-      const conversationIds: (string | null)[] = []
+      const threadIds: (string | null)[] = []
       const targetIds: (string | null)[] = []
       const targetTypes: (string | null)[] = []
       const payloads: string[] = []
@@ -123,7 +123,7 @@ export class PgEventSink implements typegraphEventSink {
         groupIds.push(e.identity.groupId ?? null)
         userIds.push(e.identity.userId ?? null)
         agentIds.push(e.identity.agentId ?? null)
-        conversationIds.push(e.identity.conversationId ?? null)
+        threadIds.push(e.identity.threadId ?? null)
         targetIds.push(e.targetId ?? null)
         targetTypes.push(e.targetType ?? null)
         payloads.push(JSON.stringify(e.payload))
@@ -135,7 +135,7 @@ export class PgEventSink implements typegraphEventSink {
 
       await this.sql(
         `INSERT INTO ${this.eventsTable} (
-          id, event_type, tenant_id, group_id, user_id, agent_id, conversation_id,
+          id, event_type, tenant_id, group_id, user_id, agent_id, thread_id,
           target_id, target_type, payload, duration_ms, trace_id, span_id, created_at
         )
         SELECT * FROM unnest(
@@ -143,7 +143,7 @@ export class PgEventSink implements typegraphEventSink {
           $8::text[], $9::text[], $10::jsonb[], $11::int[], $12::text[], $13::text[], $14::timestamptz[]
         )`,
         [
-          ids, eventTypes, tenantIds, groupIds, userIds, agentIds, conversationIds,
+          ids, eventTypes, tenantIds, groupIds, userIds, agentIds, threadIds,
           targetIds, targetTypes, payloads, durationMs, traceIds, spanIds, createdAts,
         ],
       )

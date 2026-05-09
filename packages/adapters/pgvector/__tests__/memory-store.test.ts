@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ExternalId, SemanticFactRecord, SemanticGraphEdge } from '@typegraph-ai/sdk'
+import { PgDocumentStore } from '../src/document-store.js'
 import { PgJobStore } from '../src/job-store.js'
 import { PgMemoryStoreAdapter } from '../src/memory-store.js'
-import { PgSourceStore } from '../src/source-store.js'
 
 function makeFact(): SemanticFactRecord {
   return {
@@ -35,7 +35,7 @@ function rowFromParams(params: unknown[] = []): Record<string, unknown> {
     group_id: params[14],
     user_id: params[15],
     agent_id: params[16],
-    conversation_id: params[17],
+    thread_id: params[17],
     visibility: params[18],
     created_at: '2026-04-16T00:00:00Z',
     updated_at: params[20],
@@ -105,12 +105,12 @@ describe('PgMemoryStoreAdapter', () => {
       scope: { tenantId: 'tenant-1' },
       targetChunkRef: {
         bucketId: 'bucket-1',
-        sourceId: 'doc-1',
+        documentId: 'doc-1',
         chunkIndex: 2,
         embeddingModel: 'mock-embed',
         chunkId: 'chunk_pat',
       },
-      visibility: 'tenant',
+      accessScope: [{ type: 'organization', id: 'org-1' }],
       evidence: ['chunk_pat'],
       temporal: {
         validAt: new Date('2026-04-16T00:00:00Z'),
@@ -132,7 +132,7 @@ describe('PgMemoryStoreAdapter', () => {
     expect(capturedParams[16]).toBe('mock-embed')
     expect(capturedParams[17]).toBe('chunk_pat')
     expect(capturedParams[18]).toBe('tenant-1')
-    expect(capturedParams[23]).toBe('tenant')
+    expect(capturedParams[23]).toEqual([{ type: 'organization', id: 'org-1' }])
   })
 
   it('retries fact record upsert on duplicate deterministic fact id', async () => {
@@ -224,7 +224,7 @@ describe('PgMemoryStoreAdapter', () => {
       groupId: 'group-1',
       userId: 'user-1',
       agentId: 'agent-1',
-      conversationId: 'conversation-1',
+      threadId: 'thread-1',
     }
     const store = new PgMemoryStoreAdapter({ sql, embeddingDimensions: 4 })
 
@@ -233,7 +233,7 @@ describe('PgMemoryStoreAdapter', () => {
     await store.searchFactsHybrid('Acme SSO token refresh Marcus Priya', [0.1, 0.2, 0.3, 0.4], identity, 7)
     await store.getChunkEdgesForEntities(['ent_acme', 'ent_bug'], { scope: identity, bucketIds: ['bkt_acme'], limit: 25 })
     await store.getChunksByRefs(
-      [{ bucketId: 'bkt_acme', sourceId: 'src_slack', chunkIndex: 2 }],
+      [{ bucketId: 'bkt_acme', documentId: 'doc_slack', chunkIndex: 2 }],
       { chunksTable: 'typegraph_chunks', scope: identity, bucketIds: ['bkt_acme'] },
     )
     await store.searchChunks(
@@ -243,7 +243,7 @@ describe('PgMemoryStoreAdapter', () => {
         chunksTable: 'typegraph_chunks',
         bucketIds: ['bkt_acme'],
         limit: 20,
-        chunkRefs: [{ bucketId: 'bkt_acme', sourceId: 'src_slack', chunkIndex: 2 }],
+        chunkRefs: [{ bucketId: 'bkt_acme', documentId: 'doc_slack', chunkIndex: 2 }],
       },
     )
     await store.listChunkBackfillRecords({
@@ -279,32 +279,28 @@ describe('PgMemoryStoreAdapter', () => {
         groupId: identity.groupId,
         userId: identity.userId,
         agentId: identity.agentId,
-        conversationId: identity.conversationId,
+        threadId: identity.threadId,
         category: ['episodic', 'semantic'],
         visibility: ['group', 'user'],
         activeAt: new Date('2026-04-16T00:00:00Z'),
       },
     })
 
-    const sourceStore = new PgSourceStore(sql, 'typegraph_sources')
-    await sourceStore.list({
+    const documentStore = new PgDocumentStore(sql, 'typegraph_documents')
+    await documentStore.list({
       bucketId: 'bkt_acme',
       tenantId: identity.tenantId,
       groupId: identity.groupId,
       userId: identity.userId,
       agentId: identity.agentId,
-      conversationId: identity.conversationId,
+      threadId: identity.threadId,
       status: ['complete', 'processing'],
-      visibility: ['group', 'user'],
-      sourceIds: ['src_slack'],
-      graphExtracted: false,
+      documentIds: ['doc_slack'],
     }, { limit: 10, offset: 5 })
-    await sourceStore.update('src_slack', {
-      title: 'Slack export',
+    await documentStore.update('doc_slack', {
+      name: 'Slack export',
       url: 'https://demo.slack.local/thread',
-      visibility: 'group',
       metadata: { source: 'slack' },
-      subject: { externalIds: [{ type: 'slack_conversation_id', id: 'C123' }] },
     })
 
     const jobStore = new PgJobStore(sql, 'typegraph_jobs')

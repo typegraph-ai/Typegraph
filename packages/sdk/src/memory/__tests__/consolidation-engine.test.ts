@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ConsolidationEngine } from '../consolidation/engine.js'
-import type { EmbeddingProvider } from '../../embedding/provider.js'
+import type { Embedder } from '../../embedding/provider.js'
 import type { LLMProvider } from '../../types/llm-provider.js'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
 
@@ -24,11 +24,10 @@ describe('ConsolidationEngine', () => {
     generateText: vi.fn(),
     generateJSON: vi.fn(),
   }
-  const embedding: EmbeddingProvider = {
-    model: 'mock',
+  const embedding: Embedder = {
+    name: 'mock',
     dimensions: 3,
-    embed: vi.fn(async () => [0, 0, 0]),
-    embedBatch: vi.fn(async texts => texts.map(() => [0, 0, 0])),
+    embed: vi.fn(async input => input.texts.map(() => [0, 0, 0])),
   }
 
   it('treats null consolidation opts as omitted', async () => {

@@ -1,16 +1,15 @@
 import { describe, it, expect, vi } from 'vitest'
 import { EntityResolver, hasConflictingDistinguishers, hasMatchingLastToken, hasSharedNameToken, isValidAlias } from '../extraction/entity-resolver.js'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
-import type { EmbeddingProvider } from '../../embedding/provider.js'
+import type { Embedder } from '../../embedding/provider.js'
 import type { SemanticEntity } from '../types/memory.js'
 import { buildScope } from '../types/scope.js'
 
-function mockEmbedding(): EmbeddingProvider {
+function mockEmbedding(): Embedder {
   return {
-    model: 'test',
+    name: 'test',
     dimensions: 3,
-    embed: vi.fn().mockResolvedValue([0.1, 0.2, 0.3]),
-    embedBatch: vi.fn().mockResolvedValue([[0.1, 0.2, 0.3]]),
+    embed: vi.fn().mockResolvedValue([[0.1, 0.2, 0.3]]),
   }
 }
 
@@ -64,7 +63,7 @@ describe('EntityResolver', () => {
       ;(embedding.embed as ReturnType<typeof vi.fn>).mockImplementation(async () => {
         callCount++
         // First call: name embedding, Second call: description embedding
-        return callCount === 1 ? [0.1, 0.2, 0.3] : [0.4, 0.5, 0.6]
+        return [callCount === 1 ? [0.1, 0.2, 0.3] : [0.4, 0.5, 0.6]]
       })
 
       const resolver = new EntityResolver({
@@ -80,7 +79,7 @@ describe('EntityResolver', () => {
       expect(entity.descriptionEmbedding).toEqual([0.4, 0.5, 0.6])
       // Name embed + description embed = 2 calls
       expect(embedding.embed).toHaveBeenCalledTimes(2)
-      expect(embedding.embed).toHaveBeenCalledWith('American professional basketball player')
+      expect(embedding.embed).toHaveBeenCalledWith({ texts: ['American professional basketball player'], inputType: 'document' })
     })
 
     it('does not create description embedding when no description provided', async () => {
@@ -103,7 +102,7 @@ describe('EntityResolver', () => {
         name: 'Acme Corporation',
         entityType: 'organization',
         aliases: ['Acme Corp', 'Acme'],
-        properties: {},
+        metadata: {},
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
       }
@@ -119,13 +118,114 @@ describe('EntityResolver', () => {
       expect(entity.name).toBe('Acme Corporation')
     })
 
+    it('merges exact aliases within brand-platform affinity without changing the canonical primary type', async () => {
+      const existing: SemanticEntity = {
+        id: 'entity-typegraph',
+        name: 'TypeGraph',
+        entityType: 'organization',
+        aliases: ['TypeGraph Platform'],
+        metadata: {},
+        scope: testScope,
+        temporal: { validAt: new Date(), createdAt: new Date() },
+      }
+
+      const resolver = new EntityResolver({
+        store: mockStore([existing]),
+        embedding: mockEmbedding(),
+      })
+
+      const { entity, isNew } = await resolver.resolve(
+        'TypeGraph Platform',
+        'product',
+        [],
+        testScope,
+        'A productized graph memory platform.',
+        undefined,
+        [],
+        [{ type: 'product', confidence: 0.8 }],
+      )
+
+      expect(isNew).toBe(false)
+      expect(entity.id).toBe('entity-typegraph')
+      expect(entity.entityType).toBe('organization')
+      expect(entity.metadata.typeCandidates).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'product' }),
+      ]))
+    })
+
+    it('does not fuzzy-merge across organization/product affinity without exact alias evidence', async () => {
+      const existing: SemanticEntity = {
+        id: 'entity-typegraph',
+        name: 'TypeGraph',
+        entityType: 'organization',
+        aliases: [],
+        metadata: { _similarity: 0.99 },
+        embedding: [0.9, 0.9, 0.9],
+        scope: testScope,
+        temporal: { validAt: new Date(), createdAt: new Date() },
+      }
+      const store = mockStore([existing])
+      ;(store.findEntities as ReturnType<typeof vi.fn>).mockResolvedValue([])
+      ;(store.searchEntities as ReturnType<typeof vi.fn>).mockResolvedValue([existing])
+
+      const resolver = new EntityResolver({ store, embedding: mockEmbedding() })
+
+      const { entity, isNew } = await resolver.resolve(
+        'TypeGraph Platform',
+        'product',
+        [],
+        testScope,
+        'A productized graph memory platform.',
+      )
+
+      expect(isNew).toBe(true)
+      expect(entity.id).not.toBe('entity-typegraph')
+      expect(entity.entityType).toBe('product')
+    })
+
+    it('keeps an externally anchored concept from drifting to a product or technology type', async () => {
+      const externalId = { type: 'demo_concept_id', id: 'enterprise_sso_reliability' }
+      const existing: SemanticEntity = {
+        id: 'entity-sso-reliability',
+        name: 'Enterprise SSO reliability',
+        entityType: 'concept',
+        aliases: [],
+        externalIds: [externalId],
+        metadata: { description: 'A seeded concept for reliability of enterprise SSO.' },
+        scope: testScope,
+        temporal: { validAt: new Date(), createdAt: new Date() },
+      }
+      const store = {
+        ...mockStore([existing]),
+        findEntityByExternalId: vi.fn().mockResolvedValue(existing),
+      }
+
+      const resolver = new EntityResolver({ store, embedding: mockEmbedding() })
+
+      const { entity, isNew } = await resolver.resolve(
+        'Enterprise SSO reliability',
+        'technology',
+        [],
+        testScope,
+        'An extracted technology mention from a support thread.',
+        undefined,
+        [externalId],
+        [{ type: 'technology', confidence: 0.74 }],
+      )
+
+      expect(isNew).toBe(false)
+      expect(entity.id).toBe('entity-sso-reliability')
+      expect(entity.entityType).toBe('concept')
+      expect(entity.metadata.description).toBe('A seeded concept for reliability of enterprise SSO.')
+    })
+
     it('does not merge Simon-family people through weak surname evidence alone', async () => {
       const existing: SemanticEntity = {
         id: 'entity-caesar',
         name: 'Cæsar Simon',
         entityType: 'person',
         aliases: ['Simon'],
-        properties: { _similarity: 0.99 },
+        metadata: { _similarity: 0.99 },
         embedding: [0.9, 0.9, 0.9],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
@@ -150,7 +250,7 @@ describe('EntityResolver', () => {
         name: 'Elsie Inglis',
         entityType: 'person',
         aliases: ['Inglis'],
-        properties: { _similarity: 0.99 },
+        metadata: { _similarity: 0.99 },
         embedding: [0.9, 0.9, 0.9],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
@@ -171,7 +271,7 @@ describe('EntityResolver', () => {
         name: 'Cousin Cæsar',
         entityType: 'person',
         aliases: ['Cole Conway', 'Conway'],
-        properties: {},
+        metadata: {},
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
       }
@@ -192,7 +292,7 @@ describe('EntityResolver', () => {
         name: 'Cæsar Simon',
         entityType: 'person',
         aliases: ['Simon'],
-        properties: { _similarity: 0.99 },
+        metadata: { _similarity: 0.99 },
         embedding: [0.9, 0.9, 0.9],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
@@ -213,7 +313,7 @@ describe('EntityResolver', () => {
         name: 'Chris Mullin',
         entityType: 'person',
         aliases: [],
-        properties: {
+        metadata: {
           description: 'American former professional basketball player and coach',
           _similarity: 0.55, // Near-miss: above 0.45, below 0.68
         },
@@ -254,7 +354,7 @@ describe('EntityResolver', () => {
         name: 'Michael Jordan',
         entityType: 'person',
         aliases: [],
-        properties: {
+        metadata: {
           description: 'Former professional basketball player, six-time NBA champion',
           _similarity: 0.55,
         },
@@ -295,7 +395,7 @@ describe('EntityResolver', () => {
         name: 'Some Entity',
         entityType: 'person',
         aliases: [],
-        properties: {
+        metadata: {
           description: 'Some description',
           _similarity: 0.55,
         },
@@ -325,7 +425,7 @@ describe('EntityResolver', () => {
         name: 'Some Entity',
         entityType: 'person',
         aliases: [],
-        properties: { _similarity: 0.55 },
+        metadata: { _similarity: 0.55 },
         embedding: [0.8, 0.5, 0.3],
         // No descriptionEmbedding
         scope: testScope,
@@ -352,7 +452,7 @@ describe('EntityResolver', () => {
         name: '1992 United States men\'s Olympic basketball team',
         entityType: 'organization',
         aliases: [],
-        properties: {},
+        metadata: {},
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
       }
@@ -360,7 +460,7 @@ describe('EntityResolver', () => {
       const store = mockStore([existing])
       // Also return from searchEntities with high similarity
       ;(store.searchEntities as ReturnType<typeof vi.fn>).mockResolvedValue([
-        { ...existing, properties: { _similarity: 0.95 } },
+        { ...existing, metadata: { _similarity: 0.95 } },
       ])
 
       const resolver = new EntityResolver({ store, embedding: mockEmbedding() })
@@ -378,7 +478,7 @@ describe('EntityResolver', () => {
         name: '1992 United States men\'s Olympic basketball team',
         entityType: 'organization',
         aliases: [],
-        properties: { _similarity: 0.95 },
+        metadata: { _similarity: 0.95 },
         embedding: [0.9, 0.9, 0.9],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
@@ -414,7 +514,7 @@ describe('EntityResolver', () => {
         name: 'Acme Corporation',
         entityType: 'organization',
         aliases: ['Acme Corp'],
-        properties: {},
+        metadata: {},
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
       }
@@ -443,7 +543,7 @@ describe('EntityResolver', () => {
         name: 'Unknown',
         entityType: 'other',
         aliases: [],
-        properties: {},
+        metadata: {},
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
       }
@@ -468,7 +568,7 @@ describe('EntityResolver', () => {
         name: 'Alice',
         entityType: 'person',
         aliases: [],
-        properties: {},
+        metadata: {},
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
       }
@@ -496,7 +596,7 @@ describe('EntityResolver', () => {
         name: 'Chris Mullin',
         entityType: 'person',
         aliases: [],
-        properties: { description: 'NBA player' },
+        metadata: { description: 'NBA player' },
         descriptionEmbedding: [0.1, 0.2, 0.3],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
@@ -511,7 +611,7 @@ describe('EntityResolver', () => {
 
       // Description changed — should re-embed
       expect(merged.descriptionEmbedding).toEqual([0.7, 0.8, 0.9])
-      expect(embedding.embed).toHaveBeenCalledWith('NBA player Five-time All-Star')
+      expect(embedding.embed).toHaveBeenCalledWith({ texts: ['NBA player Five-time All-Star'], inputType: 'document' })
     })
 
     it('compacts merged descriptions by sentence without duplicate facts or mid-sentence cuts', async () => {
@@ -528,7 +628,7 @@ describe('EntityResolver', () => {
         name: 'Cousin Cæsar',
         entityType: 'person',
         aliases: ['Cole Conway'],
-        properties: {
+        metadata: {
           description: 'A card player using the pseudonym Cole Conway. A card player using the pseudonym Cole Conway.',
         },
         descriptionEmbedding: [0.1, 0.2, 0.3],
@@ -549,13 +649,13 @@ describe('EntityResolver', () => {
         description: incomingDescription,
       })
 
-      const description = merged.properties.description as string
+      const description = merged.metadata.description as string
       expect(description.length).toBeLessThanOrEqual(320)
       expect(description.match(/A card player using the pseudonym Cole Conway/g)).toHaveLength(1)
       expect(description).toContain('A partner of Steve Sharp in Paducah, Kentucky.')
       expect(description).not.toContain('A man who travels toward the West Indies.')
       expect(description.endsWith('.')).toBe(true)
-      expect(embedding.embed).toHaveBeenCalledWith(description)
+      expect(embedding.embed).toHaveBeenCalledWith({ texts: [description], inputType: 'document' })
     })
 
     it('ignores generic relation-only profile summaries when a real description already exists', async () => {
@@ -570,7 +670,7 @@ describe('EntityResolver', () => {
         name: 'Elsie Inglis',
         entityType: 'person',
         aliases: [],
-        properties: { description: 'Doctor and suffrage campaigner.' },
+        metadata: { description: 'Doctor and suffrage campaigner.' },
         descriptionEmbedding: [0.1, 0.2, 0.3],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
@@ -583,7 +683,7 @@ describe('EntityResolver', () => {
         description: 'Elsie Inglis is connected to Serbia through traveled to.',
       })
 
-      expect(merged.properties.description).toBe('Doctor and suffrage campaigner.')
+      expect(merged.metadata.description).toBe('Doctor and suffrage campaigner.')
       expect(embedding.embed).not.toHaveBeenCalled()
     })
 
@@ -599,7 +699,7 @@ describe('EntityResolver', () => {
         name: 'Foreign Office',
         entityType: 'organization',
         aliases: [],
-        properties: {},
+        metadata: {},
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
       }, {
@@ -609,7 +709,7 @@ describe('EntityResolver', () => {
         description: 'British authority corresponding with S.',
       })
 
-      expect(merged.properties.description).toBeUndefined()
+      expect(merged.metadata.description).toBeUndefined()
       expect(embedding.embed).not.toHaveBeenCalled()
     })
 
@@ -625,7 +725,7 @@ describe('EntityResolver', () => {
         name: 'Cousin Cæsar',
         entityType: 'person',
         aliases: ['Cole Conway'],
-        properties: { description: 'The main protagonist who uses the name Cole Conway.' },
+        metadata: { description: 'The main protagonist who uses the name Cole Conway.' },
         descriptionEmbedding: [0.1, 0.2, 0.3],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
@@ -638,7 +738,7 @@ describe('EntityResolver', () => {
         description: 'The uncle of Cousin Cæsar who left a significant estate in Arkansas after his death.',
       })
 
-      expect(merged.properties.description).toBe('The main protagonist who uses the name Cole Conway.')
+      expect(merged.metadata.description).toBe('The main protagonist who uses the name Cole Conway.')
       expect(embedding.embed).not.toHaveBeenCalled()
     })
 
@@ -654,7 +754,7 @@ describe('EntityResolver', () => {
         name: 'Chris Mullin',
         entityType: 'person',
         aliases: [],
-        properties: { description: 'NBA player' },
+        metadata: { description: 'NBA player' },
         descriptionEmbedding: [0.1, 0.2, 0.3],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
@@ -771,7 +871,7 @@ describe('EntityResolver', () => {
         name: 'Oklahoma City Thunder',
         entityType: 'organization',
         aliases: [],
-        properties: { _similarity: 0.92 },
+        metadata: { _similarity: 0.92 },
         embedding: [0.9, 0.9, 0.9],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
@@ -798,7 +898,7 @@ describe('EntityResolver', () => {
         name: 'Chris Mullin',
         entityType: 'person',
         aliases: [],
-        properties: { _similarity: 0.92 },
+        metadata: { _similarity: 0.92 },
         embedding: [0.9, 0.9, 0.9],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
@@ -827,7 +927,7 @@ describe('EntityResolver', () => {
         name: 'Los Angeles Lakers',
         entityType: 'organization',
         aliases: [],
-        properties: {
+        metadata: {
           description: 'Professional basketball team in the NBA',
           _similarity: 0.55,
         },
@@ -866,7 +966,7 @@ describe('EntityResolver', () => {
         name: 'Chris Mullin',
         entityType: 'person',
         aliases: [],
-        properties: { _similarity: 0.75 }, // above old 0.68, below new 0.85
+        metadata: { _similarity: 0.75 }, // above old 0.68, below new 0.85
         embedding: [0.8, 0.5, 0.3],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
@@ -982,7 +1082,7 @@ describe('EntityResolver', () => {
         name: 'Boston Celtics',
         entityType: 'organization',
         aliases: ['Celtics'],
-        properties: {},
+        metadata: {},
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
       }
@@ -1013,7 +1113,7 @@ describe('EntityResolver', () => {
         name: 'NBA Finals',
         entityType: 'event',
         aliases: [],
-        properties: {},
+        metadata: {},
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
       }
@@ -1057,7 +1157,7 @@ describe('EntityResolver', () => {
         name: 'France',
         entityType: 'location',
         aliases: ['French Republic'],
-        properties: {},
+        metadata: {},
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
       }
@@ -1080,7 +1180,7 @@ describe('EntityResolver', () => {
         name: 'France',
         entityType: 'location',
         aliases: [],
-        properties: {},
+        metadata: {},
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
       }
@@ -1101,7 +1201,7 @@ describe('EntityResolver', () => {
         name: 'Acme Corporation',
         entityType: 'organization',
         aliases: ['Acme Corp'],
-        properties: {},
+        metadata: {},
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
       }
@@ -1174,7 +1274,7 @@ describe('EntityResolver', () => {
         name: 'Kevin Love',
         entityType: 'person',
         aliases: [],
-        properties: { _similarity: 0.92 },
+        metadata: { _similarity: 0.92 },
         embedding: [0.9, 0.9, 0.9],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
@@ -1199,7 +1299,7 @@ describe('EntityResolver', () => {
         name: 'Chris Mullin',
         entityType: 'person',
         aliases: [],
-        properties: { _similarity: 0.92 },
+        metadata: { _similarity: 0.92 },
         embedding: [0.9, 0.9, 0.9],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },
@@ -1228,7 +1328,7 @@ describe('EntityResolver', () => {
         name: 'Eastern Division',
         entityType: 'organization',
         aliases: [],
-        properties: { _similarity: 0.92 },
+        metadata: { _similarity: 0.92 },
         embedding: [0.9, 0.9, 0.9],
         scope: testScope,
         temporal: { validAt: new Date(), createdAt: new Date() },

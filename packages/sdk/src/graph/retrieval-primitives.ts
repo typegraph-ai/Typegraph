@@ -1,5 +1,4 @@
 export interface FactSearchTextInput {
-  factText: string
   description?: string | undefined
   evidenceText?: string | undefined
 }
@@ -27,7 +26,7 @@ export function tokenOverlapScore(queryTokenSet: Set<string>, text: string): num
 }
 
 export function buildFactSearchText(input: FactSearchTextInput): string {
-  return [input.factText, input.description, input.evidenceText]
+  return [input.description, input.evidenceText]
     .map(part => part?.trim())
     .filter((part): part is string => !!part)
     .join('\n')
@@ -36,8 +35,8 @@ export function buildFactSearchText(input: FactSearchTextInput): string {
 export function formatFactEvidence(input: FactSearchTextInput): string {
   const description = input.description?.trim()
   const evidenceText = input.evidenceText?.trim()
-  if (description && evidenceText) return `${input.factText}: ${description} Evidence: ${evidenceText}`
-  if (description) return `${input.factText}: ${description}`
-  if (evidenceText) return `${input.factText}: ${evidenceText}`
-  return input.factText
+  if (description && evidenceText) return `${description} Evidence: ${evidenceText}`
+  if (description) return description
+  if (evidenceText) return evidenceText
+  return ''
 }

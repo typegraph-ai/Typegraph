@@ -2,18 +2,23 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { DEFAULT_BUCKET_ID, typegraphInit, typegraphDeploy } from '../typegraph.js'
 import { createMockAdapter } from './helpers/mock-adapter.js'
 import { createMockEmbedding } from './helpers/mock-embedding.js'
-import { createMockBucket } from './helpers/mock-source.js'
-import { createTestSource, createTestSources } from './helpers/mock-connector.js'
+import { createMockBucket } from './helpers/mock-document.js'
+import { createTestDocument, createTestDocuments } from './helpers/mock-connector.js'
 import type { typegraphInstance } from '../typegraph.js'
 import type { Bucket } from '../types/bucket.js'
-import type { EmbeddingProvider } from '../embedding/provider.js'
+import type { Embedder } from '../embedding/provider.js'
 import type { EntityDetail, EntityResult, GraphExploreResult, KnowledgeGraphBridge } from '../types/graph-bridge.js'
 
 /** Register a pre-built Bucket + embedding on an instance (bypasses buckets.create UUID generation). */
-function registerTestBucket(instance: typegraphInstance, bucket: Bucket, embedding: EmbeddingProvider) {
+function registerTestBucket(instance: typegraphInstance, bucket: Bucket, embedding: Embedder) {
   const impl = instance as any
   impl._buckets.set(bucket.id, bucket)
   impl.bucketEmbeddings.set(bucket.id, embedding)
+  impl.bucketSearchEmbeddings.set(bucket.id, embedding)
+}
+
+function setKnowledgeGraph(instance: typegraphInstance, knowledgeGraph: KnowledgeGraphBridge) {
+  ;(instance as any).graphBridgeInstance = knowledgeGraph
 }
 
 describe('typegraphInit', () => {
@@ -24,37 +29,37 @@ describe('typegraphInit', () => {
   beforeEach(async () => {
     adapter = createMockAdapter()
     embedding = createMockEmbedding()
-    instance = await typegraphInit({ vectorStore: adapter, embedding })
+    instance = await typegraphInit({ vectorStore: adapter, embedding, tenantId: 'tenant-1' })
   })
 
   describe('buckets.create', () => {
     it('creates a bucket with a generated id', async () => {
-      const bucket = await instance.buckets.create({ name: 'Test Bucket' })
+      const bucket = await instance.bucket.create({ name: 'Test Bucket' })
       expect(bucket.id).toBeDefined()
       expect(bucket.name).toBe('Test Bucket')
       expect(bucket.status).toBe('active')
     })
 
     it('registers embedding for new bucket', async () => {
-      const bucket = await instance.buckets.create({ name: 'Test Bucket' })
+      const bucket = await instance.bucket.create({ name: 'Test Bucket' })
       expect(instance.getEmbeddingForBucket(bucket.id)).toBeDefined()
     })
   })
 
   describe('getEmbeddingForBucket', () => {
     it('returns default embedding', () => {
-      const { bucket } = createMockBucket({ sources: [] })
+      const { bucket } = createMockBucket({ documents: [] })
       registerTestBucket(instance, bucket, embedding)
       const emb = instance.getEmbeddingForBucket(bucket.id)
-      expect(emb.model).toBe(embedding.model)
+      expect(emb.name).toBe(embedding.name)
     })
 
     it('returns per-bucket override', () => {
       const customEmb = createMockEmbedding({ model: 'custom-v2' })
-      const { bucket } = createMockBucket({ sources: [] })
+      const { bucket } = createMockBucket({ documents: [] })
       registerTestBucket(instance, bucket, customEmb)
       const emb = instance.getEmbeddingForBucket(bucket.id)
-      expect(emb.model).toBe('custom-v2')
+      expect(emb.name).toBe('custom-v2')
     })
 
     it('throws for unknown bucket', () => {
@@ -64,19 +69,19 @@ describe('typegraphInit', () => {
 
   describe('getDistinctEmbeddings', () => {
     it('returns unique embeddings by model name', () => {
-      const { bucket: s1 } = createMockBucket({ id: 'src-1', sources: [] })
-      const { bucket: s2 } = createMockBucket({ id: 'src-2', sources: [] })
+      const { bucket: s1 } = createMockBucket({ id: 'src-1', documents: [] })
+      const { bucket: s2 } = createMockBucket({ id: 'src-2', documents: [] })
       registerTestBucket(instance, s1, embedding)
       registerTestBucket(instance, s2, embedding)
       const distinct = instance.getDistinctEmbeddings()
       expect(distinct.size).toBe(1)
     })
 
-    it('filters to sourceIds', () => {
+    it('filters to documentIds', () => {
       const embA = createMockEmbedding({ model: 'model-a' })
       const embB = createMockEmbedding({ model: 'model-b' })
-      const { bucket: s1 } = createMockBucket({ id: 'src-1', sources: [] })
-      const { bucket: s2 } = createMockBucket({ id: 'src-2', sources: [] })
+      const { bucket: s1 } = createMockBucket({ id: 'src-1', documents: [] })
+      const { bucket: s2 } = createMockBucket({ id: 'src-2', documents: [] })
       registerTestBucket(instance, s1, embA)
       registerTestBucket(instance, s2, embB)
       const distinct = instance.getDistinctEmbeddings(['src-1'])
@@ -86,9 +91,9 @@ describe('typegraphInit', () => {
   })
 
   describe('groupBucketsByModel', () => {
-    it('groups sources by model', () => {
-      const { bucket: s1 } = createMockBucket({ id: 'src-1', sources: [] })
-      const { bucket: s2 } = createMockBucket({ id: 'src-2', sources: [] })
+    it('groups documents by model', () => {
+      const { bucket: s1 } = createMockBucket({ id: 'src-1', documents: [] })
+      const { bucket: s2 } = createMockBucket({ id: 'src-2', documents: [] })
       const differentEmb = createMockEmbedding({ model: 'different-model' })
       registerTestBucket(instance, s1, embedding)
       registerTestBucket(instance, s2, differentEmb)
@@ -106,14 +111,15 @@ describe('typegraphInit', () => {
         aliases: [],
         externalIds: [{ id: 'alice@example.com', type: 'email', encoding: 'none' }],
         edgeCount: 0,
-        properties: {},
+        metadata: {},
         createdAt: new Date(),
         topEdges: [],
       }
       const knowledgeGraph: KnowledgeGraphBridge = {
         upsertEntity: vi.fn().mockResolvedValue(seeded),
       }
-      const inst = await typegraphInit({ vectorStore: adapter, embedding, knowledgeGraph })
+      const inst = await typegraphInit({ vectorStore: adapter, embedding, tenantId: 'tenant-1' })
+      setKnowledgeGraph(inst, knowledgeGraph)
 
       const result = await inst.graph.upsertEntity({
         name: 'Alice',
@@ -125,6 +131,8 @@ describe('typegraphInit', () => {
         name: 'Alice',
         entityType: 'person',
         externalIds: [{ id: 'alice@example.com', type: 'email' }],
+        tenantId: 'tenant-1',
+        accessScope: undefined,
       })
       expect(result).toEqual(seeded)
     })
@@ -132,7 +140,6 @@ describe('typegraphInit', () => {
 
   describe('graph.searchEntities', () => {
     it('preserves bridge-provided aliases and edge counts', async () => {
-      const identity = { userId: 'test-user' }
       const searchResults: EntityResult[] = [{
         id: 'ent_caesar',
         name: 'Cousin Cæsar',
@@ -140,21 +147,21 @@ describe('typegraphInit', () => {
         aliases: ['Cole Conway', 'Conway'],
         similarity: 0.98,
         edgeCount: 4,
-        properties: { description: 'Uses the name Cole Conway in Paducah.' },
+        metadata: { description: 'Uses the name Cole Conway in Paducah.' },
       }]
       const knowledgeGraph: KnowledgeGraphBridge = {
         searchEntities: vi.fn().mockResolvedValue(searchResults),
       }
-      const inst = await typegraphInit({ vectorStore: adapter, embedding, knowledgeGraph })
+      const inst = await typegraphInit({ vectorStore: adapter, embedding, tenantId: 'tenant-1' })
+      setKnowledgeGraph(inst, knowledgeGraph)
 
-      const results = await inst.graph.searchEntities('Cole Conway', identity, { limit: 5 })
+      const results = await inst.graph.searchEntities('Cole Conway', { context: { userId: 'test-user' }, limit: 5 })
 
-      expect(knowledgeGraph.searchEntities).toHaveBeenCalledWith('Cole Conway', identity, 5)
+      expect(knowledgeGraph.searchEntities).toHaveBeenCalledWith('Cole Conway', { userId: 'test-user', tenantId: 'tenant-1' }, 5)
       expect(results).toEqual(searchResults)
     })
 
     it('filters search results by entity type and minimum connections', async () => {
-      const identity = { userId: 'test-user' }
       const knowledgeGraph: KnowledgeGraphBridge = {
         searchEntities: vi.fn().mockResolvedValue([
           {
@@ -183,15 +190,17 @@ describe('typegraphInit', () => {
           },
         ] satisfies EntityResult[]),
       }
-      const inst = await typegraphInit({ vectorStore: adapter, embedding, knowledgeGraph })
+      const inst = await typegraphInit({ vectorStore: adapter, embedding, tenantId: 'tenant-1' })
+      setKnowledgeGraph(inst, knowledgeGraph)
 
-      const results = await inst.graph.searchEntities('Cole Conway', identity, {
+      const results = await inst.graph.searchEntities('Cole Conway', {
+        context: { userId: 'test-user' },
         limit: 10,
         entityType: 'person',
         minConnections: 2,
       })
 
-      expect(knowledgeGraph.searchEntities).toHaveBeenCalledWith('Cole Conway', identity, 10)
+      expect(knowledgeGraph.searchEntities).toHaveBeenCalledWith('Cole Conway', { userId: 'test-user', tenantId: 'tenant-1' }, 10)
       expect(results).toEqual([
         expect.objectContaining({
           id: 'ent_caesar',
@@ -204,11 +213,10 @@ describe('typegraphInit', () => {
 
   describe('graph.explore', () => {
     it('forwards structured graph exploration to the bridge', async () => {
-      const identity = { userId: 'test-user' }
       const exploreResult: GraphExploreResult = {
         intent: {
           rawQuery: 'plotline employees',
-          sourceEntityQueries: [],
+          documentEntityQueries: [],
           targetEntityQueries: ['Plotline'],
           predicates: [{
             name: 'WORKS_FOR',
@@ -240,24 +248,26 @@ describe('typegraphInit', () => {
           targetEntityId: 'ent_plotline',
           targetEntityName: 'Plotline',
           relation: 'WORKS_FOR',
-          factText: 'Adarsh Tadimari works for Plotline',
+          description: 'Adarsh Tadimari works for Plotline',
           weight: 1,
-          evidenceCount: 1,
+          
         }],
       }
       const knowledgeGraph: KnowledgeGraphBridge = {
         explore: vi.fn().mockResolvedValue(exploreResult),
       }
-      const inst = await typegraphInit({ vectorStore: adapter, embedding, knowledgeGraph })
+      const inst = await typegraphInit({ vectorStore: adapter, embedding, tenantId: 'tenant-1' })
+      setKnowledgeGraph(inst, knowledgeGraph)
 
       const result = await inst.graph.explore('plotline employees', {
-        ...identity,
+        context: { userId: 'test-user' },
         depth: 1,
         include: { chunks: false },
       })
 
       expect(knowledgeGraph.explore).toHaveBeenCalledWith('plotline employees', {
-        ...identity,
+        userId: 'test-user',
+        tenantId: 'tenant-1',
         depth: 1,
         include: { chunks: false },
       })
@@ -266,33 +276,33 @@ describe('typegraphInit', () => {
   })
 
   describe('ingest', () => {
-    it('ingests a single source', async () => {
-      const { bucket, ingestOptions } = createMockBucket({ sources: [] })
+    it('ingests a single document', async () => {
+      const { bucket, ingestOptions } = createMockBucket({ documents: [] })
       registerTestBucket(instance, bucket, embedding)
-      const source = createTestSource({ content: 'Some content to ingest' })
-      const result = await instance.ingest([source], { ...ingestOptions, bucketId: bucket.id })
+      const document = createTestDocument({ content: 'Some content to ingest' })
+      const result = await instance.document.ingest([document], { ...ingestOptions, bucketId: bucket.id })
       expect(result.inserted).toBe(1)
     })
 
     it('treats null ingest opts as omitted', async () => {
-      const { bucket } = createMockBucket({ id: DEFAULT_BUCKET_ID, sources: [] })
+      const { bucket } = createMockBucket({ id: DEFAULT_BUCKET_ID, documents: [] })
       registerTestBucket(instance, bucket, embedding)
-      const source = createTestSource({ content: 'Some content to ingest with null opts' })
+      const document = createTestDocument({ content: 'Some content to ingest with null opts' })
 
-      const result = await instance.ingest([source], null)
+      const result = await instance.document.ingest([document], null)
 
       expect(result.inserted).toBe(1)
       expect(result.bucketId).toBe(DEFAULT_BUCKET_ID)
     })
 
     it('treats null pre-chunked ingest opts as omitted', async () => {
-      const { bucket } = createMockBucket({ id: DEFAULT_BUCKET_ID, sources: [] })
+      const { bucket } = createMockBucket({ id: DEFAULT_BUCKET_ID, documents: [] })
       registerTestBucket(instance, bucket, embedding)
-      const source = createTestSource({ content: 'Prechunked content with null opts' })
+      const document = createTestDocument({ content: 'Prechunked content with null opts' })
 
-      const result = await instance.ingestPreChunked(
-        source,
-        [{ content: source.content, chunkIndex: 0 }],
+      const result = await instance.document.ingestPreChunked(
+        document,
+        [{ content: document.content, chunkIndex: 0 }],
         null,
       )
 
@@ -300,10 +310,10 @@ describe('typegraphInit', () => {
       expect(result.bucketId).toBe(DEFAULT_BUCKET_ID)
     })
 
-    it('ignores null source subject external ID entries', async () => {
-      const { bucket, ingestOptions } = createMockBucket({ sources: [] })
+    it('ignores null document subject external ID entries', async () => {
+      const { bucket, ingestOptions } = createMockBucket({ documents: [] })
       registerTestBucket(instance, bucket, embedding)
-      const source = createTestSource({
+      const document = createTestDocument({
         subject: {
           externalIds: [
             null,
@@ -313,40 +323,40 @@ describe('typegraphInit', () => {
         },
       })
 
-      const result = await instance.ingest([source], { ...ingestOptions, bucketId: bucket.id })
+      const result = await instance.document.ingest([document], { ...ingestOptions, bucketId: bucket.id })
 
       expect(result.inserted).toBe(1)
     })
 
-    it('ingests a batch of sources', async () => {
-      const { bucket, ingestOptions } = createMockBucket({ sources: [] })
+    it('ingests a batch of documents', async () => {
+      const { bucket, ingestOptions } = createMockBucket({ documents: [] })
       registerTestBucket(instance, bucket, embedding)
-      const sources = createTestSources(3)
-      const result = await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
+      const documents = createTestDocuments(3)
+      const result = await instance.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
       expect(result.total).toBe(3)
       expect(result.inserted).toBe(3)
     })
 
-    it('batches all chunks into a single embedBatch call', async () => {
-      const { bucket, ingestOptions } = createMockBucket({ sources: [] })
+    it('batches all chunks into a single embed call', async () => {
+      const { bucket, ingestOptions } = createMockBucket({ documents: [] })
       registerTestBucket(instance, bucket, embedding)
-      const sources = createTestSources(3)
-      const spy = vi.spyOn(embedding, 'embedBatch')
-      await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
+      const documents = createTestDocuments(3)
+      const spy = vi.spyOn(embedding, 'embed')
+      await instance.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
       expect(spy).toHaveBeenCalledOnce()
     })
 
     it('returns zero-count result for empty array', async () => {
-      const { bucket, ingestOptions } = createMockBucket({ sources: [] })
+      const { bucket, ingestOptions } = createMockBucket({ documents: [] })
       registerTestBucket(instance, bucket, embedding)
-      const result = await instance.ingest([], { ...ingestOptions, bucketId: bucket.id })
+      const result = await instance.document.ingest([], { ...ingestOptions, bucketId: bucket.id })
       expect(result.total).toBe(0)
       expect(result.inserted).toBe(0)
     })
 
     it('throws for unknown bucket', async () => {
-      const { ingestOptions } = createMockBucket({ sources: [] })
-      await expect(instance.ingest([], { ...ingestOptions, bucketId: 'unknown' })).rejects.toThrow('not found')
+      const { ingestOptions } = createMockBucket({ documents: [] })
+      await expect(instance.document.ingest([], { ...ingestOptions, bucketId: 'unknown' })).rejects.toThrow('not found')
     })
 
     it('calls adapter.connect during typegraphInit', async () => {
@@ -356,72 +366,71 @@ describe('typegraphInit', () => {
 
   describe('optional filters', () => {
     it('treats null list filters as omitted', async () => {
-      const { bucket, ingestOptions } = createMockBucket({ sources: [] })
+      const { bucket, ingestOptions } = createMockBucket({ documents: [] })
       registerTestBucket(instance, bucket, embedding)
-      await instance.ingest([createTestSource()], { ...ingestOptions, bucketId: bucket.id })
+      await instance.document.ingest([createTestDocument()], { ...ingestOptions, bucketId: bucket.id })
 
-      await expect(instance.sources.list(null)).resolves.toHaveLength(1)
-      await expect(instance.jobs.list(null)).resolves.toEqual([])
+      await expect(instance.document.list(null)).resolves.toHaveLength(1)
+      await expect(instance.job.list(null)).resolves.toEqual([])
     })
 
-    it('rejects null destructive source filters with a ConfigError', async () => {
-      await expect(instance.sources.delete(null)).rejects.toThrow('sources.delete requires at least one filter field')
+    it('rejects null destructive document filters with a ConfigError', async () => {
+      await expect(instance.document.delete(null)).rejects.toThrow('document.delete requires at least one filter field')
     })
   })
 
   describe('query', () => {
     it('returns results', async () => {
-      const { bucket, sources, ingestOptions } = createMockBucket({ sources: createTestSources(3) })
+      const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(3) })
       registerTestBucket(instance, bucket, embedding)
-      await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
-      const response = await instance.query('Source 1')
+      await instance.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
+      const response = await instance.search('Documents 1')
       expect(response.results.chunks.length).toBeGreaterThan(0)
     })
 
     it('treats null query opts as omitted', async () => {
-      const { bucket, sources, ingestOptions } = createMockBucket({ sources: createTestSources(1) })
+      const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(1) })
       registerTestBucket(instance, bucket, embedding)
-      await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
+      await instance.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
 
-      const response = await instance.query('Source 1', null)
+      const response = await instance.search('Documents 1', null)
 
       expect(response.results.chunks.length).toBeGreaterThan(0)
     })
 
     it('passes tenantId from config', async () => {
       const inst = await typegraphInit({ vectorStore: adapter, embedding, tenantId: 'config-tenant' })
-      const { bucket, sources, ingestOptions } = createMockBucket({ sources: createTestSources(1) })
+      const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(1) })
       registerTestBucket(inst, bucket, embedding)
-      await inst.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
-      const response = await inst.query('test')
+      await inst.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
+      const response = await inst.search('test')
       expect(response.query.tenantId).toBe('config-tenant')
     })
 
-    it('per-query tenantId overrides config', async () => {
+    it('rejects legacy per-query tenantId overrides', async () => {
       const inst = await typegraphInit({ vectorStore: adapter, embedding, tenantId: 'config-tenant' })
-      const { bucket, sources, ingestOptions } = createMockBucket({ sources: createTestSources(1) })
+      const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(1) })
       registerTestBucket(inst, bucket, embedding)
-      await inst.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
-      const response = await inst.query('test', { tenantId: 'query-tenant' })
-      expect(response.query.tenantId).toBe('query-tenant')
+      await inst.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
+      await expect(inst.search('test', { tenantId: 'query-tenant' } as any)).rejects.toThrow('opts.context')
     })
 
     it('supports context option for XML context', async () => {
-      const { bucket, sources, ingestOptions } = createMockBucket({ sources: createTestSources(1) })
+      const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(1) })
       registerTestBucket(instance, bucket, embedding)
-      await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
-      const response = await instance.query('test', { context: { format: 'xml' } })
-      expect(response.context).toContain('<context>')
-      expect(response.contextStats?.format).toBe('xml')
+      await instance.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
+      const response = await instance.search('test', { promptBuilder: { format: 'xml' } })
+      expect(response.prompt).toContain('<context>')
+      expect(response.promptStats?.format).toBe('xml')
     })
 
     it('supports context option for plain text context', async () => {
-      const { bucket, sources, ingestOptions } = createMockBucket({ sources: createTestSources(1) })
+      const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(1) })
       registerTestBucket(instance, bucket, embedding)
-      await instance.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
-      const response = await instance.query('test', { context: { format: 'plain' } })
-      expect(response.context).toBeDefined()
-      expect(response.context).not.toContain('<context>')
+      await instance.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
+      const response = await instance.search('test', { promptBuilder: { format: 'plain' } })
+      expect(response.prompt).toBeDefined()
+      expect(response.prompt).not.toContain('<context>')
     })
   })
 
@@ -432,11 +441,12 @@ describe('typegraphInit', () => {
       const inst = await typegraphInit({
         vectorStore: adapter,
         embedding,
+        tenantId: 'tenant-1',
         hooks: { onIndexStart, onIndexComplete },
       })
-      const { bucket, sources, ingestOptions } = createMockBucket({ sources: [createTestSource()] })
+      const { bucket, documents, ingestOptions } = createMockBucket({ documents: [createTestDocument()] })
       registerTestBucket(inst, bucket, embedding)
-      await inst.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
+      await inst.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
       expect(onIndexStart).toHaveBeenCalledOnce()
       expect(onIndexComplete).toHaveBeenCalledOnce()
     })
@@ -446,12 +456,13 @@ describe('typegraphInit', () => {
       const inst = await typegraphInit({
         vectorStore: adapter,
         embedding,
+        tenantId: 'tenant-1',
         hooks: { onQueryResults },
       })
-      const { bucket, sources, ingestOptions } = createMockBucket({ sources: [createTestSource()] })
+      const { bucket, documents, ingestOptions } = createMockBucket({ documents: [createTestDocument()] })
       registerTestBucket(inst, bucket, embedding)
-      await inst.ingest(sources, { ...ingestOptions, bucketId: bucket.id })
-      await inst.query('test')
+      await inst.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
+      await inst.search('test')
       expect(onQueryResults).toHaveBeenCalledOnce()
     })
   })
@@ -466,15 +477,15 @@ describe('typegraphInit', () => {
   describe('lifecycle', () => {
     it('deploy() calls adapter.deploy() but does not set initialized', async () => {
       const a = createMockAdapter()
-      const inst = await typegraphDeploy({ vectorStore: a, embedding })
+      const inst = await typegraphDeploy({ vectorStore: a, embedding, tenantId: 'tenant-1' })
       expect(a.calls.filter(c => c.method === 'deploy')).toHaveLength(1)
       expect(a.calls.filter(c => c.method === 'connect')).toHaveLength(0)
-      await expect(inst.query('test')).rejects.toThrow()
+      await expect(inst.search('test')).rejects.toThrow()
     })
 
     it('typegraphInit calls connect()', async () => {
       const a = createMockAdapter()
-      await typegraphInit({ vectorStore: a, embedding })
+      await typegraphInit({ vectorStore: a, embedding, tenantId: 'tenant-1' })
       expect(a.calls.filter((c: { method: string }) => c.method === 'connect')).toHaveLength(1)
     })
 
@@ -487,7 +498,7 @@ describe('typegraphInit', () => {
     it('undeploy() returns failure when adapter lacks undeploy', async () => {
       const a = createMockAdapter()
       delete (a as any).undeploy
-      const inst = await typegraphInit({ vectorStore: a, embedding })
+      const inst = await typegraphInit({ vectorStore: a, embedding, tenantId: 'tenant-1' })
       const result = await inst.undeploy()
       expect(result.success).toBe(false)
       expect(result.message).toContain('does not support')

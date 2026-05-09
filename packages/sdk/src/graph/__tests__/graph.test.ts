@@ -12,7 +12,7 @@ function makeEntity(id: string, name: string, type: string = 'person'): Semantic
     name,
     entityType: type,
     aliases: [],
-    properties: {},
+    metadata: {},
     scope: testScope,
     temporal: { validAt: new Date(), createdAt: new Date() },
   }
@@ -25,7 +25,7 @@ function makeEdge(id: string, sourceId: string, targetId: string, relation: stri
     targetEntityId: targetId,
     relation,
     weight: 1.0,
-    properties: {},
+    metadata: {},
     scope: testScope,
     temporal: { validAt: new Date(), createdAt: new Date() },
     evidence: [],

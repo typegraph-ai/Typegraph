@@ -1,5 +1,5 @@
-/** Result of ingesting a conversation turn. */
-export interface ConversationTurnResult {
+/** Result of ingesting a thread turn. */
+export interface ThreadTurnResult {
   memoriesCreated: number
   entitiesCreated: number
   edgesCreated: number

@@ -1,5 +1,4 @@
-import type { typegraphIdentity } from '../../types/identity.js'
-import type { Visibility } from '../../types/source.js'
+import type { AccessScope, typegraphIdentity } from '../../types/identity.js'
 import type { ChunkRef } from '../../types/chunk.js'
 
 // ── Memory Categories ──
@@ -70,12 +69,8 @@ export interface MemoryRecord extends TemporalRecord {
   metadata: Record<string, unknown>
   /** Who this memory belongs to */
   scope: typegraphIdentity
-  /**
-   * Access visibility. `undefined` / NULL means public — any recall can match.
-   * Set to `'user'` / `'tenant'` / etc. to restrict access to callers that
-   * supply a matching identity at that level.
-   */
-  visibility?: Visibility | undefined
+  /** Optional record access scope. Empty or omitted means tenant-wide recall. */
+  accessScope?: AccessScope | undefined
 }
 
 // ── Episodic Memory ──
@@ -83,12 +78,12 @@ export interface MemoryRecord extends TemporalRecord {
 
 export interface EpisodicMemory extends MemoryRecord {
   category: 'episodic'
-  /** Type of event: conversation turn, observation, action, tool trace */
+  /** Type of event: thread turn, observation, action, tool trace */
   eventType: string
   /** Participants involved in this episode */
   participants?: string[] | undefined
   /** Session this episode belongs to */
-  conversationId?: string | undefined
+  threadId?: string | undefined
   /** Ordering within a session */
   sequence?: number | undefined
   /** Whether this episode has been consolidated into semantic/procedural memory */
@@ -108,8 +103,8 @@ export interface SemanticEntity {
   aliases: string[]
   /** Deterministic external identifiers used before fuzzy/probabilistic matching. */
   externalIds?: ExternalId[] | undefined
-  /** Arbitrary typed properties */
-  properties: Record<string, unknown>
+  /** Structured metadata */
+  metadata: Record<string, unknown>
   /** Entity lifecycle status. Missing/undefined is treated as active for older rows. */
   status?: 'active' | 'merged' | 'invalidated' | undefined
   /** Set when this entity was merged into another canonical entity. */
@@ -121,19 +116,16 @@ export interface SemanticEntity {
   /** Embedding of the entity description for Phase 3.5 near-miss matching */
   descriptionEmbedding?: number[] | undefined
   scope: typegraphIdentity
-  /**
-   * Access visibility. `undefined` / NULL means public. Set to a named level
-   * to require the corresponding identity at recall time.
-   */
-  visibility?: Visibility | undefined
+  /** Optional record access scope. Empty or omitted means tenant-wide recall. */
+  accessScope?: AccessScope | undefined
   temporal: TemporalRecord
 }
 
-export type EntityMentionType = 'subject' | 'object' | 'co_occurrence' | 'entity' | 'alias' | 'source_subject'
+export type EntityMentionType = 'subject' | 'object' | 'co_occurrence' | 'entity' | 'alias' | 'document_subject'
 
 export interface SemanticEntityMention {
   entityId: string
-  sourceId: string
+  documentId: string
   chunkIndex: number
   bucketId: string
   mentionType: EntityMentionType
@@ -154,9 +146,9 @@ export interface SemanticGraphEdge {
   targetId: string
   relation: string
   weight: number
-  properties: Record<string, unknown>
+  metadata: Record<string, unknown>
   scope: typegraphIdentity
-  visibility?: Visibility | undefined
+  accessScope?: AccessScope | undefined
   temporal: TemporalRecord
   evidence: string[]
   sourceChunkRef?: ChunkRef | undefined
@@ -173,7 +165,7 @@ export interface SemanticEntityChunkEdge {
   surfaceTexts: string[]
   mentionTypes: EntityMentionType[]
   scope?: typegraphIdentity | undefined
-  visibility?: Visibility | undefined
+  accessScope?: AccessScope | undefined
   createdAt?: Date | undefined
   updatedAt?: Date | undefined
 }
@@ -187,7 +179,7 @@ export interface SemanticChunkRecord extends ChunkRef {
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
-  conversationId?: string | undefined
+  threadId?: string | undefined
 }
 
 export interface SemanticFactRecord {
@@ -196,16 +188,13 @@ export interface SemanticFactRecord {
   sourceEntityId: string
   targetEntityId: string
   relation: string
-  factText: string
   description?: string | undefined
   evidenceText?: string | undefined
-  factSearchText?: string | undefined
-  sourceChunkId?: string | undefined
+  chunkId?: string | undefined
   weight: number
-  evidenceCount: number
   embedding?: number[] | undefined
   scope: typegraphIdentity
-  visibility?: Visibility | undefined
+  accessScope?: AccessScope | undefined
   createdAt: Date
   updatedAt: Date
   invalidAt?: Date | undefined
@@ -227,14 +216,11 @@ export interface SemanticEdge {
   relation: string
   /** Confidence weight, 0-1 */
   weight: number
-  /** Arbitrary typed properties */
-  properties: Record<string, unknown>
+  /** Structured metadata */
+  metadata: Record<string, unknown>
   scope: typegraphIdentity
-  /**
-   * Access visibility. `undefined` / NULL means public. Set to a named level
-   * to require the corresponding identity at recall time.
-   */
-  visibility?: Visibility | undefined
+  /** Optional record access scope. Empty or omitted means tenant-wide recall. */
+  accessScope?: AccessScope | undefined
   temporal: TemporalRecord
   /** Memory IDs that provide evidence for this edge */
   evidence: string[]

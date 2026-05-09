@@ -35,16 +35,10 @@ function mockStore() {
 function mockEmbedding() {
   let counter = 0
   return {
-    model: 'mock-embed',
+    name: 'mock-embed',
     dimensions: 10,
-    embed: vi.fn().mockImplementation(async () => {
-      counter++
-      const vec = new Array(10).fill(0)
-      vec[counter % 10] = 1.0
-      return vec
-    }),
-    embedBatch: vi.fn().mockImplementation(async (texts: string[]) => {
-      return texts.map(() => {
+    embed: vi.fn().mockImplementation(async (input: { texts: string[] }) => {
+      return input.texts.map(() => {
         counter++
         const vec = new Array(10).fill(0)
         vec[counter % 10] = 1.0
@@ -163,18 +157,16 @@ describe('createMemoryBridge', () => {
       memoryStore: store,
       embedding: mockEmbedding(),
       llm: mockLLM(),
+      scope: { tenantId: 'acme' },
     })
 
     const memory = await bridge.remember('Prefers SMS for urgent notices', {
-      tenantId: 'acme',
       subject: {
         externalIds: [email],
         entityType: 'person',
       },
-      visibility: 'tenant',
     })
     const recalled = await bridge.recall('urgent notices', {
-      tenantId: 'acme',
       entityScope: { externalIds: [email] },
     })
 
@@ -182,14 +174,16 @@ describe('createMemoryBridge', () => {
       name: 'pat@example.com',
       entityType: 'person',
       externalIds: [email],
-      visibility: 'tenant',
+      scope: expect.objectContaining({ tenantId: 'acme' }),
+      accessScope: undefined,
     }))
     expect(store.upsertGraphEdges).toHaveBeenCalledWith([expect.objectContaining({
       sourceType: 'memory',
       sourceId: memory.id,
       targetType: 'entity',
       relation: 'ABOUT',
-      visibility: 'tenant',
+      scope: expect.objectContaining({ tenantId: 'acme' }),
+      accessScope: undefined,
     })])
     expect(store.getMemoryIdsForEntities).toHaveBeenCalledWith([expect.any(String)], { tenantId: 'acme' })
     expect(recalled).toEqual([memory])
@@ -207,10 +201,10 @@ describe('createMemoryBridge', () => {
       memoryStore: store,
       embedding: mockEmbedding(),
       llm: mockLLM(),
+      scope: { tenantId: 'acme' },
     })
 
     const recalled = await bridge.recall('urgent notices', {
-      tenantId: 'acme',
       entityScope: { externalIds: [email] },
     })
 

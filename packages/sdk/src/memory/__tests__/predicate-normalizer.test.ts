@@ -1,13 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { PredicateNormalizer, isSymmetricPredicate } from '../extraction/predicate-normalizer.js'
-import type { EmbeddingProvider } from '../../embedding/provider.js'
+import type { Embedder } from '../../embedding/provider.js'
 
-function mockEmbedding(): EmbeddingProvider {
+function mockEmbedding(): Embedder {
   return {
-    model: 'test-model',
+    name: 'test-model',
     dimensions: 3,
-    embed: vi.fn().mockResolvedValue([0.1, 0.2, 0.3]),
-    embedBatch: vi.fn().mockResolvedValue([[0.1, 0.2, 0.3]]),
+    embed: vi.fn().mockResolvedValue([[0.1, 0.2, 0.3]]),
   }
 }
 

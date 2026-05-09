@@ -1,5 +1,5 @@
-import type { SourceInput } from './connector.js'
-import type { Visibility } from './source.js'
+import type { DocumentInput } from './document.js'
+import type { AccessScope } from './identity.js'
 
 /**
  * Options for an ingest() call.
@@ -8,11 +8,11 @@ import type { Visibility } from './source.js'
  *
  * - **Bucket-mergeable** (inherit from `bucket.indexDefaults` when unset):
  *   `chunkSize`, `chunkOverlap`, `deduplicateBy`, `propagateMetadata`,
- *   `stripMarkdownForEmbedding`, `preprocessForEmbedding`, `visibility`,
+ *   `stripMarkdownForEmbedding`, `preprocessForEmbedding`, `accessScope`,
  *   `graphExtraction`.
  *
  * - **Runtime-only** (never inherit from bucket defaults):
- *   `bucketId`, `mode`, `tenantId`, `groupId`, `userId`, `agentId`, `conversationId`,
+ *   `bucketId`, `mode`, `tenantId`, `groupId`, `userId`, `agentId`, `threadId`,
  *   `removeDeleted`, `dryRun`, `concurrency`, `onProgress`, `traceId`, `spanId`.
  */
 export interface IngestOptions {
@@ -26,18 +26,18 @@ export interface IngestOptions {
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
-  conversationId?: string | undefined
+  threadId?: string | undefined
 
   // Chunking (bucket-mergeable)
   chunkSize?: number | undefined
   chunkOverlap?: number | undefined
 
-  // Source properties (bucket-mergeable)
-  /** Access visibility for sources from this ingest call. */
-  visibility?: Visibility | undefined
+  // Document properties (bucket-mergeable)
+  /** Access principals allowed to retrieve documents from this ingest call. */
+  accessScope?: AccessScope | undefined
 
   // Processing (bucket-mergeable)
-  deduplicateBy?: string[] | ((source: SourceInput) => string) | undefined
+  deduplicateBy?: string[] | ((document: DocumentInput) => string) | undefined
   propagateMetadata?: string[] | undefined
   /** If true, strip markdown syntax from chunk content before embedding. Original content is stored as-is. */
   stripMarkdownForEmbedding?: boolean | undefined
@@ -127,7 +127,7 @@ export interface IndexResult {
 }
 
 export interface ExtractionFailure {
-  sourceId: string
+  documentId: string
   chunkIndex: number
   reason: 'timeout' | 'error'
   message?: string

@@ -1,17 +1,70 @@
 export type {
-  SourceInput,
-  SourceSubject,
+  DocumentInput,
+  typegraphDocument,
+  DocumentStatus,
+  DocumentFilter,
+  DocumentStorageFilter,
+  UpsertDocumentInput,
+  UpsertedDocumentRecord,
   ChunkOpts,
   Chunk,
-} from './connector.js'
+} from './document.js'
+
+export type {
+  EventInput,
+  EventFilter,
+  EventStorageFilter,
+  typegraphEventRecord,
+  UpsertEventInput,
+} from './event.js'
+
+export type {
+  ThreadInput,
+  ThreadTurnInput,
+  ThreadTurnResult,
+  ThreadFilter,
+  ThreadStorageFilter,
+  ThreadEventInput,
+  typegraphThread,
+  UpsertThreadInput,
+} from './thread.js'
+
+export type {
+  LinkKind,
+  typegraphLink,
+  UpsertLinkInput,
+} from './link.js'
+
+export type {
+  OntologyConfig,
+  OntologyEntityConfig,
+  OntologyRelationConfig,
+  CompiledOntology,
+} from './ontology.js'
+
+export type {
+  Extractor,
+  ExtractorCapabilities,
+  ExtractionCoreferenceCache,
+  ExtractionCoreferenceCacheKey,
+  ExtractorContext,
+  ExtractorInput,
+  ExtractedEntity,
+  ExtractedRelation,
+  ExtractionResult,
+  Reranker,
+  RerankerOptions,
+} from './extractor.js'
+
+export * from './identity.js'
 
 export type {
   Bucket,
   CreateBucketInput,
   BucketListFilter,
+  BucketStorageFilter,
   IndexDefaults,
   EmbeddingConfig,
-  EmbeddingInput,
 } from './bucket.js'
 
 export type {
@@ -27,19 +80,25 @@ export type {
   HashStoreAdapter,
   VectorStoreAdapter,
   UndeployResult,
-  ScoredChunkWithSource,
+  ScoredChunkWithDocument,
 } from './adapter.js'
 
 export type {
-  QuerySignals,
+  SearchOptions,
+  SearchResource,
+  SearchWeights,
+  SearchFusion,
+  SearchRerankOptions,
+  SearchExplanation,
+  OutputScores,
   QueryChunkResult,
   QueryMemoryRecord,
   QueryMemoryResult,
   QueryResults,
-  ContextFormat,
-  ContextSection,
-  QueryContextOptions,
-  QueryContextStats,
+  PromptFormat,
+  PromptSection,
+  PromptBuilderOptions,
+  PromptStats,
   RawScores,
   NormalizedScores,
   QueryEntityScope,
@@ -56,20 +115,9 @@ export type {
 
 export { IndexError } from './index-types.js'
 
-export type {
-  typegraphSource,
-  SourceStatus,
-  Visibility,
-  SourceFilter,
-  UpsertSourceInput,
-  UpsertedSourceRecord,
-} from './source.js'
-
 export type { typegraphHooks } from './hooks.js'
 
 export type { LLMProvider, LLMGenerateOptions, LLMConfig } from './llm-provider.js'
-
-export type { typegraphIdentity } from './identity.js'
 
 export type {
   MemoryBridge,
@@ -113,11 +161,9 @@ export type {
   ForgetOpts,
   CorrectOpts,
   RecallOpts,
-  AddConversationTurnOpts,
+  AddThreadTurnOpts,
   HealthCheckOpts,
 } from './graph-bridge.js'
-
-export type { ExtractionConfig } from './extraction-config.js'
 
 export type {
   typegraphEventType,
@@ -126,7 +172,14 @@ export type {
   typegraphEventSink,
 } from './events.js'
 
-export { TypegraphError, NotFoundError, NotInitializedError, ConfigError } from './errors.js'
+export {
+  TypegraphError,
+  NotFoundError,
+  NotInitializedError,
+  ConfigError,
+  GraphSelfEdgeError,
+} from './errors.js'
+export type { GraphSelfEdgeErrorDetails } from './errors.js'
 
 export type {
   PolicyType,
@@ -142,7 +195,6 @@ export type {
 } from './policy.js'
 
 export type {
-  ConversationTurnResult,
   MemoryHealthReport,
 } from './memory.js'
 export type {

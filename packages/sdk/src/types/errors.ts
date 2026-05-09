@@ -39,3 +39,33 @@ export class ConfigError extends TypegraphError {
     this.name = 'ConfigError'
   }
 }
+
+export interface GraphSelfEdgeErrorDetails {
+  entityId: string
+  entityName?: string | undefined
+  relation: string
+  sourceRef?: unknown
+  targetRef?: unknown
+}
+
+export class GraphSelfEdgeError extends TypegraphError {
+  public readonly entityId: string
+  public readonly entityName?: string | undefined
+  public readonly relation: string
+  public readonly sourceRef?: unknown
+  public readonly targetRef?: unknown
+
+  constructor(details: GraphSelfEdgeErrorDetails) {
+    super(
+      `Refusing to create self-edge for entity ${details.entityId}`,
+      'GRAPH_SELF_EDGE',
+      400,
+    )
+    this.name = 'GraphSelfEdgeError'
+    this.entityId = details.entityId
+    this.entityName = details.entityName
+    this.relation = details.relation
+    this.sourceRef = details.sourceRef
+    this.targetRef = details.targetRef
+  }
+}

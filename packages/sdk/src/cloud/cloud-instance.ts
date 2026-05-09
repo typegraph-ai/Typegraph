@@ -1,33 +1,29 @@
-import type { typegraphInstance, typegraphConfig, BucketsApi, SourcesApi, JobsApi, GraphApi } from '../typegraph.js'
+import type { typegraphInstance, typegraphConfig, BucketsApi, DocumentsApi, EventsApi, ThreadsApi, JobsApi, GraphApi, RequestOptions, DocumentIngestOptions } from '../typegraph.js'
 import type { Bucket, CreateBucketInput, BucketListFilter } from '../types/bucket.js'
 import type { QueryOpts, QueryResponse } from '../types/query.js'
 import type { IngestOptions, IndexResult } from '../types/index-types.js'
-import type { EmbeddingProvider } from '../embedding/provider.js'
-import type { SourceInput, Chunk } from '../types/connector.js'
-import type { typegraphSource, SourceFilter } from '../types/source.js'
-import type { typegraphIdentity } from '../types/identity.js'
+import type { Embedder } from '../embedding/provider.js'
+import type { DocumentInput, Chunk, typegraphDocument, DocumentFilter } from '../types/document.js'
+import type { EventFilter, EventInput, typegraphEventRecord } from '../types/event.js'
+import type { ThreadFilter, ThreadInput, ThreadTurnInput, ThreadTurnResult as GraphThreadTurnResult, typegraphThread } from '../types/thread.js'
+import type { TypeGraphOptions, typegraphIdentity } from '../types/identity.js'
 import type { CreatePolicyInput, UpdatePolicyInput, Policy, PolicyType } from '../types/policy.js'
 import type { UndeployResult } from '../types/adapter.js'
 import type { PaginationOpts, PaginatedResult } from '../types/pagination.js'
-import type { ConversationTurnResult, MemoryHealthReport } from '../types/memory.js'
+import type { ThreadTurnResult, MemoryHealthReport } from '../types/memory.js'
 import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
 import type { Job, JobFilter } from '../types/job.js'
-import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult, RememberOpts, ForgetOpts, CorrectOpts, HealthCheckOpts, AddConversationTurnOpts } from '../types/graph-bridge.js'
-import { DEFAULT_BUCKET_ID, normalizeSourceInput } from '../typegraph.js'
+import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult, RememberOpts, ForgetOpts, CorrectOpts, HealthCheckOpts, AddThreadTurnOpts } from '../types/graph-bridge.js'
+import { DEFAULT_BUCKET_ID, normalizeDocumentInput } from '../typegraph.js'
 import { HttpClient } from './http-client.js'
 import type { CloudConfig } from './http-client.js'
-import { assertHasMeaningfulFilter, compactIdentity, optionalCompactObject, withDefaultTenant } from '../utils/input.js'
+import { assertHasMeaningfulFilter, compactTypeGraphContext, contextToIdentity, optionalCompactObject } from '../utils/input.js'
 
 /**
  * Extended typegraph instance for cloud mode.
- * Includes source CRUD methods available via the hosted API.
+ * Includes document/event/thread methods available via the hosted API.
  */
-export interface typegraphCloudInstance extends typegraphInstance {
-  listSources(filter?: SourceFilter | null): Promise<typegraphSource[]>
-  getSource(sourceId: string): Promise<typegraphSource>
-  updateSource(sourceId: string, update: Partial<typegraphSource>): Promise<typegraphSource>
-  deleteSources(filter: SourceFilter | null): Promise<number>
-}
+export interface typegraphCloudInstance extends typegraphInstance {}
 
 /**
  * Create a typegraph instance backed by the hosted cloud service.
@@ -37,59 +33,37 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
   const client = new HttpClient(config)
   const e = encodeURIComponent
 
-  function normalizeOpts<T extends typegraphIdentity>(opts: T | null | undefined, method: string): T {
-    return withDefaultTenant(opts, config.tenantId, method) as T
+  function normalizeOpts<T extends object>(opts: T | null | undefined, method: string): T {
+    return optionalCompactObject<T>(opts, method) as T
   }
 
-  function splitIdentityOpts<T extends typegraphIdentity>(
+  function splitContextOpts<T extends TypeGraphOptions>(
     opts: T | null | undefined,
     method: string,
-  ): { identity: typegraphIdentity; rest: Omit<T, keyof typegraphIdentity> } {
-    const normalized = normalizeOpts(opts, method) as T & Record<string, unknown>
-    const {
-      tenantId,
-      groupId,
-      userId,
-      agentId,
-      conversationId,
-      agentName,
-      agentDescription,
-      agentVersion,
-      ...rest
-    } = normalized
+  ): { identity: typegraphIdentity; rest: Omit<T, 'context'> } {
+    const normalized = normalizeOpts<T>(opts, method) as T & Record<string, unknown>
+    const { context, ...rest } = normalized
     return {
-      identity: compactIdentity({
-        tenantId: tenantId as string | undefined,
-        groupId: groupId as string | undefined,
-        userId: userId as string | undefined,
-        agentId: agentId as string | undefined,
-        conversationId: conversationId as string | undefined,
-        agentName: agentName as string | undefined,
-        agentDescription: agentDescription as string | undefined,
-        agentVersion: agentVersion as string | undefined,
-      }),
-      rest: rest as Omit<T, keyof typegraphIdentity>,
+      identity: contextToIdentity(compactTypeGraphContext(context as TypeGraphOptions['context'], method), config.tenantId),
+      rest: rest as Omit<T, 'context'>,
     }
   }
 
-  const buckets: BucketsApi = {
+
+  const bucket: BucketsApi = {
     async create(input: CreateBucketInput): Promise<Bucket> {
       return client.post<Bucket>('/v1/buckets', input)
     },
     async get(bucketId: string): Promise<Bucket | undefined> {
       return client.get<Bucket>(`/v1/buckets/${e(bucketId)}`)
     },
-    async list(filter?: BucketListFilter | null, pagination?: PaginationOpts | null): Promise<Bucket[] | PaginatedResult<Bucket>> {
-      const normalizedFilter = optionalCompactObject<BucketListFilter>(filter, 'buckets.list', 'filter') as BucketListFilter
+    async list(filter?: BucketListFilter | null, _opts?: TypeGraphOptions | null, pagination?: PaginationOpts | null): Promise<Bucket[] | PaginatedResult<Bucket>> {
+      const normalizedFilter = optionalCompactObject<BucketListFilter>(filter, 'bucket.list', 'filter') as BucketListFilter
       const normalizedPagination = pagination == null
         ? undefined
-        : optionalCompactObject<PaginationOpts>(pagination, 'buckets.list', 'pagination') as PaginationOpts
+        : optionalCompactObject<PaginationOpts>(pagination, 'bucket.list', 'pagination') as PaginationOpts
       const searchParams = new URLSearchParams()
-      if (normalizedFilter.tenantId) searchParams.set('tenantId', normalizedFilter.tenantId)
-      if (normalizedFilter.groupId) searchParams.set('groupId', normalizedFilter.groupId)
-      if (normalizedFilter.userId) searchParams.set('userId', normalizedFilter.userId)
-      if (normalizedFilter.agentId) searchParams.set('agentId', normalizedFilter.agentId)
-      if (normalizedFilter.conversationId) searchParams.set('conversationId', normalizedFilter.conversationId)
+      if (normalizedFilter.name) searchParams.set('name', normalizedFilter.name)
       if (normalizedPagination?.limit != null) searchParams.set('limit', String(normalizedPagination.limit))
       if (normalizedPagination?.offset != null) searchParams.set('offset', String(normalizedPagination.offset))
       const qs = searchParams.toString()
@@ -106,45 +80,88 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     },
   }
 
-  const sources: SourcesApi = {
-    async get(id: string): Promise<typegraphSource | null> {
-      return client.get<typegraphSource | null>(`/v1/sources/${e(id)}`)
+  const document: DocumentsApi = {
+    async ingest(input: DocumentInput | DocumentInput[], opts?: DocumentIngestOptions | null): Promise<IndexResult> {
+      const normalizedOpts = normalizeOpts<IngestOptions & RequestOptions>(opts, 'document.ingest')
+      const bucketId = normalizedOpts.bucketId || DEFAULT_BUCKET_ID
+      const documents = (Array.isArray(input) ? input : [input]).map(normalizeDocumentInput)
+      return client.post<IndexResult>(`/v1/buckets/${e(bucketId)}/documents/ingest`, { documents, opts: normalizedOpts })
     },
-    async list(filter?: SourceFilter | null, pagination?: PaginationOpts | null): Promise<typegraphSource[] | PaginatedResult<typegraphSource>> {
-      const normalizedFilter = optionalCompactObject<SourceFilter>(filter, 'sources.list', 'filter') as SourceFilter
+
+    async ingestPreChunked(input: DocumentInput, chunks: Chunk[], opts?: DocumentIngestOptions | null): Promise<IndexResult> {
+      const normalizedOpts = normalizeOpts<IngestOptions & RequestOptions>(opts, 'document.ingestPreChunked')
+      const bucketId = normalizedOpts.bucketId || DEFAULT_BUCKET_ID
+      return client.post<IndexResult>(`/v1/buckets/${e(bucketId)}/documents/ingest`, { document: normalizeDocumentInput(input), chunks, opts: normalizedOpts })
+    },
+
+    async get(id: string): Promise<typegraphDocument | null> {
+      return client.get<typegraphDocument | null>(`/v1/documents/${e(id)}`)
+    },
+    async list(filter?: DocumentFilter | null, _opts?: TypeGraphOptions | null, pagination?: PaginationOpts | null): Promise<typegraphDocument[] | PaginatedResult<typegraphDocument>> {
+      const normalizedFilter = optionalCompactObject<DocumentFilter>(filter, 'document.list', 'filter') as DocumentFilter
       const normalizedPagination = pagination == null
         ? undefined
-        : optionalCompactObject<PaginationOpts>(pagination, 'sources.list', 'pagination') as PaginationOpts
+        : optionalCompactObject<PaginationOpts>(pagination, 'document.list', 'pagination') as PaginationOpts
       if (normalizedPagination) {
-        return client.post<PaginatedResult<typegraphSource>>('/v1/sources/list', { ...normalizedFilter, ...normalizedPagination })
+        return client.post<PaginatedResult<typegraphDocument>>('/v1/documents/list', { ...normalizedFilter, ...normalizedPagination })
       }
-      return client.post<typegraphSource[]>('/v1/sources/list', normalizedFilter)
+      return client.post<typegraphDocument[]>('/v1/documents/list', normalizedFilter)
     },
-    async update(id: string, input): Promise<typegraphSource> {
-      return client.patch<typegraphSource>(`/v1/sources/${e(id)}`, input)
+    async update(id: string, input): Promise<typegraphDocument> {
+      return client.patch<typegraphDocument>(`/v1/documents/${e(id)}`, input)
     },
-    async delete(filter: SourceFilter | null): Promise<number> {
-      const normalizedFilter = optionalCompactObject<SourceFilter>(filter, 'sources.delete', 'filter') as SourceFilter
-      assertHasMeaningfulFilter(normalizedFilter, 'sources.delete')
-      return client.delete<number>('/v1/sources', normalizedFilter)
+    async delete(filter: DocumentFilter | null): Promise<number> {
+      const normalizedFilter = optionalCompactObject<DocumentFilter>(filter, 'document.delete', 'filter') as DocumentFilter
+      assertHasMeaningfulFilter(normalizedFilter, 'document.delete')
+      return client.delete<number>('/v1/documents', normalizedFilter)
     },
   }
 
-  const jobs: JobsApi = {
+  const event: EventsApi = {
+    async ingest(input: EventInput | EventInput[], opts?: (RequestOptions & { bucketId?: string | undefined }) | null) {
+      const { identity, rest } = splitContextOpts(opts, 'event.ingest')
+      return client.post('/v1/events/ingest', { event: input, identity, ...rest })
+    },
+    async get(id: string): Promise<typegraphEventRecord | null> {
+      return client.get<typegraphEventRecord | null>(`/v1/events/${e(config.tenantId)}/${e(id)}`)
+    },
+    async list(filter?: EventFilter | null): Promise<typegraphEventRecord[]> {
+      return client.post<typegraphEventRecord[]>('/v1/events/list', optionalCompactObject<EventFilter>(filter, 'event.list', 'filter'))
+    },
+  }
+
+  const thread: ThreadsApi = {
+    async upsert(input: ThreadInput, opts?: RequestOptions | null): Promise<typegraphThread> {
+      const { identity } = splitContextOpts(opts, 'thread.upsert')
+      return client.post<typegraphThread>('/v1/threads', { thread: input, identity })
+    },
+    async get(id: string): Promise<typegraphThread | null> {
+      return client.get<typegraphThread | null>(`/v1/threads/${e(config.tenantId)}/${e(id)}`)
+    },
+    async list(filter?: ThreadFilter | null): Promise<typegraphThread[]> {
+      return client.post<typegraphThread[]>('/v1/threads/list', optionalCompactObject<ThreadFilter>(filter, 'thread.list', 'filter'))
+    },
+    async addTurn(threadId: string, turn: ThreadTurnInput, opts?: RequestOptions | null): Promise<GraphThreadTurnResult> {
+      const { identity } = splitContextOpts(opts, 'thread.addTurn')
+      return client.post<GraphThreadTurnResult>(`/v1/threads/${e(threadId)}/turns`, { turn, identity })
+    },
+  }
+
+  const job: JobsApi = {
     async get(id: string): Promise<Job | null> {
       return client.get<Job | null>(`/v1/jobs/${e(id)}`)
     },
     async list(filter?: JobFilter | null): Promise<Job[]> {
-      return client.post<Job[]>('/v1/jobs/list', optionalCompactObject<JobFilter>(filter, 'jobs.list', 'filter'))
+      return client.post<Job[]>('/v1/jobs/list', optionalCompactObject<JobFilter>(filter, 'job.list', 'filter'))
     },
     async upsert(): Promise<Job> {
-      throw new Error('jobs.upsert() is a server-side primitive and is not available in cloud mode.')
+      throw new Error('job.upsert() is a server-side primitive and is not available in cloud mode.')
     },
     async updateStatus(): Promise<void> {
-      throw new Error('jobs.updateStatus() is a server-side primitive and is not available in cloud mode.')
+      throw new Error('job.updateStatus() is a server-side primitive and is not available in cloud mode.')
     },
     async incrementProgress(): Promise<void> {
-      throw new Error('jobs.incrementProgress() is a server-side primitive and is not available in cloud mode.')
+      throw new Error('job.incrementProgress() is a server-side primitive and is not available in cloud mode.')
     },
   }
 
@@ -155,23 +172,25 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     async upsertEntities(inputs: UpsertGraphEntityInput[]): Promise<EntityDetail[]> {
       return client.post<EntityDetail[]>('/v1/graph/entities/batch', { entities: inputs })
     },
-    async resolveEntity(ref: GraphEntityRef | string, identity?: typegraphIdentity | null): Promise<EntityDetail | null> {
+    async resolveEntity(ref: GraphEntityRef | string, opts?: TypeGraphOptions | null): Promise<EntityDetail | null> {
+      const { identity } = splitContextOpts(opts, 'graph.resolveEntity')
       return client.post<EntityDetail | null>('/v1/graph/entities/resolve', {
         ref,
-        identity: normalizeOpts(identity, 'graph.resolveEntity'),
+        identity,
       })
     },
-    async linkExternalIds(entityId: string, externalIds: ExternalId[], identity?: typegraphIdentity | null): Promise<EntityDetail> {
+    async linkExternalIds(entityId: string, externalIds: ExternalId[], opts?: TypeGraphOptions | null): Promise<EntityDetail> {
+      const { identity } = splitContextOpts(opts, 'graph.linkExternalIds')
       return client.post<EntityDetail>(`/v1/graph/entities/${e(entityId)}/external-ids`, {
         externalIds,
-        identity: normalizeOpts(identity, 'graph.linkExternalIds'),
+        identity,
       })
     },
     async mergeEntities(input: MergeGraphEntitiesInput): Promise<MergeGraphEntitiesResult> {
       return client.post<MergeGraphEntitiesResult>('/v1/graph/entities/merge', input)
     },
     async deleteEntity(entityId: string, opts?: DeleteGraphEntityOpts | null): Promise<DeleteGraphEntityResult> {
-      const { identity, rest } = splitIdentityOpts<DeleteGraphEntityOpts>(opts, 'graph.deleteEntity')
+      const { identity, rest } = splitContextOpts<DeleteGraphEntityOpts & TypeGraphOptions>(opts as DeleteGraphEntityOpts & TypeGraphOptions | null, 'graph.deleteEntity')
       return client.delete<DeleteGraphEntityResult>(`/v1/graph/entities/${e(entityId)}`, { ...rest, identity })
     },
     async upsertEdge(input: UpsertGraphEdgeInput): Promise<EdgeResult> {
@@ -186,26 +205,27 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     async upsertFacts(inputs: UpsertGraphFactInput[]): Promise<FactResult[]> {
       return client.post<FactResult[]>('/v1/graph/facts/batch', { facts: inputs })
     },
-    async searchEntities(query: string, identity: typegraphIdentity | null, opts?: {
+    async searchEntities(query: string, opts?: ({
       limit?: number
       entityType?: string
       minConnections?: number
-    } | null): Promise<EntityResult[]> {
-      const normalizedIdentity = normalizeOpts(identity, 'graph.searchEntities')
+    } & TypeGraphOptions) | null): Promise<EntityResult[]> {
+      const { identity, rest } = splitContextOpts(opts, 'graph.searchEntities')
       const normalizedOpts = optionalCompactObject<{
         limit?: number
         entityType?: string
         minConnections?: number
-      }>(opts, 'graph.searchEntities') as {
+      } & TypeGraphOptions>(rest, 'graph.searchEntities') as {
         limit?: number
         entityType?: string
         minConnections?: number
       }
-      return client.post<EntityResult[]>('/v1/graph/entities/search', { query, identity: normalizedIdentity, ...normalizedOpts })
+      return client.post<EntityResult[]>('/v1/graph/entities/search', { query, identity, ...normalizedOpts })
     },
-    async getEntity(id: string, opts?: typegraphIdentity | null): Promise<EntityDetail | null> {
+    async getEntity(id: string, opts?: TypeGraphOptions | null): Promise<EntityDetail | null> {
       const params = new URLSearchParams()
-      for (const [key, value] of Object.entries(normalizeOpts(opts, 'graph.getEntity'))) {
+      const { identity } = splitContextOpts(opts, 'graph.getEntity')
+      for (const [key, value] of Object.entries(identity)) {
         if (typeof value === 'string') params.set(key, value)
       }
       const query = params.toString()
@@ -215,60 +235,64 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
       direction?: 'in' | 'out' | 'both'
       relation?: string
       limit?: number
-    } & typegraphIdentity) | null): Promise<EdgeResult[]> {
-      const { identity, rest } = splitIdentityOpts<{
+    } & TypeGraphOptions) | null): Promise<EdgeResult[]> {
+      const { identity, rest } = splitContextOpts<{
         direction?: 'in' | 'out' | 'both'
         relation?: string
         limit?: number
-      } & typegraphIdentity>(opts, 'graph.getEdges')
+      } & TypeGraphOptions>(opts, 'graph.getEdges')
       return client.post<EdgeResult[]>(`/v1/graph/entities/${e(entityId)}/edges`, { ...rest, identity })
     },
     async searchFacts(query: string, opts?: FactSearchOpts | null): Promise<FactResult[]> {
-      const { identity, rest } = splitIdentityOpts<FactSearchOpts>(opts, 'graph.searchFacts')
+      const { identity, rest } = splitContextOpts<FactSearchOpts & TypeGraphOptions>(opts as FactSearchOpts & TypeGraphOptions | null, 'graph.searchFacts')
       return client.post<FactResult[]>('/v1/graph/facts/search', { query, identity, ...rest })
     },
     async explore(query: string, opts?: GraphExploreOpts | null): Promise<GraphExploreResult> {
-      const { identity, rest } = splitIdentityOpts<GraphExploreOpts>(opts, 'graph.explore')
+      const { identity, rest } = splitContextOpts<GraphExploreOpts & TypeGraphOptions>(opts as GraphExploreOpts & TypeGraphOptions | null, 'graph.explore')
       return client.post<GraphExploreResult>('/v1/graph/explore', { query, identity, ...rest })
     },
     async getChunksForEntity(entityId: string, opts?: ({
       bucketIds?: string[] | undefined
       limit?: number | undefined
-    } & typegraphIdentity) | null): Promise<ChunkResult[]> {
-      const { identity, rest } = splitIdentityOpts<{
+    } & TypeGraphOptions) | null): Promise<ChunkResult[]> {
+      const { identity, rest } = splitContextOpts<{
         bucketIds?: string[] | undefined
         limit?: number | undefined
-      } & typegraphIdentity>(opts, 'graph.getChunksForEntity')
+      } & TypeGraphOptions>(opts, 'graph.getChunksForEntity')
       return client.post<ChunkResult[]>(`/v1/graph/entities/${e(entityId)}/chunks`, { ...rest, identity })
     },
     async explainQuery(query: string, opts?: GraphExplainOpts | null): Promise<GraphSearchTrace> {
-      const { identity, rest } = splitIdentityOpts<GraphExplainOpts>(opts, 'graph.explainQuery')
+      const { identity, rest } = splitContextOpts<GraphExplainOpts & TypeGraphOptions>(opts as GraphExplainOpts & TypeGraphOptions | null, 'graph.explainQuery')
       return client.post<GraphSearchTrace>('/v1/graph/query/explain', { query, identity, ...rest })
     },
-    async backfill(identity: typegraphIdentity | null, opts?: GraphBackfillOpts | null): Promise<GraphBackfillResult> {
+    async backfill(opts?: (GraphBackfillOpts & TypeGraphOptions) | null): Promise<GraphBackfillResult> {
+      const { identity, rest } = splitContextOpts<GraphBackfillOpts & TypeGraphOptions>(opts, 'graph.backfill')
       return client.post<GraphBackfillResult>('/v1/graph/backfill', {
-        identity: normalizeOpts(identity, 'graph.backfill'),
-        ...optionalCompactObject<GraphBackfillOpts>(opts, 'graph.backfill'),
+        identity,
+        ...rest,
       })
     },
     async getSubgraph(opts: SubgraphOpts): Promise<SubgraphResult> {
       return client.post<SubgraphResult>('/v1/graph/subgraph', optionalCompactObject<SubgraphOpts>(opts, 'graph.getSubgraph'))
     },
-    async stats(identity: typegraphIdentity | null): Promise<GraphStats> {
-      return client.post<GraphStats>('/v1/graph/stats', { identity: normalizeOpts(identity, 'graph.stats') })
+    async stats(opts?: TypeGraphOptions | null): Promise<GraphStats> {
+      const { identity } = splitContextOpts(opts, 'graph.stats')
+      return client.post<GraphStats>('/v1/graph/stats', { identity })
     },
-    async getRelationTypes(identity: typegraphIdentity | null): Promise<Array<{ relation: string; count: number }>> {
-      return client.post('/v1/graph/relation-types', { identity: normalizeOpts(identity, 'graph.getRelationTypes') })
+    async getRelationTypes(opts?: TypeGraphOptions | null): Promise<Array<{ relation: string; count: number }>> {
+      const { identity } = splitContextOpts(opts, 'graph.getRelationTypes')
+      return client.post('/v1/graph/relation-types', { identity })
     },
-    async getEntityTypes(identity: typegraphIdentity | null): Promise<Array<{ entityType: string; count: number }>> {
-      return client.post('/v1/graph/entity-types', { identity: normalizeOpts(identity, 'graph.getEntityTypes') })
+    async getEntityTypes(opts?: TypeGraphOptions | null): Promise<Array<{ entityType: string; count: number }>> {
+      const { identity } = splitContextOpts(opts, 'graph.getEntityTypes')
+      return client.post('/v1/graph/entity-types', { identity })
     },
   }
 
   function recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
   function recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
   function recall(query: string, opts?: RecallOpts | null): Promise<string | MemoryRecord[]> {
-    const { identity, rest } = splitIdentityOpts<RecallOpts>(opts, 'recall')
+    const { identity, rest } = splitContextOpts<RecallOpts>(opts, 'recall')
     if (rest.format) {
       return client.post<string>('/v1/memory/recall', { query, identity, ...rest })
     }
@@ -288,34 +312,36 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
       return { success: false, message: 'undeploy() is not available in cloud mode — infrastructure is managed server-side.' }
     },
 
-    buckets,
-    sources,
-    jobs,
+    bucket,
+    document,
+    event,
+    thread,
+    job,
     graph,
 
-    policies: {
+    policy: {
       async create(input: CreatePolicyInput): Promise<Policy> {
-        return client.post<Policy>('/v1/policies', input)
+        return client.post<Policy>('/v1/policy', input)
       },
       async get(id: string): Promise<Policy | null> {
-        return client.get<Policy | null>(`/v1/policies/${e(id)}`)
+        return client.get<Policy | null>(`/v1/policy/${e(id)}`)
       },
       async list(filter?: { tenantId?: string; policyType?: PolicyType; enabled?: boolean } | null): Promise<Policy[]> {
-        return client.post<Policy[]>('/v1/policies/list', optionalCompactObject<{ tenantId?: string; policyType?: PolicyType; enabled?: boolean }>(filter, 'policies.list', 'filter'))
+        return client.post<Policy[]>('/v1/policy/list', optionalCompactObject<{ tenantId?: string; policyType?: PolicyType; enabled?: boolean }>(filter, 'policy.list', 'filter'))
       },
       async update(id: string, input: UpdatePolicyInput): Promise<Policy> {
-        return client.patch<Policy>(`/v1/policies/${e(id)}`, input)
+        return client.patch<Policy>(`/v1/policy/${e(id)}`, input)
       },
       async delete(id: string): Promise<void> {
-        await client.delete(`/v1/policies/${e(id)}`)
+        await client.delete(`/v1/policy/${e(id)}`)
       },
     },
 
-    getEmbeddingForBucket(_bucketId: string): EmbeddingProvider {
+    getEmbeddingForBucket(_bucketId: string): Embedder {
       throw new Error('getEmbeddingForBucket() is not available in cloud mode — embedding is managed server-side.')
     },
 
-    getDistinctEmbeddings(): Map<string, EmbeddingProvider> {
+    getDistinctEmbeddings(): Map<string, Embedder> {
       throw new Error('getDistinctEmbeddings() is not available in cloud mode — embedding is managed server-side.')
     },
 
@@ -323,55 +349,42 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
       throw new Error('groupBucketsByModel() is not available in cloud mode — embedding is managed server-side.')
     },
 
-    getQueryEmbeddingForBucket(_bucketId: string): EmbeddingProvider {
-      throw new Error('getQueryEmbeddingForBucket() is not available in cloud mode — embedding is managed server-side.')
+    getSearchEmbeddingForBucket(_bucketId: string): Embedder {
+      throw new Error('getSearchEmbeddingForBucket() is not available in cloud mode — embedding is managed server-side.')
     },
 
-    async query(text: string, opts?: QueryOpts | null): Promise<QueryResponse> {
-      return client.post<QueryResponse>('/v1/query', { text, ...normalizeOpts<QueryOpts>(opts, 'query') })
-    },
-
-    async ingest(sources: SourceInput[], opts?: IngestOptions | null): Promise<IndexResult> {
-      const normalizedOpts = normalizeOpts<IngestOptions>(opts, 'ingest')
-      const bucketId = normalizedOpts.bucketId || DEFAULT_BUCKET_ID
-      const normalizedSources = sources.map(normalizeSourceInput)
-      return client.post<IndexResult>(`/v1/buckets/${e(bucketId)}/ingest`, { sources: normalizedSources, opts: normalizedOpts })
-    },
-
-    async ingestPreChunked(source: SourceInput, chunks: Chunk[], opts?: IngestOptions | null): Promise<IndexResult> {
-      const normalizedOpts = normalizeOpts<IngestOptions>(opts, 'ingestPreChunked')
-      const bucketId = normalizedOpts.bucketId || DEFAULT_BUCKET_ID
-      return client.post<IndexResult>(`/v1/buckets/${e(bucketId)}/ingest`, { source: normalizeSourceInput(source), chunks, opts: normalizedOpts })
+    async search(text: string, opts?: QueryOpts | null): Promise<QueryResponse> {
+      return client.post<QueryResponse>('/v1/search', { text, ...normalizeOpts<QueryOpts>(opts, 'search') })
     },
 
     async remember(content: string, opts?: RememberOpts | null): Promise<MemoryRecord> {
-      const { identity, rest } = splitIdentityOpts<RememberOpts>(opts, 'remember')
+      const { identity, rest } = splitContextOpts<RememberOpts>(opts, 'remember')
       return client.post<MemoryRecord>('/v1/memory/remember', { content, identity, ...rest })
     },
 
     async forget(id: string, opts?: ForgetOpts | null): Promise<void> {
-      const { identity, rest } = splitIdentityOpts<ForgetOpts>(opts, 'forget')
+      const { identity, rest } = splitContextOpts<ForgetOpts>(opts, 'forget')
       await client.post('/v1/memory/forget', { id, identity, ...rest })
     },
 
     async correct(correction: string, opts?: CorrectOpts | null): Promise<{ invalidated: number; created: number; summary: string }> {
-      const { identity, rest } = splitIdentityOpts<CorrectOpts>(opts, 'correct')
+      const { identity, rest } = splitContextOpts<CorrectOpts>(opts, 'correct')
       return client.post('/v1/memory/correct', { correction, identity, ...rest })
     },
 
     recall: recall as typegraphInstance['recall'],
 
     async healthCheck(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport> {
-      const { identity, rest } = splitIdentityOpts<HealthCheckOpts>(opts, 'healthCheck')
+      const { identity, rest } = splitContextOpts<HealthCheckOpts>(opts, 'healthCheck')
       return client.post<MemoryHealthReport>('/v1/memory/health', { identity, ...rest })
     },
 
-    async addConversationTurn(
+    async addThreadTurn(
       messages: Array<{ role: string; content: string; timestamp?: Date }>,
-      opts?: AddConversationTurnOpts | null,
-    ): Promise<ConversationTurnResult> {
-      const { identity, rest } = splitIdentityOpts<AddConversationTurnOpts>(opts, 'addConversationTurn')
-      return client.post<ConversationTurnResult>('/v1/memory/conversation', { messages, identity, ...rest })
+      opts?: AddThreadTurnOpts | null,
+    ): Promise<ThreadTurnResult> {
+      const { identity, rest } = splitContextOpts<AddThreadTurnOpts>(opts, 'addThreadTurn')
+      return client.post<ThreadTurnResult>('/v1/memory/conversation', { messages, identity, ...rest })
     },
 
     async flush(): Promise<void> {
@@ -382,25 +395,6 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
       // No-op in cloud mode
     },
 
-    // ── Source CRUD (cloud-only extensions) ──
-
-    async listSources(filter?: SourceFilter | null): Promise<typegraphSource[]> {
-      return client.post<typegraphSource[]>('/v1/sources/list', optionalCompactObject<SourceFilter>(filter, 'listSources', 'filter'))
-    },
-
-    async getSource(sourceId: string): Promise<typegraphSource> {
-      return client.get<typegraphSource>(`/v1/sources/${e(sourceId)}`)
-    },
-
-    async updateSource(sourceId: string, update: Partial<typegraphSource>): Promise<typegraphSource> {
-      return client.patch<typegraphSource>(`/v1/sources/${e(sourceId)}`, update)
-    },
-
-    async deleteSources(filter: SourceFilter | null): Promise<number> {
-      const normalizedFilter = optionalCompactObject<SourceFilter>(filter, 'deleteSources', 'filter') as SourceFilter
-      assertHasMeaningfulFilter(normalizedFilter, 'deleteSources')
-      return client.delete<number>('/v1/sources', normalizedFilter)
-    },
   }
 
   return instance

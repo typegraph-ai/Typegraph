@@ -1,7 +1,8 @@
-import type { EmbeddingProvider } from '../embedding/provider.js'
+import type { Embedder } from '../embedding/provider.js'
+import { embedText } from '../embedding/provider.js'
 import type { typegraphEventSink, typegraphEventType, TelemetryOpts } from '../types/events.js'
 import type { MemoryStoreAdapter } from './types/adapter.js'
-import type { typegraphIdentity } from '../types/identity.js'
+import type { AccessScope, typegraphIdentity } from '../types/identity.js'
 import type {
   MemoryRecord,
   MemoryCategory,
@@ -13,7 +14,6 @@ import type {
 } from './types/memory.js'
 import type { MemorySubject } from '../types/graph-bridge.js'
 import type { QueryEntityScope } from '../types/query.js'
-import type { Visibility } from '../types/source.js'
 import type { LLMProvider } from './extraction/llm-provider.js'
 import type { ExtractionResult, ConversationMessage } from './extraction/extractor.js'
 import { ConfigError } from '../types/errors.js'
@@ -46,7 +46,7 @@ type RecallOptsWithFormat = RecallOptsInternal & { format: RecallFormat }
 interface MemoryContextOpts extends TelemetryOpts {
   subject?: MemorySubject | undefined
   relatedEntities?: MemorySubject[] | undefined
-  visibility?: Visibility | undefined
+  accessScope?: AccessScope | undefined
 }
 
 type RememberMemoryOpts = MemoryContextOpts & {
@@ -55,8 +55,8 @@ type RememberMemoryOpts = MemoryContextOpts & {
   metadata?: Record<string, unknown> | undefined
 }
 
-interface ConversationTurnOpts extends MemoryContextOpts {
-  conversationId?: string | undefined
+interface ThreadTurnOpts extends MemoryContextOpts {
+  threadId?: string | undefined
 }
 
 // ── Memory Health Report ──
@@ -79,7 +79,7 @@ export interface MemoryHealthReport {
 
 export interface typegraphMemoryConfig {
   memoryStore: MemoryStoreAdapter
-  embedding: EmbeddingProvider
+  embedding: Embedder
   llm: LLMProvider
   scope: typegraphIdentity
   eventSink?: typegraphEventSink | undefined
@@ -94,7 +94,7 @@ export class TypegraphMemory {
   readonly identity: typegraphIdentity
 
   private readonly store: MemoryStoreAdapter
-  private readonly embedding: EmbeddingProvider
+  private readonly embedding: Embedder
   private readonly llm: LLMProvider
   private readonly scope: typegraphIdentity
   private readonly extractor: MemoryExtractor
@@ -154,7 +154,7 @@ export class TypegraphMemory {
       this.scope.groupId,
       this.scope.userId,
       this.scope.agentId,
-      this.scope.conversationId,
+      this.scope.threadId,
     ].map(value => value ?? '').join('\u001f')
     return `ent_${createHash('sha256').update(`${scopeKey}\u001f${key}`).digest('hex').slice(0, 32)}`
   }
@@ -164,7 +164,7 @@ export class TypegraphMemory {
     return DEFAULT_ENTITY_TYPE
   }
 
-  private async resolveMemorySubject(subject: MemorySubject | undefined, visibility?: Visibility): Promise<SemanticEntity | null> {
+  private async resolveMemorySubject(subject: MemorySubject | undefined, accessScope?: AccessScope): Promise<SemanticEntity | null> {
     if (!subject) return null
     if (subject.entityId && this.store.getEntity) {
       const existing = await this.store.getEntity(subject.entityId, this.scope)
@@ -181,7 +181,7 @@ export class TypegraphMemory {
       || subject.externalIds?.[0]?.id
       || subject.entityId
       || 'Unknown entity'
-    const embedding = await this.embedding.embed(name)
+    const embedding = await embedText(this.embedding, name)
     const now = new Date()
     return this.store.upsertEntity({
       id: subject.entityId ?? this.stableMemoryEntityId(subject),
@@ -189,10 +189,10 @@ export class TypegraphMemory {
       entityType: this.memorySubjectEntityType(subject),
       aliases: subject.aliases ?? [],
       externalIds: subject.externalIds,
-      properties: subject.properties ?? {},
+      metadata: subject.metadata ?? {},
       embedding,
       scope: this.scope,
-      visibility,
+      accessScope,
       temporal: { validAt: now, createdAt: now },
     })
   }
@@ -212,7 +212,7 @@ export class TypegraphMemory {
     return [...entityIds]
   }
 
-  private async linkMemoryToEntities(memoryId: string, entities: SemanticEntity[], visibility?: Visibility): Promise<void> {
+  private async linkMemoryToEntities(memoryId: string, entities: SemanticEntity[], accessScope?: AccessScope): Promise<void> {
     if (!this.store.upsertGraphEdges || entities.length === 0) return
     const now = new Date()
     const edges: SemanticGraphEdge[] = entities.map(entity => ({
@@ -223,9 +223,9 @@ export class TypegraphMemory {
       targetId: entity.id,
       relation: 'ABOUT',
       weight: 1,
-      properties: {},
+      metadata: {},
       scope: this.scope,
-      visibility,
+      accessScope,
       temporal: { validAt: now, createdAt: now },
       evidence: [memoryId],
     }))
@@ -249,7 +249,7 @@ export class TypegraphMemory {
   }> {
     const subjects = [opts?.subject, ...(opts?.relatedEntities ?? [])].filter((subject): subject is MemorySubject => !!subject)
     if (subjects.length === 0) return { entities: [] }
-    const entities = (await Promise.all(subjects.map(subject => this.resolveMemorySubject(subject, opts?.visibility))))
+    const entities = (await Promise.all(subjects.map(subject => this.resolveMemorySubject(subject, opts?.accessScope))))
       .filter((entity): entity is SemanticEntity => !!entity)
     const entityIds = [...new Set(entities.map(entity => entity.id))]
     if (entityIds.length === 0) return { entities: [] }
@@ -262,12 +262,12 @@ export class TypegraphMemory {
 
   /**
    * Store a memory. Creates a record in the given category (default: `semantic`).
-   * For LLM extraction of structured facts from a conversation, use `addConversationTurn()`.
+   * For LLM extraction of structured facts from a thread, use `addThreadTurn()`.
    */
   async remember(content: string, rawOpts?: RememberMemoryOpts | null): Promise<MemoryRecord> {
     const opts = optionalCompactObject<RememberMemoryOpts>(rawOpts, 'TypegraphMemory.remember') as RememberMemoryOpts
     const category = opts?.category ?? 'semantic'
-    const embedding = await this.embedding.embed(content)
+    const embedding = await embedText(this.embedding, content)
     const temporal = createTemporal()
 
     const record: MemoryRecord = {
@@ -281,13 +281,13 @@ export class TypegraphMemory {
       lastAccessedAt: new Date(),
       metadata: opts?.metadata ?? {},
       scope: this.scope,
-      visibility: opts?.visibility,
+      accessScope: opts?.accessScope,
       ...temporal,
     }
 
     const result = await this.store.upsert(record)
     const { entities } = await this.resolveMemoryContext(opts)
-    await this.linkMemoryToEntities(result.id, entities, opts?.visibility)
+    await this.linkMemoryToEntities(result.id, entities, opts?.accessScope)
     this.emit('memory.write', result.id, { category, contentLength: content.length }, undefined, opts)
     return result
   }
@@ -307,7 +307,7 @@ export class TypegraphMemory {
    * Example: "Actually, John works at Acme Corp, not Beta Inc"
    *
    * Runs the correction through the same extraction + contradiction
-   * machinery as `addConversationTurn`, so prior facts get invalidated
+   * machinery as `addThreadTurn`, so prior facts get invalidated
    * by the LLM contradiction judge rather than a brittle substring match.
    */
   async correct(naturalLanguageCorrection: string, rawOpts?: MemoryContextOpts | null): Promise<{
@@ -338,7 +338,7 @@ export class TypegraphMemory {
     for (const candidate of candidates) {
       const fact = this.extractor.candidateToFact(candidate, syntheticEpisodeId)
       fact.metadata = { ...fact.metadata, correctionText: naturalLanguageCorrection }
-      fact.embedding = await this.embedding.embed(fact.content)
+      fact.embedding = await embedText(this.embedding, fact.content)
 
       const contradictions = await this.invalidation.checkContradictions(fact, this.scope, {
         memoryIds: context.memoryIds,
@@ -354,7 +354,7 @@ export class TypegraphMemory {
       }
 
       const stored = await this.store.upsert(fact)
-      await this.linkMemoryToEntities(stored.id, context.entities, opts?.visibility)
+      await this.linkMemoryToEntities(stored.id, context.entities, opts?.accessScope)
       created++
     }
 
@@ -378,7 +378,7 @@ export class TypegraphMemory {
   async recall(query: string, opts?: RecallOptsInternal | null): Promise<MemoryRecord[]>
   async recall(query: string, rawOpts?: RecallOptsInternal | null): Promise<MemoryRecord[] | string> {
     const opts = optionalCompactObject<RecallOptsInternal>(rawOpts, 'TypegraphMemory.recall') as RecallOptsInternal
-    const embedding = await this.embedding.embed(query)
+    const embedding = await embedText(this.embedding, query, 'search')
     const scopedMemoryIds = await this.memoryIdsForEntityScope(opts?.entityScope)
     const results = await this.store.search(embedding, {
       count: opts?.limit ?? 10,
@@ -413,7 +413,7 @@ export class TypegraphMemory {
   async recallHybrid(query: string, opts?: RecallOptsInternal | null): Promise<MemoryRecord[]>
   async recallHybrid(query: string, rawOpts?: RecallOptsInternal | null): Promise<MemoryRecord[] | string> {
     const opts = optionalCompactObject<RecallOptsInternal>(rawOpts, 'TypegraphMemory.recallHybrid') as RecallOptsInternal
-    const embedding = await this.embedding.embed(query)
+    const embedding = await embedText(this.embedding, query, 'search')
     const scopedMemoryIds = await this.memoryIdsForEntityScope(opts?.entityScope)
     const searchOpts = {
       count: opts?.limit ?? 10,
@@ -476,17 +476,17 @@ export class TypegraphMemory {
     return results.filter((r): r is ProceduralMemory => r.category === 'procedural')
   }
 
-  // ── Conversation ──
+  // ── Thread Turns ──
 
   /**
-   * Ingest a conversation turn. Extracts episodic memory + semantic facts.
+   * Ingest a thread turn. Extracts episodic memory + semantic facts.
    */
-  async addConversationTurn(
+  async addThreadTurn(
     messages: ConversationMessage[],
-    rawOpts?: ConversationTurnOpts | null,
+    rawOpts?: ThreadTurnOpts | null,
   ): Promise<ExtractionResult> {
-    const opts = optionalCompactObject<ConversationTurnOpts>(rawOpts, 'TypegraphMemory.addConversationTurn') as ConversationTurnOpts
-    const { conversationId } = opts
+    const opts = optionalCompactObject<ThreadTurnOpts>(rawOpts, 'TypegraphMemory.addThreadTurn') as ThreadTurnOpts
+    const { threadId } = opts
     const context = await this.resolveMemoryContext(opts)
     // Get existing facts for conflict resolution
     const existingFacts = context.entityScope
@@ -505,14 +505,14 @@ export class TypegraphMemory {
     const result = await this.extractor.processConversation(
       messages,
       existingFacts,
-      conversationId,
+      threadId,
     )
 
     // Store episodic memories
     for (const episode of result.episodic) {
-      episode.embedding = await this.embedding.embed(episode.content)
+      episode.embedding = await embedText(this.embedding, episode.content)
       const stored = await this.store.upsert(episode)
-      await this.linkMemoryToEntities(stored.id, context.entities, opts?.visibility)
+      await this.linkMemoryToEntities(stored.id, context.entities, opts?.accessScope)
       this.emit('memory.write', stored.id, { category: 'episodic', source: 'conversation' }, undefined, opts)
     }
 
@@ -520,7 +520,7 @@ export class TypegraphMemory {
     let contradictionCount = 0
     const allContradictions: Array<{ existingId: string; newId: string; conflictType: string; reasoning: string }> = []
     for (const fact of result.facts) {
-      fact.embedding = await this.embedding.embed(fact.content)
+      fact.embedding = await embedText(this.embedding, fact.content)
 
       // Check contradictions before storing
       const contradictions = await this.invalidation.checkContradictions(fact, this.scope, {
@@ -544,7 +544,7 @@ export class TypegraphMemory {
       }
 
       const stored = await this.store.upsert(fact)
-      await this.linkMemoryToEntities(stored.id, context.entities, opts?.visibility)
+      await this.linkMemoryToEntities(stored.id, context.entities, opts?.accessScope)
       this.emit('memory.write', stored.id, { category: 'semantic', source: 'conversation' }, undefined, opts)
     }
 
@@ -552,7 +552,7 @@ export class TypegraphMemory {
       episodicCount: result.episodic.length,
       factCount: result.facts.length,
       contradictionCount,
-      conversationId,
+      threadId,
     }, undefined, opts)
 
     // Expose contradictions on the result so callers (typegraph.ts) can fire the onContradictionDetected hook

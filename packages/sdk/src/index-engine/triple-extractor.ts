@@ -1,8 +1,19 @@
 import { z } from 'zod/v4-mini'
 import type { LLMProvider } from '../types/llm-provider.js'
 import type { KnowledgeGraphBridge } from '../types/graph-bridge.js'
-import type { Visibility } from '../types/source.js'
-import { ENTITY_TYPES, ENTITY_TYPES_LIST, VALID_ENTITY_TYPES, getPredicatesForPrompt } from './ontology.js'
+import type { AccessScope } from '../types/identity.js'
+import {
+  ENTITY_TYPES,
+  ENTITY_TYPES_LIST,
+  VALID_ENTITY_TYPES,
+  effectiveEntityTypes,
+  getPredicatesForPrompt,
+  normalizePredicateWithDirection,
+  normalizeTypeCandidates,
+  type TypeCandidate,
+  typesShareAffinity,
+  validatePredicateEffectiveTypes,
+} from './ontology.js'
 
 export interface TripleExtractorConfig {
   /** LLM for entity extraction (Pass 1 in two-pass mode) or the single combined call. */
@@ -19,6 +30,7 @@ export interface TripleExtractorConfig {
 interface ExtractedEntity {
   name: string
   type: string
+  typeCandidates?: TypeCandidate[] | undefined
   description: string
   aliases: string[]
 }
@@ -44,6 +56,9 @@ interface ExtractionResult {
 export interface EntityContext {
   name: string
   type: string
+  typeCandidates?: TypeCandidate[] | undefined
+  description?: string | undefined
+  aliases?: string[] | undefined
 }
 
 // ── Zod schemas for structured output ──
@@ -51,6 +66,10 @@ export interface EntityContext {
 const entitySchema = z.array(z.object({
   name: z.string(),
   type: z.enum(ENTITY_TYPES),
+  typeCandidates: z.optional(z.array(z.object({
+    type: z.enum(ENTITY_TYPES),
+    confidence: z.number(),
+  }))),
   description: z.string(),
   aliases: z.array(z.string()),
 }))
@@ -70,6 +89,14 @@ const relationshipSchema = z.array(z.object({
 const singlePassSchema = z.object({
   entities: entitySchema,
   relationships: relationshipSchema,
+})
+
+const reflectionSchema = z.object({
+  results: z.array(z.object({
+    index: z.number(),
+    keep: z.boolean(),
+    score: z.number(),
+  })),
 })
 
 function sanitizeText(value: string): string {
@@ -113,6 +140,56 @@ function normalizeName(value: string): string {
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
     .replace(/\s+/g, ' ')
+}
+
+function typeFamilyKey(type: string | undefined): string {
+  if (!type) return 'unknown'
+  if (typesShareAffinity(type, 'organization')) return 'brand-platform'
+  if (typesShareAffinity(type, 'project')) return 'work-item'
+  if (typesShareAffinity(type, 'event')) return 'event-meeting'
+  if (typesShareAffinity(type, 'document')) return 'document-work'
+  return type
+}
+
+function entityDisplayContext(entityContext?: EntityContext[]): string {
+  if (!entityContext?.length) return ''
+  return entityContext.map(entity => {
+    const aliases = (entity.aliases ?? []).length > 0 ? ` aliases: ${(entity.aliases ?? []).join(', ')}` : ''
+    const types = effectiveEntityTypes(entity.type, entity.typeCandidates).join('/')
+    return `- ${entity.name} (${types})${aliases}`
+  }).join('\n')
+}
+
+function entityContextNameMap(entityContext?: EntityContext[]): Map<string, EntityContext> {
+  const map = new Map<string, EntityContext>()
+  for (const entity of entityContext ?? []) {
+    const names = [entity.name, ...(entity.aliases ?? [])]
+    for (const name of names) {
+      const key = `${typeFamilyKey(entity.type)}:${normalizeName(name)}`
+      if (normalizeName(name)) map.set(key, entity)
+    }
+  }
+  return map
+}
+
+function contextMatch(entity: ExtractedEntity, entityContext?: EntityContext[]): EntityContext | undefined {
+  const byName = entityContextNameMap(entityContext)
+  const candidateNames = [entity.name, ...(entity.aliases ?? [])]
+  const entityTypes = effectiveEntityTypes(entity.type, entity.typeCandidates)
+  for (const type of entityTypes) {
+    for (const name of candidateNames) {
+      const normalized = normalizeName(name)
+      if (!normalized) continue
+      const direct = byName.get(`${typeFamilyKey(type)}:${normalized}`)
+      if (direct) return direct
+      const exact = (entityContext ?? []).find(context =>
+        normalizeName(context.name) === normalized
+        && typesShareAffinity(context.type, entity.type)
+      )
+      if (exact) return exact
+    }
+  }
+  return undefined
 }
 
 function nameTokens(value: string): string[] {
@@ -447,6 +524,7 @@ function postProcessExtraction(
   entities: ExtractedEntity[],
   relationships: ExtractedRelationship[],
   content: string,
+  entityContext?: EntityContext[],
 ): ExtractionResult {
   const processed: ExtractedEntity[] = []
   const rawNameToCanonical = new Map<string, string>()
@@ -455,6 +533,7 @@ function postProcessExtraction(
     const entity: ExtractedEntity = {
       name: sanitizeField(raw.name ?? ''),
       type: sanitizeField(raw.type ?? ''),
+      typeCandidates: normalizeTypeCandidates(raw.type, raw.typeCandidates),
       description: sanitizeField(raw.description ?? ''),
       aliases: Array.isArray(raw.aliases) ? raw.aliases.map(sanitizeField).filter(Boolean) : [],
     }
@@ -470,6 +549,20 @@ function postProcessExtraction(
 
     const promoted = promoteOrRejectEntity(entity)
     if (!promoted) continue
+
+    const matchedContext = contextMatch(promoted, entityContext)
+    if (matchedContext) {
+      const observedName = promoted.name
+      promoted.name = matchedContext.name
+      promoted.type = matchedContext.type
+      promoted.typeCandidates = normalizeTypeCandidates(matchedContext.type, [
+        ...(matchedContext.typeCandidates ?? []),
+        ...(promoted.typeCandidates ?? []),
+      ])
+      promoted.description = matchedContext.description ?? promoted.description
+      for (const alias of matchedContext.aliases ?? []) addUniqueAlias(promoted.aliases, alias, promoted.name)
+      addUniqueAlias(promoted.aliases, observedName, promoted.name)
+    }
 
     promoted.aliases = [...new Map(promoted.aliases.map(a => [normalizeName(a), a])).values()]
       .filter(alias => normalizeName(alias) !== normalizeName(promoted.name))
@@ -519,14 +612,60 @@ function postProcessExtraction(
   return { entities: processed, relationships: sanitizedRelationships }
 }
 
+function effectiveTypesForExtracted(entity: ExtractedEntity): string[] {
+  return effectiveEntityTypes(entity.type, entity.typeCandidates)
+}
+
+function relationTypingValid(
+  relationship: ExtractedRelationship,
+  entityByName: Map<string, ExtractedEntity>,
+): boolean {
+  const subjectEntity = entityByName.get(normalizeName(relationship.subject))
+  const objectEntity = entityByName.get(normalizeName(relationship.object))
+  if (!subjectEntity || !objectEntity) return false
+  if (normalizeName(subjectEntity.name) === normalizeName(objectEntity.name)) return false
+  const normalized = normalizePredicateWithDirection(relationship.predicate)
+  if (!normalized.valid) return false
+  return validatePredicateEffectiveTypes(
+    normalized.predicate,
+    effectiveTypesForExtracted(subjectEntity),
+    effectiveTypesForExtracted(objectEntity),
+  ).valid
+}
+
+function buildReflectionPrompt(content: string, batch: ExtractedRelationship[], offset: number): string {
+  const triples = batch.map((relationship, index) => ({
+    index: offset + index,
+    subject: relationship.subject,
+    predicate: relationship.predicate,
+    object: relationship.object,
+    description: relationship.description,
+    evidenceText: relationship.evidenceText,
+  }))
+  return `Judge whether each extracted graph triple is directly supported by the source text.
+
+Rules:
+- keep=false if the source text does not support the relation
+- keep=false if subject and object are the same entity or aliases of the same entity
+- keep=false if the relation is semantically invalid for the entity types
+- score is 0.0 to 1.0 reliability
+- return only JSON matching {"results":[{"index":0,"keep":true,"score":0.9}]}
+
+Source text:
+${content}
+
+Triples:
+${JSON.stringify(triples)}`
+}
+
 // ── Single-pass prompt (default) ──
 
-function buildSinglePassPrompt(content: string, entityContext?: EntityContext[], sourceTitle?: string): string {
+function buildSinglePassPrompt(content: string, entityContext?: EntityContext[], documentName?: string): string {
   const contextSection = entityContext?.length
-    ? `\nPreviously identified entities in this source:\n${entityContext.map(e => `- ${e.name} (${e.type})`).join('\n')}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
+    ? `\nPreviously identified entities in this document:\n${entityDisplayContext(entityContext)}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
     : ''
-  const titleSection = sourceTitle
-    ? `\nThe text string is from a source titled: "${sourceTitle}". Entities referenced in the title should be extracted as primary entities using their full formal names.\n`
+  const titleSection = documentName
+    ? `\nThe text string is from a document named: "${documentName}". Entities referenced in the name should be extracted as primary entities using their full formal names.\n`
     : ''
 
   return `Your task is to extract all named entities, and relationships between them, from a text string.
@@ -547,6 +686,7 @@ For each entity, provide:
   Documents: "Acme master services agreement" not "MSA"; "Q4 architecture review deck" not "deck"; "SOC2 readiness report" not "report"
   Culture: "Naismith Memorial Basketball Hall of Fame" not "Hall of Fame"; "Academy Award for Best Picture" not "Best Picture"; "The Great Gatsby" not "Gatsby"
 - "type": One of: ${ENTITY_TYPES_LIST}
+- "typeCandidates": Ranked likely semantic types for the same entity, primary type first. Include 1-3 candidates with confidence 0.0 to 1.0. Use this when a named platform or brand can be interpreted as organization/product/technology.
 - "description": A one-sentence description of what this entity IS — its defining attributes, NOT its relationships to other entities
 - "aliases": Other proper names, abbreviations, pseudonyms, titles, or stable short references for THIS SAME entity in the text (array of strings). Preserve the exact surface forms that appear in the source text.
   Valid aliases: "NYC" for "New York City", "WHO" for "World Health Organization", "The Iron Lady" for "Margaret Thatcher", "Python" for "Python programming language", "Cole Conway" and "Conway" for "Cousin Cæsar" when the text says he is calling himself Cole Conway and later refers to him as Conway
@@ -648,7 +788,7 @@ Output:
 
 After your initial extraction, review: did you miss any entities or relationships that are explicitly stated or strongly implied? Include them.
 
-Return a JSON object: {"entities": [...], "relationships": [...]}
+Return a JSON object: {"entities": [{"name":"...","type":"organization","typeCandidates":[{"type":"organization","confidence":0.9}],"description":"...","aliases":[]}], "relationships": [...]}
 
 Text:
 ${content}`
@@ -656,12 +796,12 @@ ${content}`
 
 // ── Two-pass prompts ──
 
-function buildEntityExtractionPrompt(content: string, entityContext?: EntityContext[], sourceTitle?: string): string {
+function buildEntityExtractionPrompt(content: string, entityContext?: EntityContext[], documentName?: string): string {
   const contextSection = entityContext?.length
-    ? `\nPreviously identified entities in the text string:\n${entityContext.map(e => `- ${e.name} (${e.type})`).join('\n')}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
+    ? `\nPreviously identified entities in the text string:\n${entityDisplayContext(entityContext)}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
     : ''
-  const titleSection = sourceTitle
-    ? `\nThe text string is from a source titled: "${sourceTitle}". Entities referenced in the title should be extracted as primary entities using their full formal and canonical names.\n`
+  const titleSection = documentName
+    ? `\nThe text string is from a document named: "${documentName}". Entities referenced in the name should be extracted as primary entities using their full formal and canonical names.\n`
     : ''
 
     return `Your task is to extract all named entities from a text string.
@@ -680,6 +820,7 @@ function buildEntityExtractionPrompt(content: string, entityContext?: EntityCont
     -- Products: "iPhone 16 Pro Max" not "iPhone"; "Tesla Model 3" not "Model 3"; "GPT-4" not "GPT"
     -- Culture: "Naismith Memorial Basketball Hall of Fame" not "Hall of Fame"; "Academy Award for Best Picture" not "Best Picture"; "The Great Gatsby" not "Gatsby"
     - "type": One of: ${ENTITY_TYPES_LIST}
+    - "typeCandidates": Ranked likely semantic types for the same entity, primary type first. Include 1-3 candidates with confidence 0.0 to 1.0. Use this for brands/platforms that can plausibly be organization/product/technology without creating duplicates.
     - "description": A one-sentence description of what this entity IS — its defining attributes, NOT its relationships to other entities
     - "aliases": Other proper names, abbreviations, pseudonyms, titles, or stable short references for THIS SAME entity in the text (array of strings). Preserve the exact surface forms that appear in the source text.
     -- Valid aliases: "NYC" for "New York City", "WHO" for "World Health Organization", "The Iron Lady" for "Margaret Thatcher", "Python" for "Python programming language", "Cole Conway" and "Conway" for "Cousin Cæsar" when the text says he is calling himself Cole Conway and later refers to him as Conway
@@ -818,7 +959,7 @@ Now, below we are getting into the meat of the current task you are performing.
 
 <TASK_OUTPUT_REQUIREMENTS>
 
-- Return a JSON array: [{"name": "...", "type": "...", "description": "...", "aliases": ["..."]}, ...]
+- Return a JSON array: [{"name": "...", "type": "...", "typeCandidates": [{"type": "...", "confidence": 0.9}], "description": "...", "aliases": ["..."]}, ...]
 - Return an empty array if no named entities exist
 
 </TASK_OUTPUT_REQUIREMENTS>
@@ -950,12 +1091,34 @@ export class TripleExtractor {
   private relationshipLlm: LLMProvider
   private graph: KnowledgeGraphBridge
   private twoPass: boolean
+  private readonly reflectionThreshold = 0.3
 
   constructor(config: TripleExtractorConfig) {
     this.llm = config.llm
     this.relationshipLlm = config.relationshipLlm ?? config.llm
     this.graph = config.graph
     this.twoPass = config.twoPass ?? true
+  }
+
+  async extractCandidatesFromChunk(
+    content: string,
+    entityContext?: EntityContext[],
+    documentName?: string,
+  ): Promise<ExtractionResult> {
+    const cleanContent = sanitizeText(content)
+    const cleanTitle = documentName ? sanitizeField(documentName) : undefined
+    const raw = this.twoPass
+      ? await this.extractTwoPass(cleanContent, entityContext, cleanTitle)
+      : await this.extractSinglePass(cleanContent, entityContext, cleanTitle)
+    const processed = postProcessExtraction(raw.entities, raw.relationships, cleanContent, entityContext)
+    const entityByName = new Map<string, ExtractedEntity>()
+    for (const entity of processed.entities) {
+      entityByName.set(normalizeName(entity.name), entity)
+      for (const alias of entity.aliases) entityByName.set(normalizeName(alias), entity)
+    }
+    const typedRelationships = processed.relationships.filter(rel => relationTypingValid(rel, entityByName))
+    const relationships = await this.reflectRelationships(cleanContent, typedRelationships)
+    return { entities: processed.entities, relationships }
   }
 
   /**
@@ -966,45 +1129,43 @@ export class TripleExtractor {
     content: string,
     bucketId: string,
     chunkIndex?: number,
-    sourceId?: string,
+    documentId?: string,
     metadata?: Record<string, unknown>,
     entityContext?: EntityContext[],
-    sourceTitle?: string,
+    documentName?: string,
     identity?: {
       tenantId?: string | undefined
       groupId?: string | undefined
       userId?: string | undefined
       agentId?: string | undefined
-      conversationId?: string | undefined
+      threadId?: string | undefined
     },
-    visibility?: Visibility,
-    sourceChunkId?: string,
+    accessScope?: AccessScope,
+    chunkId?: string,
   ): Promise<{ entities: EntityContext[] } | undefined> {
     if (!this.graph.addTriple && !this.graph.addEntityMentions) return { entities: [] }
 
     const cleanContent = sanitizeText(content)
-    const cleanTitle = sourceTitle ? sanitizeField(sourceTitle) : undefined
-    const raw = this.twoPass
-      ? await this.extractTwoPass(cleanContent, entityContext, cleanTitle)
-      : await this.extractSinglePass(cleanContent, entityContext, cleanTitle)
-    const { entities, relationships } = postProcessExtraction(raw.entities, raw.relationships, cleanContent)
+    const cleanTitle = documentName ? sanitizeField(documentName) : undefined
+    const { entities, relationships } = await this.extractCandidatesFromChunk(cleanContent, entityContext, cleanTitle)
 
     if (this.graph.addEntityMentions && entities.length > 0) {
       await this.graph.addEntityMentions(entities.map(entity => ({
         name: entity.name,
         type: entity.type,
+        typeCandidates: entity.typeCandidates,
         aliases: entity.aliases ?? [],
         description: entity.description,
         content: cleanContent,
         bucketId,
         ...(chunkIndex !== undefined ? { chunkIndex } : {}),
-        ...(sourceId ? { sourceId } : {}),
+        ...(documentId ? { documentId } : {}),
         ...(identity?.tenantId ? { tenantId: identity.tenantId } : {}),
         ...(identity?.groupId ? { groupId: identity.groupId } : {}),
         ...(identity?.userId ? { userId: identity.userId } : {}),
         ...(identity?.agentId ? { agentId: identity.agentId } : {}),
-        ...(identity?.conversationId ? { conversationId: identity.conversationId } : {}),
-        ...(visibility ? { visibility } : {}),
+        ...(identity?.threadId ? { threadId: identity.threadId } : {}),
+        ...(accessScope ? { accessScope } : {}),
         ...(metadata ? { metadata } : {}),
       })))
     }
@@ -1015,7 +1176,6 @@ export class TripleExtractor {
         entityByName.set(normalizeName(e.name), e)
         for (const alias of e.aliases) entityByName.set(normalizeName(alias), e)
       }
-
       for (const rel of relationships) {
         const subjectEntity = entityByName.get(normalizeName(rel.subject))
         const objectEntity = entityByName.get(normalizeName(rel.object))
@@ -1024,11 +1184,13 @@ export class TripleExtractor {
         await this.graph.addTriple({
           subject: subjectEntity.name,
           subjectType: subjectEntity.type,
+          subjectTypeCandidates: subjectEntity.typeCandidates,
           subjectAliases: subjectEntity.aliases ?? [],
           subjectDescription: subjectEntity.description,
           predicate: rel.predicate,
           object: objectEntity.name,
           objectType: objectEntity.type,
+          objectTypeCandidates: objectEntity.typeCandidates,
           objectAliases: objectEntity.aliases ?? [],
           objectDescription: objectEntity.description,
           relationshipDescription: rel.description,
@@ -1036,33 +1198,71 @@ export class TripleExtractor {
           temporalStatus: rel.temporalStatus,
           validFrom: rel.validFrom,
           validTo: rel.validTo,
-          sourceChunkId,
+          chunkId,
           confidence: typeof rel.confidence === 'number' ? Math.max(0, Math.min(1, rel.confidence)) : 1.0,
           content: cleanContent,
           bucketId,
           ...(chunkIndex !== undefined ? { chunkIndex } : {}),
-          ...(sourceId ? { sourceId } : {}),
+          ...(documentId ? { documentId } : {}),
           ...(identity?.tenantId ? { tenantId: identity.tenantId } : {}),
           ...(identity?.groupId ? { groupId: identity.groupId } : {}),
           ...(identity?.userId ? { userId: identity.userId } : {}),
           ...(identity?.agentId ? { agentId: identity.agentId } : {}),
-          ...(identity?.conversationId ? { conversationId: identity.conversationId } : {}),
-          ...(visibility ? { visibility } : {}),
+          ...(identity?.threadId ? { threadId: identity.threadId } : {}),
+          ...(accessScope ? { accessScope } : {}),
           ...(metadata ? { metadata } : {}),
         })
       }
     }
 
-    return { entities: entities.map(e => ({ name: e.name, type: e.type })) }
+    return {
+      entities: entities.map(e => ({
+        name: e.name,
+        type: e.type,
+        typeCandidates: e.typeCandidates,
+        description: e.description,
+        aliases: e.aliases,
+      })),
+    }
+  }
+
+  private async reflectRelationships(content: string, relationships: ExtractedRelationship[]): Promise<ExtractedRelationship[]> {
+    if (relationships.length === 0) return []
+    const kept: ExtractedRelationship[] = []
+    const batchSize = 10
+    for (let offset = 0; offset < relationships.length; offset += batchSize) {
+      const batch = relationships.slice(offset, offset + batchSize)
+      try {
+        const response = await this.relationshipLlm.generateJSON<{ results: Array<{ index: number; keep: boolean; score: number }> }>(
+          buildReflectionPrompt(content, batch, offset),
+          'You are a strict graph triple verifier. Return only schema-valid JSON.',
+          { schema: reflectionSchema },
+        )
+        const byIndex = new Map((response?.results ?? []).map(item => [item.index, item]))
+        for (let index = 0; index < batch.length; index++) {
+          const reflected = byIndex.get(offset + index)
+          if (!reflected) {
+            kept.push(batch[index]!)
+            continue
+          }
+          if (reflected.keep && reflected.score >= this.reflectionThreshold) {
+            kept.push(batch[index]!)
+          }
+        }
+      } catch {
+        kept.push(...batch)
+      }
+    }
+    return kept
   }
 
   /** Single combined LLM call for entities + relationships. Used only when twoPass is disabled. */
   private async extractSinglePass(
     content: string,
     entityContext?: EntityContext[],
-    sourceTitle?: string,
+    documentName?: string,
   ): Promise<ExtractionResult> {
-    const prompt = buildSinglePassPrompt(content, entityContext, sourceTitle)
+    const prompt = buildSinglePassPrompt(content, entityContext, documentName)
     const result = await this.llm.generateJSON<ExtractionResult>(
       prompt,
       'You are a precise knowledge graph extractor. Preserve complete named surface forms, model pseudonyms as aliases, reject generic one-token entities, and return only valid JSON.',
@@ -1085,11 +1285,11 @@ export class TripleExtractor {
   private async extractTwoPass(
     content: string,
     entityContext?: EntityContext[],
-    sourceTitle?: string,
+    documentName?: string,
   ): Promise<ExtractionResult> {
     // Pass 1: Extract entities
     const rawEntities = await this.llm.generateJSON<ExtractedEntity[]>(
-      buildEntityExtractionPrompt(content, entityContext, sourceTitle),
+      buildEntityExtractionPrompt(content, entityContext, documentName),
       'You are a precise named entity extractor. Preserve complete named surface forms, model pseudonyms as aliases, reject generic one-token entities, and return only valid JSON arrays.',
       { schema: entitySchema },
     )
@@ -1107,7 +1307,12 @@ export class TripleExtractor {
     }
 
     // Pass 2: Extract relationships using known entities
-    const entitiesJson = JSON.stringify(entities.map(e => ({ name: e.name, type: e.type })))
+    const entitiesJson = JSON.stringify(entities.map(e => ({
+      name: e.name,
+      type: e.type,
+      typeCandidates: normalizeTypeCandidates(e.type, e.typeCandidates),
+      aliases: e.aliases ?? [],
+    })))
     const prompt = buildRelationshipPrompt(entitiesJson, content)
 
     const rawRelationships = await this.relationshipLlm.generateJSON<ExtractedRelationship[]>(
@@ -1121,3 +1326,5 @@ export class TripleExtractor {
     return { entities, relationships }
   }
 }
+
+export class DefaultGraphExtractor extends TripleExtractor {}

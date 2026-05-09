@@ -1,0 +1,187 @@
+import { ConfigError, accessScopeKeys } from '@typegraph-ai/sdk'
+import type { DocumentStatus, DocumentStorageFilter, PaginatedResult, PaginationOpts, typegraphDocument, UpsertDocumentInput, UpsertedDocumentRecord } from '@typegraph-ai/sdk'
+import type { SqlExecutor } from './adapter.js'
+
+function parseJson<T>(value: unknown, fallback: T): T {
+  if (typeof value === 'string') return JSON.parse(value) as T
+  return (value ?? fallback) as T
+}
+
+function mapDocumentRow(row: Record<string, unknown>): typegraphDocument {
+  const accessScopeRaw = parseJson(row.access_scope, [])
+  return {
+    id: row.id as string,
+    bucketId: row.bucket_id as string,
+    tenantId: row.tenant_id as string,
+    groupId: (row.group_id as string) ?? undefined,
+    userId: (row.user_id as string) ?? undefined,
+    agentId: (row.agent_id as string) ?? undefined,
+    threadId: (row.thread_id as string) ?? undefined,
+    name: row.name as string,
+    description: (row.description as string) ?? undefined,
+    url: (row.url as string) ?? undefined,
+    contentHash: row.content_hash as string,
+    chunkCount: row.chunk_count as number,
+    status: row.status as typegraphDocument['status'],
+    accessScope: Array.isArray(accessScopeRaw) ? accessScopeRaw : undefined,
+    indexedAt: new Date(row.indexed_at as string),
+    createdAt: new Date(row.created_at as string),
+    updatedAt: new Date(row.updated_at as string),
+    metadata: parseJson(row.metadata, {}),
+  }
+}
+
+export class PgDocumentStore {
+  constructor(
+    private sql: SqlExecutor,
+    private tableName: string
+  ) {}
+
+  async upsert(input: UpsertDocumentInput): Promise<UpsertedDocumentRecord> {
+    const rows = await this.sql(
+      `INSERT INTO ${this.tableName}
+        (id, bucket_id, tenant_id, group_id, user_id, agent_id, thread_id,
+         name, description, url, content_hash, chunk_count, status,
+         access_scope, access_scope_ids, metadata, indexed_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15::text[], $16::jsonb, NOW(), NOW())
+       ON CONFLICT (bucket_id, tenant_id, content_hash)
+         DO UPDATE SET
+           name = EXCLUDED.name,
+           description = EXCLUDED.description,
+           url = EXCLUDED.url,
+           chunk_count = EXCLUDED.chunk_count,
+           status = EXCLUDED.status,
+           group_id = EXCLUDED.group_id,
+           user_id = EXCLUDED.user_id,
+           agent_id = EXCLUDED.agent_id,
+           thread_id = EXCLUDED.thread_id,
+           access_scope = EXCLUDED.access_scope,
+           access_scope_ids = EXCLUDED.access_scope_ids,
+           metadata = EXCLUDED.metadata,
+           indexed_at = NOW(),
+           updated_at = NOW()
+       RETURNING *, (xmax = 0) AS was_created`,
+      [
+        input.id,
+        input.bucketId,
+        input.tenantId,
+        input.groupId ?? null,
+        input.userId ?? null,
+        input.agentId ?? null,
+        input.threadId ?? null,
+        input.name,
+        input.description ?? null,
+        input.url ?? null,
+        input.contentHash,
+        input.chunkCount,
+        input.status,
+        JSON.stringify(input.accessScope ?? []),
+        accessScopeKeys(input.accessScope),
+        JSON.stringify(input.metadata ?? {}),
+      ]
+    )
+    return {
+      ...mapDocumentRow(rows[0]!),
+      wasCreated: rows[0]!.was_created as boolean,
+    }
+  }
+
+  async get(id: string): Promise<typegraphDocument | null> {
+    const rows = await this.sql(`SELECT * FROM ${this.tableName} WHERE id = $1`, [id])
+    if (rows.length === 0) return null
+    return mapDocumentRow(rows[0]!)
+  }
+
+  async list(filter?: DocumentStorageFilter | null, pagination?: PaginationOpts | null): Promise<typegraphDocument[] | PaginatedResult<typegraphDocument>> {
+    const { where, params } = buildDocumentWhere(filter)
+    const filterClause = where ? `WHERE ${where}` : ''
+
+    if (pagination) {
+      const limit = pagination.limit ?? 100
+      const offset = pagination.offset ?? 0
+      const countRows = await this.sql(`SELECT COUNT(*)::int AS total FROM ${this.tableName} ${filterClause}`, params)
+      const total = (countRows[0]?.total as number) ?? 0
+      const rows = await this.sql(
+        `SELECT * FROM ${this.tableName} ${filterClause} ORDER BY updated_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset]
+      )
+      return { items: rows.map(mapDocumentRow), total, limit, offset }
+    }
+
+    const rows = await this.sql(`SELECT * FROM ${this.tableName} ${filterClause} ORDER BY updated_at DESC`, params)
+    return rows.map(mapDocumentRow)
+  }
+
+  async delete(filter: DocumentStorageFilter | null): Promise<{ count: number; ids: string[] }> {
+    const { where, params } = buildDocumentWhere(filter)
+    if (!where) throw new ConfigError('documents.delete requires at least one filter field.')
+    const rows = await this.sql(`DELETE FROM ${this.tableName} WHERE ${where} RETURNING id`, params)
+    return { count: rows.length, ids: rows.map(r => r.id as string) }
+  }
+
+  async update(id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'accessScope' | 'metadata'>>): Promise<typegraphDocument | null> {
+    const setClauses: string[] = ['updated_at = NOW()']
+    const params: unknown[] = []
+    if (input.name !== undefined) { params.push(input.name); setClauses.push(`name = $${params.length}`) }
+    if (input.description !== undefined) { params.push(input.description); setClauses.push(`description = $${params.length}`) }
+    if (input.url !== undefined) { params.push(input.url); setClauses.push(`url = $${params.length}`) }
+    if (input.accessScope !== undefined) {
+      params.push(JSON.stringify(input.accessScope ?? [])); setClauses.push(`access_scope = $${params.length}::jsonb`)
+      params.push(accessScopeKeys(input.accessScope)); setClauses.push(`access_scope_ids = $${params.length}::text[]`)
+    }
+    if (input.metadata !== undefined) { params.push(JSON.stringify(input.metadata)); setClauses.push(`metadata = $${params.length}::jsonb`) }
+    params.push(id)
+    const rows = await this.sql(`UPDATE ${this.tableName} SET ${setClauses.join(', ')} WHERE id = $${params.length} RETURNING *`, params)
+    return rows.length > 0 ? mapDocumentRow(rows[0]!) : null
+  }
+
+  async updateStatus(id: string, status: DocumentStatus, chunkCount?: number): Promise<void> {
+    if (chunkCount != null) {
+      await this.sql(
+        `UPDATE ${this.tableName}
+         SET status = $1, chunk_count = $2, indexed_at = NOW(), updated_at = NOW()
+         WHERE id = $3`,
+        [status, chunkCount, id]
+      )
+    } else {
+      await this.sql(`UPDATE ${this.tableName} SET status = $1, updated_at = NOW() WHERE id = $2`, [status, id])
+    }
+  }
+}
+
+export function buildDocumentWhere(filter?: DocumentStorageFilter | null, alias?: string): { where: string; params: unknown[] } {
+  const conditions: string[] = []
+  const params: unknown[] = []
+  const col = (name: string) => alias ? `${alias}.${name}` : name
+
+  if (filter?.bucketId != null) { params.push(filter.bucketId); conditions.push(`${col('bucket_id')} = $${params.length}`) }
+  if (filter?.tenantId != null) { params.push(filter.tenantId); conditions.push(`${col('tenant_id')} = $${params.length}`) }
+  if (filter?.groupId != null) { params.push(filter.groupId); conditions.push(`${col('group_id')} = $${params.length}`) }
+  if (filter?.userId != null) { params.push(filter.userId); conditions.push(`${col('user_id')} = $${params.length}`) }
+  if (filter?.agentId != null) { params.push(filter.agentId); conditions.push(`${col('agent_id')} = $${params.length}`) }
+  if (filter?.threadId != null) { params.push(filter.threadId); conditions.push(`${col('thread_id')} = $${params.length}`) }
+  if (filter?.status != null) {
+    if (Array.isArray(filter.status)) {
+      params.push(filter.status)
+      conditions.push(`${col('status')} = ANY($${params.length}::text[])`)
+    } else {
+      params.push(filter.status)
+      conditions.push(`${col('status')} = $${params.length}`)
+    }
+  }
+  if (filter?.documentIds != null && filter.documentIds.length > 0) {
+    params.push(filter.documentIds)
+    conditions.push(`${col('id')} = ANY($${params.length}::text[])`)
+  }
+  if (filter?.accessScope !== undefined) {
+    const accessScopeIds = accessScopeKeys(filter.accessScope)
+    if (accessScopeIds.length === 0) {
+      conditions.push(`cardinality(${col('access_scope_ids')}) = 0`)
+    } else {
+      params.push(accessScopeIds)
+      conditions.push(`(cardinality(${col('access_scope_ids')}) = 0 OR ${col('access_scope_ids')} && $${params.length}::text[])`)
+    }
+  }
+
+  return { where: conditions.join(' AND '), params }
+}

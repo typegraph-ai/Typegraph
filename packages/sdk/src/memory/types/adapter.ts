@@ -1,5 +1,4 @@
-import type { typegraphIdentity } from '../../types/identity.js'
-import type { Visibility } from '../../types/source.js'
+import type { AccessScope, typegraphIdentity } from '../../types/identity.js'
 import type {
   MemoryRecord,
   MemoryCategory,
@@ -31,8 +30,8 @@ export interface MemoryFilter {
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
-  conversationId?: string | undefined
-  visibility?: Visibility | Visibility[] | undefined
+  threadId?: string | undefined
+  accessScope?: AccessScope | undefined
   ids?: string[] | undefined
   category?: MemoryCategory | MemoryCategory[] | undefined
   /** Filter by lifecycle status */
@@ -66,17 +65,17 @@ export interface GraphBackfillPageOpts {
 export interface ChunkBackfillRecord {
   chunkId: string
   bucketId: string
-  sourceId: string
+  documentId: string
   chunkIndex: number
   embeddingModel: string
   content: string
   metadata: Record<string, unknown>
-  visibility?: Visibility | undefined
+  accessScope?: AccessScope | undefined
   tenantId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
-  conversationId?: string | undefined
+  threadId?: string | undefined
 }
 
 export interface ChunkMentionBackfillRow extends ChunkBackfillRecord {
@@ -204,7 +203,7 @@ export interface MemoryStoreAdapter {
   // lexical entity lookup, provenance/debugging, and edge backfill.
 
   /** Record one or more (entity, chunk, bucket) mentions. Idempotent on
-   *  (entityId, sourceId, chunkIndex, mentionType, normalizedSurfaceText). */
+   *  (entityId, documentId, chunkIndex, mentionType, normalizedSurfaceText). */
   upsertEntityChunkMentions?(
     mentions: SemanticEntityMention[]
   ): Promise<void>

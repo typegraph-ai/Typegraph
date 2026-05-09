@@ -1,10 +1,10 @@
 import type { typegraphIdentity } from '../../types/identity.js'
-import type { EmbeddingProvider } from '../../embedding/provider.js'
+import type { Embedder } from '../../embedding/provider.js'
 import type { MemoryStoreAdapter, SemanticEntity, SemanticEdge } from '../../memory/types/index.js'
 import { generateId } from '../../utils/id.js'
 
 export interface EntityLinkerConfig {
-  embedding: EmbeddingProvider
+  embedding: Embedder
   store: MemoryStoreAdapter
   /** Cosine similarity threshold for creating synonym edges. Default: 0.85 */
   similarityThreshold?: number
@@ -21,7 +21,7 @@ export interface EntityLinkResult {
  * PPR traverses synonym edges, enabling cross-bucket associative retrieval.
  */
 export class EntityLinker {
-  private embedding: EmbeddingProvider
+  private embedding: Embedder
   private store: MemoryStoreAdapter
   private threshold: number
 
@@ -69,7 +69,7 @@ export class EntityLinker {
           targetEntityId: candidate.id,
           relation: 'SYNONYM',
           weight: similarity,
-          properties: { detectedBy: 'entity-linker', threshold: this.threshold },
+          metadata: { detectedBy: 'entity-linker', threshold: this.threshold },
           scope: identity,
           temporal: { validAt: new Date(), createdAt: new Date() },
           evidence: [],

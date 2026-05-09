@@ -3,7 +3,7 @@ import type { typegraphEvent, typegraphEventSink } from '@typegraph-ai/sdk'
 // OTel semantic convention attribute keys
 const ATTR = {
   // GenAI conventions
-  GEN_AI_CONVERSATION_ID: 'gen_ai.conversation.id',
+  GEN_AI_THREAD_ID: 'gen_ai.thread.id',
   GEN_AI_AGENT_ID: 'gen_ai.agent.id',
   GEN_AI_AGENT_NAME: 'gen_ai.agent.name',
   GEN_AI_DATA_SOURCE_ID: 'gen_ai.data_source.id',
@@ -20,7 +20,7 @@ const ATTR = {
   TYPEGRAPH_TARGET_TYPE: 'typegraph.target.type',
   TYPEGRAPH_MEMORY_CATEGORY: 'typegraph.memory.category',
   TYPEGRAPH_QUERY_MODE: 'typegraph.query.mode',
-  TYPEGRAPH_VISIBILITY: 'typegraph.visibility',
+  TYPEGRAPH_ACCESS_SCOPE_COUNT: 'typegraph.access_scope.count',
 } as const
 
 // Lazy OTel API loader — avoids top-level await and handles optional peer dep
@@ -114,8 +114,8 @@ function buildAttributes(
   if (identity.agentId) {
     attrs[ATTR.GEN_AI_AGENT_ID] = identity.agentId
   }
-  if (identity.conversationId) {
-    attrs[ATTR.GEN_AI_CONVERSATION_ID] = identity.conversationId
+  if (identity.threadId) {
+    attrs[ATTR.GEN_AI_THREAD_ID] = identity.threadId
   }
 
   // Target object
@@ -154,15 +154,15 @@ function buildAttributes(
       if (typeof payload['category'] === 'string') {
         attrs[ATTR.TYPEGRAPH_MEMORY_CATEGORY] = payload['category']
       }
-      if (typeof payload['visibility'] === 'string') {
-        attrs[ATTR.TYPEGRAPH_VISIBILITY] = payload['visibility']
+      if (Array.isArray(payload['accessScope'])) {
+        attrs[ATTR.TYPEGRAPH_ACCESS_SCOPE_COUNT] = payload['accessScope'].length
       }
       break
     }
 
     case 'index.start':
     case 'index.complete':
-    case 'index.source': {
+    case 'index.document': {
       if (typeof payload['bucketId'] === 'string') {
         attrs[ATTR.GEN_AI_DATA_SOURCE_ID] = payload['bucketId']
       }

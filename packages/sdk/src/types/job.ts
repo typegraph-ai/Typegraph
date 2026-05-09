@@ -1,9 +1,8 @@
-import type { typegraphIdentity } from './identity.js'
 import type { IndexResult } from './index-types.js'
-import type { ConversationTurnResult } from './memory.js'
+import type { ThreadTurnResult } from './memory.js'
 import type { MemoryRecord } from '../memory/types/memory.js'
 
-export type JobType = 'ingest' | 'remember' | 'conversation_turn' | 'correct' | 'forget'
+export type JobType = 'ingest' | 'remember' | 'thread_turn' | 'correct' | 'forget'
 export type JobStatus = 'pending' | 'processing' | 'complete' | 'failed'
 
 /** A tracked async operation (primarily used in cloud mode). */
@@ -12,9 +11,8 @@ export interface Job {
   status: JobStatus
   type: JobType
   bucketId?: string | undefined
-  identity?: typegraphIdentity | undefined
   /** Populated on completion. Shape depends on `type`. */
-  result?: IndexResult | MemoryRecord | ConversationTurnResult | undefined
+  result?: IndexResult | MemoryRecord | ThreadTurnResult | undefined
   /** Error message if status is 'failed'. */
   error?: string | undefined
   createdAt: Date
@@ -26,7 +24,6 @@ export interface JobFilter {
   bucketId?: string | undefined
   status?: JobStatus | undefined
   type?: JobType | undefined
-  identity?: typegraphIdentity | undefined
 }
 
 /** Input for creating or replacing a job row. `id` is caller-provided (e.g. an Inngest run id). */

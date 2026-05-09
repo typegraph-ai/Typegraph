@@ -7,6 +7,7 @@
  */
 
 import type {
+  AccessScope,
   MemoryStoreAdapter,
   MemoryFilter,
   MemorySearchOpts,
@@ -80,14 +81,14 @@ function safeIdx(tablePrefix: string, suffix: string): string {
   return `${tablePrefix.slice(0, available)}_${hash}_${suffix}`
 }
 
-function IDENTITY_COLUMNS_DDL(t: string, opts: { visibility?: boolean } = {}) {
+function IDENTITY_COLUMNS_DDL(t: string, opts: { accessScope?: boolean } = {}) {
   return `
   ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS tenant_id TEXT;
   ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS group_id TEXT;
   ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS user_id TEXT;
   ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS agent_id TEXT;
-  ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS conversation_id TEXT;
-  ${opts.visibility
+  ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS thread_id TEXT;
+  ${opts.accessScope
     ? `ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS visibility TEXT CHECK (visibility IS NULL OR visibility IN ('tenant', 'group', 'user', 'agent', 'conversation'));`
     : ''}
 `
@@ -96,8 +97,8 @@ function IDENTITY_COLUMNS_DDL(t: string, opts: { visibility?: boolean } = {}) {
 const MEMORY_ROW_COLUMNS = [
   'id', 'category', 'status', 'content', 'importance', 'access_count',
   'last_accessed_at', 'metadata', 'tenant_id', 'group_id', 'user_id',
-  'agent_id', 'conversation_id', 'visibility', 'event_type', 'participants',
-  'episodic_conversation_id', 'sequence', 'consolidated_at', 'subject',
+  'agent_id', 'thread_id', 'visibility', 'event_type', 'participants',
+  'episodic_thread_id', 'sequence', 'consolidated_at', 'subject',
   'predicate', 'object', 'confidence', 'source_memory_ids', 'trigger', 'steps',
   'success_count', 'failure_count', 'last_outcome', 'valid_at', 'invalid_at',
   'expired_at', 'created_at', 'updated_at',
@@ -106,7 +107,7 @@ const MEMORY_ROW_COLUMNS = [
 const ENTITY_ROW_COLUMNS = [
   'id', 'name', 'entity_type', 'aliases', 'properties', 'status',
   'merged_into_entity_id', 'deleted_at', 'description_embedding', 'tenant_id',
-  'group_id', 'user_id', 'agent_id', 'conversation_id', 'visibility',
+  'group_id', 'user_id', 'agent_id', 'thread_id', 'visibility',
   'valid_at', 'invalid_at', 'created_at', 'updated_at',
 ]
 
@@ -115,7 +116,7 @@ const EDGE_ROW_COLUMNS = [
   'weight', 'properties', 'from_bucket_id', 'from_source_id',
   'from_chunk_index', 'from_embedding_model', 'from_chunk_id', 'to_bucket_id',
   'to_source_id', 'to_chunk_index', 'to_embedding_model', 'to_chunk_id',
-  'tenant_id', 'group_id', 'user_id', 'agent_id', 'conversation_id',
+  'tenant_id', 'group_id', 'user_id', 'agent_id', 'thread_id',
   'visibility', 'evidence', 'valid_at', 'invalid_at', 'created_at',
   'updated_at',
 ]
@@ -124,7 +125,7 @@ const FACT_ROW_COLUMNS = [
   'id', 'edge_id', 'source_entity_id', 'target_entity_id', 'relation',
   'fact_text', 'description', 'evidence_text', 'fact_search_text',
   'from_chunk_id', 'weight', 'evidence_count', 'tenant_id', 'group_id',
-  'user_id', 'agent_id', 'conversation_id', 'visibility', 'invalid_at',
+  'user_id', 'agent_id', 'thread_id', 'visibility', 'invalid_at',
   'created_at', 'updated_at',
 ]
 
@@ -151,12 +152,12 @@ const MEMORIES_DDL = (t: string) => {
     group_id         TEXT,
     user_id          TEXT,
     agent_id         TEXT,
-    conversation_id       TEXT,
+    thread_id       TEXT,
     visibility       TEXT CHECK (visibility IS NULL OR visibility IN ('tenant', 'group', 'user', 'agent', 'conversation')),
     -- Episodic
     event_type       TEXT,
     participants     TEXT[],
-    episodic_conversation_id TEXT,
+    episodic_thread_id TEXT,
     sequence         INTEGER,
     consolidated_at  TIMESTAMPTZ,
     -- Semantic (fact triples)
@@ -181,7 +182,7 @@ const MEMORIES_DDL = (t: string) => {
     search_vector    TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
   );
 
-  ${IDENTITY_COLUMNS_DDL(t, { visibility: true })}
+  ${IDENTITY_COLUMNS_DDL(t, { accessScope: true })}
 
   CREATE INDEX IF NOT EXISTS ${idx('category_idx')} ON ${t} (category);
   CREATE INDEX IF NOT EXISTS ${idx('status_idx')} ON ${t} (status);
@@ -189,11 +190,11 @@ const MEMORIES_DDL = (t: string) => {
   CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')} ON ${t} (tenant_id, user_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')} ON ${t} (tenant_id, group_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')} ON ${t} (tenant_id, agent_id);
-  CREATE INDEX IF NOT EXISTS ${idx('tenant_conversation_idx')} ON ${t} (tenant_id, conversation_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_thread_idx')} ON ${t} (tenant_id, thread_id);
   CREATE INDEX IF NOT EXISTS ${idx('user_idx')} ON ${t} (user_id);
   CREATE INDEX IF NOT EXISTS ${idx('group_idx')} ON ${t} (group_id);
   CREATE INDEX IF NOT EXISTS ${idx('agent_idx')} ON ${t} (agent_id);
-  CREATE INDEX IF NOT EXISTS ${idx('conversation_idx')} ON ${t} (conversation_id);
+  CREATE INDEX IF NOT EXISTS ${idx('thread_idx')} ON ${t} (thread_id);
   CREATE INDEX IF NOT EXISTS ${idx('visibility_idx')} ON ${t} (visibility);
   CREATE INDEX IF NOT EXISTS ${idx('search_vector_idx')} ON ${t} USING gin (search_vector);
 `
@@ -219,7 +220,7 @@ const ENTITIES_DDL = (t: string, dims?: number) => {
     group_id    TEXT,
     user_id     TEXT,
     agent_id    TEXT,
-    conversation_id  TEXT,
+    thread_id  TEXT,
     visibility  TEXT CHECK (visibility IS NULL OR visibility IN ('tenant', 'group', 'user', 'agent', 'conversation')),
     valid_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     invalid_at  TIMESTAMPTZ,
@@ -227,7 +228,7 @@ const ENTITIES_DDL = (t: string, dims?: number) => {
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
 
-  ${IDENTITY_COLUMNS_DDL(t, { visibility: true })}
+  ${IDENTITY_COLUMNS_DDL(t, { accessScope: true })}
 
   CREATE INDEX IF NOT EXISTS ${idx('name_idx')} ON ${t} (name);
   CREATE INDEX IF NOT EXISTS ${idx('type_idx')} ON ${t} (entity_type);
@@ -236,11 +237,11 @@ const ENTITIES_DDL = (t: string, dims?: number) => {
   CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')} ON ${t} (tenant_id, user_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')} ON ${t} (tenant_id, group_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')} ON ${t} (tenant_id, agent_id);
-  CREATE INDEX IF NOT EXISTS ${idx('tenant_conversation_idx')} ON ${t} (tenant_id, conversation_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_thread_idx')} ON ${t} (tenant_id, thread_id);
   CREATE INDEX IF NOT EXISTS ${idx('user_idx')} ON ${t} (user_id);
   CREATE INDEX IF NOT EXISTS ${idx('group_idx')} ON ${t} (group_id);
   CREATE INDEX IF NOT EXISTS ${idx('agent_idx')} ON ${t} (agent_id);
-  CREATE INDEX IF NOT EXISTS ${idx('conversation_idx')} ON ${t} (conversation_id);
+  CREATE INDEX IF NOT EXISTS ${idx('thread_idx')} ON ${t} (thread_id);
   CREATE INDEX IF NOT EXISTS ${idx('visibility_idx')} ON ${t} (visibility);
 `
 }
@@ -261,7 +262,7 @@ const ENTITY_EXTERNAL_IDS_DDL = (t: string, entitiesTable: string) => {
     group_id         TEXT,
     user_id          TEXT,
     agent_id         TEXT,
-    conversation_id  TEXT,
+    thread_id  TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
@@ -273,7 +274,7 @@ const ENTITY_EXTERNAL_IDS_DDL = (t: string, entitiesTable: string) => {
   CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')} ON ${t} (tenant_id, user_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')} ON ${t} (tenant_id, group_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')} ON ${t} (tenant_id, agent_id);
-  CREATE INDEX IF NOT EXISTS ${idx('tenant_conversation_idx')} ON ${t} (tenant_id, conversation_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_thread_idx')} ON ${t} (tenant_id, thread_id);
   CREATE UNIQUE INDEX IF NOT EXISTS ${idx('scoped_external_id_uniq_idx')}
     ON ${t} (
       type,
@@ -283,7 +284,7 @@ const ENTITY_EXTERNAL_IDS_DDL = (t: string, entitiesTable: string) => {
       COALESCE(group_id, ''),
       COALESCE(user_id, ''),
       COALESCE(agent_id, ''),
-      COALESCE(conversation_id, '')
+      COALESCE(thread_id, '')
     );
 `
 }
@@ -316,7 +317,7 @@ const EDGES_DDL = (t: string) => {
     group_id         TEXT,
     user_id          TEXT,
     agent_id         TEXT,
-    conversation_id       TEXT,
+    thread_id       TEXT,
     visibility       TEXT CHECK (visibility IS NULL OR visibility IN ('tenant', 'group', 'user', 'agent', 'conversation')),
     evidence         TEXT[] DEFAULT '{}',
     valid_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -326,7 +327,7 @@ const EDGES_DDL = (t: string) => {
     CONSTRAINT ${safeIdx(i, 'rel_uniq')} UNIQUE (source_type, source_id, target_type, target_id, relation)
   );
 
-  ${IDENTITY_COLUMNS_DDL(t, { visibility: true })}
+  ${IDENTITY_COLUMNS_DDL(t, { accessScope: true })}
 
   CREATE INDEX IF NOT EXISTS ${idx('source_idx')} ON ${t} (source_type, source_id);
   CREATE INDEX IF NOT EXISTS ${idx('target_idx')} ON ${t} (target_type, target_id);
@@ -341,11 +342,11 @@ const EDGES_DDL = (t: string) => {
   CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')} ON ${t} (tenant_id, user_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')} ON ${t} (tenant_id, group_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')} ON ${t} (tenant_id, agent_id);
-  CREATE INDEX IF NOT EXISTS ${idx('tenant_conversation_idx')} ON ${t} (tenant_id, conversation_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_thread_idx')} ON ${t} (tenant_id, thread_id);
   CREATE INDEX IF NOT EXISTS ${idx('user_idx')} ON ${t} (user_id);
   CREATE INDEX IF NOT EXISTS ${idx('group_idx')} ON ${t} (group_id);
   CREATE INDEX IF NOT EXISTS ${idx('agent_idx')} ON ${t} (agent_id);
-  CREATE INDEX IF NOT EXISTS ${idx('conversation_idx')} ON ${t} (conversation_id);
+  CREATE INDEX IF NOT EXISTS ${idx('thread_idx')} ON ${t} (thread_id);
   CREATE INDEX IF NOT EXISTS ${idx('visibility_idx')} ON ${t} (visibility);
 `
 }
@@ -361,7 +362,7 @@ const CHUNK_MENTIONS_DDL = (t: string) => {
     chunk_index     INTEGER NOT NULL,
     bucket_id       TEXT NOT NULL,
     mention_type    TEXT NOT NULL
-                    CHECK (mention_type IN ('subject', 'object', 'co_occurrence', 'entity', 'alias', 'source_subject')),
+                    CHECK (mention_type IN ('subject', 'object', 'co_occurrence', 'entity', 'alias', 'document_subject')),
     surface_text    TEXT,
     normalized_surface_text TEXT NOT NULL DEFAULT '',
     confidence      REAL,
@@ -399,7 +400,7 @@ const FACT_RECORDS_DDL = (t: string, dims?: number) => {
     group_id         TEXT,
     user_id          TEXT,
     agent_id         TEXT,
-    conversation_id  TEXT,
+    thread_id  TEXT,
     visibility       TEXT CHECK (visibility IS NULL OR visibility IN ('tenant', 'group', 'user', 'agent', 'conversation')),
     invalid_at       TIMESTAMPTZ,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -407,7 +408,7 @@ const FACT_RECORDS_DDL = (t: string, dims?: number) => {
     search_vector    TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', fact_search_text)) STORED
   );
 
-  ${IDENTITY_COLUMNS_DDL(t, { visibility: true })}
+  ${IDENTITY_COLUMNS_DDL(t, { accessScope: true })}
 
   CREATE INDEX IF NOT EXISTS ${idx('source_idx')} ON ${t} (source_entity_id);
   CREATE INDEX IF NOT EXISTS ${idx('target_idx')} ON ${t} (target_entity_id);
@@ -415,7 +416,7 @@ const FACT_RECORDS_DDL = (t: string, dims?: number) => {
   CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')} ON ${t} (tenant_id, user_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')} ON ${t} (tenant_id, group_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')} ON ${t} (tenant_id, agent_id);
-  CREATE INDEX IF NOT EXISTS ${idx('tenant_conversation_idx')} ON ${t} (tenant_id, conversation_id);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_thread_idx')} ON ${t} (tenant_id, thread_id);
   CREATE INDEX IF NOT EXISTS ${idx('visibility_idx')} ON ${t} (visibility);
   CREATE INDEX IF NOT EXISTS ${idx('embedding_idx')} ON ${t} USING hnsw (embedding vector_cosine_ops);
   CREATE INDEX IF NOT EXISTS ${idx('search_vector_idx')} ON ${t} USING gin (search_vector);
@@ -571,7 +572,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     await this.sql(
       `ALTER TABLE ${this.chunkMentionsTable}
        ADD CONSTRAINT ${mentionTypeCheck}
-       CHECK (mention_type IN ('subject', 'object', 'co_occurrence', 'entity', 'alias', 'source_subject')) NOT VALID`
+       CHECK (mention_type IN ('subject', 'object', 'co_occurrence', 'entity', 'alias', 'document_subject')) NOT VALID`
     )
     await this.sql(`ALTER TABLE ${this.chunkMentionsTable} VALIDATE CONSTRAINT ${mentionTypeCheck}`)
     await this.sql(`CREATE INDEX IF NOT EXISTS ${safeIdx(i, 'surface_idx')} ON ${this.chunkMentionsTable} (normalized_surface_text)`)
@@ -610,8 +611,8 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       `INSERT INTO ${this.memoriesTable}
         (id, category, status, content, embedding, importance, access_count,
          last_accessed_at, metadata,
-         tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
-         event_type, participants, episodic_conversation_id, sequence, consolidated_at,
+         tenant_id, group_id, user_id, agent_id, thread_id, visibility,
+         event_type, participants, episodic_thread_id, sequence, consolidated_at,
          subject, predicate, object, confidence, source_memory_ids,
          trigger, steps, success_count, failure_count, last_outcome,
          valid_at, invalid_at, expired_at, updated_at)
@@ -623,12 +624,12 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          status = EXCLUDED.status, content = EXCLUDED.content,
          embedding = EXCLUDED.embedding, importance = EXCLUDED.importance,
          access_count = EXCLUDED.access_count, last_accessed_at = EXCLUDED.last_accessed_at,
-         metadata = EXCLUDED.metadata,
+         metadata = EXCLUDED.properties,
          tenant_id = EXCLUDED.tenant_id, group_id = EXCLUDED.group_id,
          user_id = EXCLUDED.user_id, agent_id = EXCLUDED.agent_id,
-         conversation_id = EXCLUDED.conversation_id, visibility = EXCLUDED.visibility,
+         thread_id = EXCLUDED.thread_id, visibility = EXCLUDED.visibility,
          event_type = EXCLUDED.event_type, participants = EXCLUDED.participants,
-         episodic_conversation_id = EXCLUDED.episodic_conversation_id, sequence = EXCLUDED.sequence,
+         episodic_thread_id = EXCLUDED.episodic_thread_id, sequence = EXCLUDED.sequence,
          consolidated_at = EXCLUDED.consolidated_at,
          subject = EXCLUDED.subject, predicate = EXCLUDED.predicate,
          object = EXCLUDED.object, confidence = EXCLUDED.confidence,
@@ -649,12 +650,12 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         record.scope.groupId ?? null,
         record.scope.userId ?? null,
         record.scope.agentId ?? null,
-        record.scope.conversationId ?? null,
-        record.visibility ?? null,
+        record.scope.threadId ?? null,
+        record.accessScope ?? null,
         // Episodic
         (record as any).eventType ?? null,
         (record as any).participants ?? null,
-        (record as any).conversationId ?? null,  // episodic conversationId → episodic_conversation_id column
+        (record as any).threadId ?? null,  // episodic threadId → episodic_thread_id column
         (record as any).sequence ?? null,
         (record as any).consolidatedAt?.toISOString() ?? null,
         // Semantic
@@ -882,12 +883,12 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const descEmbeddingStr = entity.descriptionEmbedding ? `[${entity.descriptionEmbedding.join(',')}]` : null
     // Strip transient _similarity before persisting to JSONB — it's a per-query
     // score stashed by mapRowToEntity from searchEntities results, not a stored property
-    const { _similarity, ...cleanProps } = entity.properties
+    const { _similarity, ...cleanProps } = entity.metadata
     const tbl = unqualified(this.entitiesTable)
     const rows = await this.sqlWithRetry(
       `INSERT INTO ${this.entitiesTable}
         (id, name, entity_type, aliases, properties, status, merged_into_entity_id, deleted_at, embedding, description_embedding,
-         tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
+         tenant_id, group_id, user_id, agent_id, thread_id, visibility,
          valid_at, invalid_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::vector,$10::vector,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
        ON CONFLICT (id) DO UPDATE SET
@@ -900,7 +901,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          description_embedding = COALESCE(EXCLUDED.description_embedding, ${tbl}.description_embedding),
          tenant_id = EXCLUDED.tenant_id, group_id = EXCLUDED.group_id,
          user_id = EXCLUDED.user_id, agent_id = EXCLUDED.agent_id,
-         conversation_id = EXCLUDED.conversation_id, visibility = EXCLUDED.visibility,
+         thread_id = EXCLUDED.thread_id, visibility = EXCLUDED.visibility,
          valid_at = EXCLUDED.valid_at, invalid_at = EXCLUDED.invalid_at, updated_at = NOW()
        RETURNING ${selectColumns(ENTITY_ROW_COLUMNS)}`,
       [
@@ -914,8 +915,8 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         entity.scope.groupId ?? null,
         entity.scope.userId ?? null,
         entity.scope.agentId ?? null,
-        entity.scope.conversationId ?? null,
-        entity.visibility ?? null,
+        entity.scope.threadId ?? null,
+        entity.accessScope ?? null,
         entity.temporal.validAt.toISOString(),
         entity.temporal.invalidAt?.toISOString() ?? null,
       ]
@@ -957,7 +958,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         scope.groupId ?? null,
         scope.userId ?? null,
         scope.agentId ?? null,
-        scope.conversationId ?? null,
+        scope.threadId ?? null,
       )
     }
     if (values.length === 0) return
@@ -966,7 +967,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const rows = await this.sqlWithRetry(
       `INSERT INTO ${this.entityExternalIdsTable}
         (id, entity_id, type, id_value, normalized_value, encoding, metadata,
-         tenant_id, group_id, user_id, agent_id, conversation_id)
+         tenant_id, group_id, user_id, agent_id, thread_id)
        VALUES ${values.join(',')}
        ON CONFLICT (
          type,
@@ -976,10 +977,10 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          COALESCE(group_id, ''),
          COALESCE(user_id, ''),
          COALESCE(agent_id, ''),
-         COALESCE(conversation_id, '')
+         COALESCE(thread_id, '')
        ) DO UPDATE SET
          id_value = EXCLUDED.id_value,
-         metadata = EXCLUDED.metadata,
+         metadata = EXCLUDED.properties,
          updated_at = NOW()
        WHERE ${tbl}.entity_id = EXCLUDED.entity_id
        RETURNING id`,
@@ -1165,13 +1166,13 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     for (const row of [...lexicalRows, ...vectorRows]) {
       const entity = mapRowToEntity(row)
       const existing = byId.get(entity.id)
-      if (!existing || ((entity.properties._similarity as number | undefined) ?? 0) > ((existing.properties._similarity as number | undefined) ?? 0)) {
+      if (!existing || ((entity.metadata._similarity as number | undefined) ?? 0) > ((existing.metadata._similarity as number | undefined) ?? 0)) {
         byId.set(entity.id, entity)
       }
     }
 
     const merged = [...byId.values()]
-      .sort((a, b) => ((b.properties._similarity as number | undefined) ?? 0) - ((a.properties._similarity as number | undefined) ?? 0))
+      .sort((a, b) => ((b.metadata._similarity as number | undefined) ?? 0) - ((a.metadata._similarity as number | undefined) ?? 0))
       .slice(0, maxRows)
     return this.attachExternalIds(merged)
   }
@@ -1195,14 +1196,14 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         edge.targetId,
         edge.relation,
         edge.weight,
-        JSON.stringify(edge.properties ?? {}),
+        JSON.stringify(edge.metadata ?? {}),
         edge.sourceChunkRef?.bucketId ?? null,
-        edge.sourceChunkRef?.sourceId ?? null,
+        edge.sourceChunkRef?.documentId ?? null,
         edge.sourceChunkRef?.chunkIndex ?? null,
         edge.sourceChunkRef?.embeddingModel ?? null,
         edge.sourceChunkRef?.chunkId ?? null,
         edge.targetChunkRef?.bucketId ?? null,
-        edge.targetChunkRef?.sourceId ?? null,
+        edge.targetChunkRef?.documentId ?? null,
         edge.targetChunkRef?.chunkIndex ?? null,
         edge.targetChunkRef?.embeddingModel ?? null,
         edge.targetChunkRef?.chunkId ?? null,
@@ -1210,8 +1211,8 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         scope.groupId ?? null,
         scope.userId ?? null,
         scope.agentId ?? null,
-        scope.conversationId ?? null,
-        edge.visibility ?? null,
+        scope.threadId ?? null,
+        edge.accessScope ?? null,
         edge.evidence ?? [],
         edge.temporal.validAt.toISOString(),
         edge.temporal.invalidAt?.toISOString() ?? null,
@@ -1224,7 +1225,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         (id, source_type, source_id, target_type, target_id, relation, weight, properties,
          from_bucket_id, from_source_id, from_chunk_index, from_embedding_model, from_chunk_id,
          to_bucket_id, to_source_id, to_chunk_index, to_embedding_model, to_chunk_id,
-         tenant_id, group_id, user_id, agent_id, conversation_id, visibility, evidence, valid_at, invalid_at)
+         tenant_id, group_id, user_id, agent_id, thread_id, visibility, evidence, valid_at, invalid_at)
        VALUES ${values.join(',')}
        ON CONFLICT (source_type, source_id, target_type, target_id, relation) DO UPDATE SET
          weight = LEAST(5.0, ${tbl}.weight + EXCLUDED.weight),
@@ -1243,7 +1244,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          group_id = EXCLUDED.group_id,
          user_id = EXCLUDED.user_id,
          agent_id = EXCLUDED.agent_id,
-         conversation_id = EXCLUDED.conversation_id,
+         thread_id = EXCLUDED.thread_id,
          visibility = EXCLUDED.visibility,
          evidence = ARRAY(SELECT DISTINCT v FROM unnest(${tbl}.evidence || EXCLUDED.evidence) AS v WHERE v <> ''),
          invalid_at = EXCLUDED.invalid_at,
@@ -1254,26 +1255,27 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
 
   async upsertFactRecord(fact: SemanticFactRecord): Promise<SemanticFactRecord> {
     const embeddingStr = fact.embedding ? `[${fact.embedding.join(',')}]` : null
+    const description = fact.description ?? fact.evidenceText ?? ''
     const params = [
       fact.id,
       fact.edgeId,
       fact.sourceEntityId,
       fact.targetEntityId,
       fact.relation,
-      fact.factText,
-      fact.description ?? null,
+      description,
+      fact.description ?? description,
       fact.evidenceText ?? null,
-      fact.factSearchText ?? fact.factText,
-      fact.sourceChunkId ?? null,
+      description,
+      fact.chunkId ?? null,
       fact.weight,
-      fact.evidenceCount,
+      fact.evidenceText ? 1 : 0,
       embeddingStr,
       fact.scope.tenantId ?? null,
       fact.scope.groupId ?? null,
       fact.scope.userId ?? null,
       fact.scope.agentId ?? null,
-      fact.scope.conversationId ?? null,
-      fact.visibility ?? null,
+      fact.scope.threadId ?? null,
+      fact.accessScope ?? null,
       fact.invalidAt?.toISOString() ?? null,
       fact.updatedAt.toISOString(),
     ]
@@ -1282,7 +1284,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         (id, edge_id, source_entity_id, target_entity_id, relation, fact_text,
          description, evidence_text, fact_search_text, from_chunk_id, weight,
          evidence_count, embedding, tenant_id, group_id, user_id, agent_id,
-         conversation_id, visibility, invalid_at, updated_at)
+         thread_id, visibility, invalid_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::vector,$14,$15,$16,$17,$18,$19,$20,$21)
        ON CONFLICT (${conflictTarget}) DO UPDATE SET
          ${conflictTarget === 'id'
@@ -1303,7 +1305,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          group_id = EXCLUDED.group_id,
          user_id = EXCLUDED.user_id,
          agent_id = EXCLUDED.agent_id,
-         conversation_id = EXCLUDED.conversation_id,
+         thread_id = EXCLUDED.thread_id,
          visibility = EXCLUDED.visibility,
          invalid_at = EXCLUDED.invalid_at,
          updated_at = EXCLUDED.updated_at
@@ -1419,7 +1421,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     if (chunkRefs.length === 0) return []
     const params: unknown[] = [
       chunkRefs.map(ref => ref.bucketId),
-      chunkRefs.map(ref => ref.sourceId),
+      chunkRefs.map(ref => ref.documentId),
       chunkRefs.map(ref => ref.chunkIndex),
     ]
     let bucketClause = ''
@@ -1433,7 +1435,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const rows = await this.sqlWithRetry(
       `SELECT c.id AS chunk_id, c.content, c.bucket_id, c.source_id, c.chunk_index,
               c.embedding_model, c.total_chunks, c.metadata, c.tenant_id, c.group_id,
-              c.user_id, c.agent_id, c.conversation_id
+              c.user_id, c.agent_id, c.thread_id
          FROM ${opts.chunksTable} c
         WHERE (c.bucket_id, c.source_id, c.chunk_index) IN (
           SELECT * FROM unnest($1::text[], $2::text[], $3::int[])
@@ -1469,7 +1471,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       } else {
         params.push(opts.chunkRefs.map(ref => ref.bucketId))
         const bucketParam = `$${params.length}`
-        params.push(opts.chunkRefs.map(ref => ref.sourceId))
+        params.push(opts.chunkRefs.map(ref => ref.documentId))
         const sourceParam = `$${params.length}`
         params.push(opts.chunkRefs.map(ref => ref.chunkIndex))
         const chunkParam = `$${params.length}`
@@ -1485,7 +1487,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const rows = await this.sqlWithRetry(
       `SELECT c.id AS chunk_id, c.content, c.bucket_id, c.source_id, c.chunk_index,
               c.embedding_model, c.total_chunks, c.metadata, c.tenant_id, c.group_id,
-              c.user_id, c.agent_id, c.conversation_id,
+              c.user_id, c.agent_id, c.thread_id,
               1 - (c.embedding <=> $1::vector) AS similarity
          FROM ${opts.chunksTable} c
         WHERE c.embedding IS NOT NULL
@@ -1509,7 +1511,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const rows = await this.sqlWithRetry(
       `INSERT INTO ${this.edgesTable}
         (id, source_type, source_id, target_type, target_id, relation, weight, properties,
-         tenant_id, group_id, user_id, agent_id, conversation_id, visibility,
+         tenant_id, group_id, user_id, agent_id, thread_id, visibility,
          evidence, valid_at, invalid_at, updated_at)
        VALUES ($1,'entity',$2,'entity',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
        ON CONFLICT (source_type, source_id, target_type, target_id, relation) DO UPDATE SET
@@ -1519,13 +1521,13 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
        RETURNING ${selectColumns(EDGE_ROW_COLUMNS)}`,
       [
         edge.id, edge.sourceEntityId, edge.targetEntityId,
-        edge.relation, edge.weight, JSON.stringify(edge.properties),
+        edge.relation, edge.weight, JSON.stringify(edge.metadata),
         edge.scope.tenantId ?? null,
         edge.scope.groupId ?? null,
         edge.scope.userId ?? null,
         edge.scope.agentId ?? null,
-        edge.scope.conversationId ?? null,
-        edge.visibility ?? null,
+        edge.scope.threadId ?? null,
+        edge.accessScope ?? null,
         edge.evidence,
         edge.temporal.validAt.toISOString(),
         edge.temporal.invalidAt?.toISOString() ?? null,
@@ -1633,8 +1635,8 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     }
 
     return this.withTransaction(async () => {
-      const source = await this.getEntity(input.sourceEntityId, input)
-      const target = await this.getEntity(input.targetEntityId, input)
+      const source = await this.getEntity(input.sourceEntityId)
+      const target = await this.getEntity(input.targetEntityId)
       if (!source) throw new Error(`Source entity not found: ${input.sourceEntityId}`)
       if (!target) throw new Error(`Target entity not found: ${input.targetEntityId}`)
 
@@ -1647,8 +1649,8 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         .filter(alias => alias.toLowerCase() !== target.name.toLowerCase())
       const mergedEntityIds = [
         ...new Set([
-          ...arrayProperty(target.properties.mergedEntityIds),
-          ...arrayProperty(source.properties.mergedEntityIds),
+          ...arrayProperty(target.metadata.mergedEntityIds),
+          ...arrayProperty(source.metadata.mergedEntityIds),
           source.id,
         ]),
       ]
@@ -1656,10 +1658,10 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       await this.upsertEntity({
         ...target,
         aliases: mergedAliases,
-        properties: {
-          ...source.properties,
-          ...target.properties,
-          ...(input.properties ?? {}),
+        metadata: {
+          ...source.metadata,
+          ...target.metadata,
+          ...(input.metadata ?? {}),
           mergedEntityIds,
           updatedAt: now.toISOString(),
         },
@@ -1875,7 +1877,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         ]
       )
 
-      const refreshed = await this.getEntity(target.id, input)
+      const refreshed = await this.getEntity(target.id)
       return {
         target: entityDetailFromSemanticEntity(refreshed ?? target),
         sourceEntityId: source.id,
@@ -2005,7 +2007,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       params.push(
         generateId('mention'),
         m.entityId,
-        m.sourceId,
+        m.documentId,
         m.chunkIndex,
         m.bucketId,
         m.mentionType,
@@ -2050,7 +2052,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const rows = await this.sqlWithRetry(
       `SELECT c.id AS chunk_id, c.bucket_id, c.source_id, c.chunk_index,
               c.embedding_model, c.content, c.metadata, c.visibility,
-              c.tenant_id, c.group_id, c.user_id, c.agent_id, c.conversation_id
+              c.tenant_id, c.group_id, c.user_id, c.agent_id, c.thread_id
          FROM ${opts.chunksTable} c
         WHERE TRUE
           ${bucketClause}
@@ -2086,7 +2088,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const rows = await this.sqlWithRetry(
       `SELECT c.id AS chunk_id, c.bucket_id, c.source_id, c.chunk_index,
               c.embedding_model, c.content, c.metadata, c.visibility,
-              c.tenant_id, c.group_id, c.user_id, c.agent_id, c.conversation_id,
+              c.tenant_id, c.group_id, c.user_id, c.agent_id, c.thread_id,
               m.entity_id, m.mention_type, m.surface_text, m.normalized_surface_text, m.confidence
          FROM ${this.chunkMentionsTable} m
          JOIN ${opts.chunksTable} c
@@ -2239,7 +2241,7 @@ function mapRowToMemory(row: Record<string, unknown>): MemoryRecord {
     lastAccessedAt: new Date(row.last_accessed_at as string),
     metadata,
     scope,
-    visibility: (row.visibility as MemoryRecord['visibility']) ?? undefined,
+    accessScope: parseJsonArray(row.visibility) as MemoryRecord['accessScope'],
     validAt: new Date(row.valid_at as string),
     invalidAt: row.invalid_at ? new Date(row.invalid_at as string) : undefined,
     createdAt: new Date(row.created_at as string),
@@ -2251,7 +2253,7 @@ function mapRowToMemory(row: Record<string, unknown>): MemoryRecord {
     Object.assign(base, {
       eventType: row.event_type as string,
       participants: row.participants as string[] | undefined,
-      conversationId: (row.episodic_conversation_id as string) ?? undefined,
+      threadId: (row.episodic_thread_id as string) ?? undefined,
       sequence: (row.sequence as number) ?? undefined,
       consolidatedAt: row.consolidated_at ? new Date(row.consolidated_at as string) : undefined,
     })
@@ -2277,7 +2279,7 @@ function mapRowToMemory(row: Record<string, unknown>): MemoryRecord {
 }
 
 function mapRowToEntity(row: Record<string, unknown>): SemanticEntity {
-  const props = parseJson(row.properties)
+  const props = parseJson(row.metadata)
   // Stash pgvector similarity score (if present from searchEntities query) as transient property
   if (row.similarity != null) {
     props._similarity = row.similarity as number
@@ -2287,14 +2289,14 @@ function mapRowToEntity(row: Record<string, unknown>): SemanticEntity {
     name: row.name as string,
     entityType: row.entity_type as string,
     aliases: row.aliases as string[] ?? [],
-    properties: props,
+    metadata: props,
     status: (row.status as SemanticEntity['status']) ?? 'active',
     mergedIntoEntityId: (row.merged_into_entity_id as string | null) ?? undefined,
     deletedAt: row.deleted_at ? new Date(row.deleted_at as string) : undefined,
     embedding: undefined,
     descriptionEmbedding: parseVectorString(row.description_embedding),
     scope: rowToIdentity(row),
-    visibility: (row.visibility as SemanticEntity['visibility']) ?? undefined,
+    accessScope: parseJsonArray(row.visibility) as SemanticEntity['accessScope'],
     temporal: {
       validAt: new Date(row.valid_at as string),
       invalidAt: row.invalid_at ? new Date(row.invalid_at as string) : undefined,
@@ -2315,9 +2317,9 @@ function mapRowToEdge(row: Record<string, unknown>): SemanticEdge {
     targetEntityId: row.target_id as string,
     relation: row.relation as string,
     weight: row.weight as number,
-    properties: parseJson(row.properties),
+    metadata: parseJson(row.metadata),
     scope: rowToIdentity(row),
-    visibility: (row.visibility as SemanticEdge['visibility']) ?? undefined,
+    accessScope: parseJsonArray(row.visibility) as SemanticEdge['accessScope'],
     evidence: row.evidence as string[] ?? [],
     temporal: {
       validAt: new Date(row.valid_at as string),
@@ -2335,16 +2337,13 @@ function mapRowToFact(row: Record<string, unknown>): SemanticFactRecord {
     sourceEntityId: row.source_entity_id as string,
     targetEntityId: row.target_entity_id as string,
     relation: row.relation as string,
-    factText: row.fact_text as string,
-    description: (row.description as string | null) ?? undefined,
+    description: (row.description as string | null) ?? (row.fact_text as string | null) ?? undefined,
     evidenceText: (row.evidence_text as string | null) ?? undefined,
-    factSearchText: (row.fact_search_text as string | null) ?? undefined,
-    sourceChunkId: (row.from_chunk_id as string | null) ?? undefined,
+    chunkId: (row.from_chunk_id as string | null) ?? undefined,
     weight: row.weight as number,
-    evidenceCount: row.evidence_count as number,
     embedding: undefined,
     scope: rowToIdentity(row),
-    visibility: (row.visibility as SemanticFactRecord['visibility']) ?? undefined,
+    accessScope: parseJsonArray(row.visibility) as SemanticFactRecord['accessScope'],
     createdAt: new Date(row.created_at as string),
     updatedAt: new Date(row.updated_at as string),
     invalidAt: row.invalid_at ? new Date(row.invalid_at as string) : undefined,
@@ -2353,13 +2352,13 @@ function mapRowToFact(row: Record<string, unknown>): SemanticFactRecord {
 }
 
 function mapRowToEntityChunkEdge(row: Record<string, unknown>): SemanticEntityChunkEdge {
-  const props = parseJson(row.properties)
+  const props = parseJson(row.metadata)
   return {
     id: row.id as string,
     entityId: row.source_id as string,
     chunkRef: {
       bucketId: row.to_bucket_id as string,
-      sourceId: row.to_source_id as string,
+      documentId: row.to_source_id as string,
       chunkIndex: row.to_chunk_index as number,
       embeddingModel: (row.to_embedding_model as string | null) ?? undefined,
       chunkId: (row.to_chunk_id as string | null) ?? undefined,
@@ -2370,7 +2369,7 @@ function mapRowToEntityChunkEdge(row: Record<string, unknown>): SemanticEntityCh
     surfaceTexts: Array.isArray(props.surfaceTexts) ? props.surfaceTexts as string[] : [],
     mentionTypes: Array.isArray(props.mentionTypes) ? props.mentionTypes as SemanticEntityChunkEdge['mentionTypes'] : [],
     scope: rowToIdentity(row),
-    visibility: (row.visibility as SemanticEntityChunkEdge['visibility']) ?? undefined,
+    accessScope: parseJsonArray(row.visibility) as SemanticEntityChunkEdge['accessScope'],
     createdAt: row.created_at ? new Date(row.created_at as string) : undefined,
     updatedAt: row.updated_at ? new Date(row.updated_at as string) : undefined,
   }
@@ -2380,17 +2379,17 @@ function mapRowToChunkBackfillRecord(row: Record<string, unknown>): ChunkBackfil
   return {
     chunkId: row.chunk_id as string,
     bucketId: row.bucket_id as string,
-    sourceId: row.source_id as string,
+    documentId: row.source_id as string,
     chunkIndex: row.chunk_index as number,
     embeddingModel: row.embedding_model as string,
     content: row.content as string,
     metadata: parseJson(row.metadata),
-    visibility: (row.visibility as ChunkBackfillRecord['visibility']) ?? undefined,
+    accessScope: parseJsonArray(row.visibility) as ChunkBackfillRecord['accessScope'],
     tenantId: (row.tenant_id as string) ?? undefined,
     groupId: (row.group_id as string) ?? undefined,
     userId: (row.user_id as string) ?? undefined,
     agentId: (row.agent_id as string) ?? undefined,
-    conversationId: (row.conversation_id as string) ?? undefined,
+    threadId: (row.thread_id as string) ?? undefined,
   }
 }
 
@@ -2399,7 +2398,7 @@ function mapRowToChunkContent(row: Record<string, unknown>): SemanticChunkRecord
     chunkId: (row.chunk_id as string | null) ?? undefined,
     content: row.content as string,
     bucketId: row.bucket_id as string,
-    sourceId: row.source_id as string,
+    documentId: row.source_id as string,
     chunkIndex: row.chunk_index as number,
     embeddingModel: (row.embedding_model as string | null) ?? undefined,
     totalChunks: row.total_chunks as number,
@@ -2408,7 +2407,7 @@ function mapRowToChunkContent(row: Record<string, unknown>): SemanticChunkRecord
     groupId: (row.group_id as string) ?? undefined,
     userId: (row.user_id as string) ?? undefined,
     agentId: (row.agent_id as string) ?? undefined,
-    conversationId: (row.conversation_id as string) ?? undefined,
+    threadId: (row.thread_id as string) ?? undefined,
   }
 }
 
@@ -2422,8 +2421,8 @@ function entityDetailFromSemanticEntity(entity: SemanticEntity): MergeGraphEntit
     aliases: entity.aliases,
     externalIds: entity.externalIds,
     edgeCount: 0,
-    properties: entity.properties,
-    description: entity.properties.description as string | undefined,
+    metadata: entity.metadata,
+    description: entity.metadata.description as string | undefined,
     createdAt: entity.temporal.createdAt,
     validAt: entity.temporal.validAt,
     invalidAt: entity.temporal.invalidAt,
@@ -2440,6 +2439,12 @@ function arrayProperty(value: unknown): string[] {
 function parseJson(val: unknown): Record<string, unknown> {
   if (typeof val === 'string') return JSON.parse(val)
   return (val ?? {}) as Record<string, unknown>
+}
+
+function parseJsonArray(val: unknown): AccessScope | undefined {
+  if (val == null) return undefined
+  const parsed = typeof val === 'string' ? JSON.parse(val) : val
+  return Array.isArray(parsed) ? parsed as AccessScope : undefined
 }
 
 /** Parse a pgvector string "[0.1,0.2,0.3]" into a number[], or return undefined if null/missing. */
@@ -2547,19 +2552,19 @@ function buildMemoryWhere(
     params.push(filter.scope.agentId)
     conditions.push(`agent_id = ${p()}`)
   }
-  if (filter.conversationId) {
-    params.push(filter.conversationId)
-    conditions.push(`conversation_id = ${p()}`)
-  } else if (filter.scope?.conversationId) {
-    params.push(filter.scope.conversationId)
-    conditions.push(`conversation_id = ${p()}`)
+  if (filter.threadId) {
+    params.push(filter.threadId)
+    conditions.push(`thread_id = ${p()}`)
+  } else if (filter.scope?.threadId) {
+    params.push(filter.scope.threadId)
+    conditions.push(`thread_id = ${p()}`)
   }
-  if (filter.visibility) {
-    if (Array.isArray(filter.visibility)) {
-      params.push(filter.visibility)
+  if (filter.accessScope) {
+    if (Array.isArray(filter.accessScope)) {
+      params.push(filter.accessScope)
       conditions.push(`visibility = ANY(${p()}::text[])`)
     } else {
-      params.push(filter.visibility)
+      params.push(filter.accessScope)
       conditions.push(`visibility = ${p()}`)
     }
   }
@@ -2613,7 +2618,7 @@ function buildIdentityWhere(
   if (identity.groupId) { params.push(identity.groupId); conditions.push(`group_id = ${p()}`) }
   if (identity.userId) { params.push(identity.userId); conditions.push(`user_id = ${p()}`) }
   if (identity.agentId) { params.push(identity.agentId); conditions.push(`agent_id = ${p()}`) }
-  if (identity.conversationId) { params.push(identity.conversationId); conditions.push(`conversation_id = ${p()}`) }
+  if (identity.threadId) { params.push(identity.threadId); conditions.push(`thread_id = ${p()}`) }
 
   return {
     where: conditions.join(' AND '),
@@ -2657,10 +2662,10 @@ function buildGraphVisibilityWhere(
     agentParam = p()
     conditions.push(`${col('agent_id')} = ${agentParam}`)
   }
-  if (identity?.conversationId) {
-    params.push(identity.conversationId)
+  if (identity?.threadId) {
+    params.push(identity.threadId)
     conversationParam = p()
-    conditions.push(`${col('conversation_id')} = ${conversationParam}`)
+    conditions.push(`${col('thread_id')} = ${conversationParam}`)
   }
 
   const visibilityBranches = [`${col('visibility')} IS NULL`]
@@ -2668,7 +2673,7 @@ function buildGraphVisibilityWhere(
   if (groupParam) visibilityBranches.push(`(${col('visibility')} = 'group' AND ${col('group_id')} = ${groupParam})`)
   if (userParam) visibilityBranches.push(`(${col('visibility')} = 'user' AND ${col('user_id')} = ${userParam})`)
   if (agentParam) visibilityBranches.push(`(${col('visibility')} = 'agent' AND ${col('agent_id')} = ${agentParam})`)
-  if (conversationParam) visibilityBranches.push(`(${col('visibility')} = 'conversation' AND ${col('conversation_id')} = ${conversationParam})`)
+  if (conversationParam) visibilityBranches.push(`(${col('visibility')} = 'conversation' AND ${col('thread_id')} = ${conversationParam})`)
   conditions.push(`(${visibilityBranches.join(' OR ')})`)
 
   return {
@@ -2685,7 +2690,7 @@ function buildAliasedIdentityWhere(
   const base = buildIdentityWhere(identity, paramOffset)
   if (!base.where) return base
   return {
-    where: base.where.replace(/\b(tenant_id|group_id|user_id|agent_id|conversation_id)\b/g, `${alias}.$1`),
+    where: base.where.replace(/\b(tenant_id|group_id|user_id|agent_id|thread_id)\b/g, `${alias}.$1`),
     params: base.params,
   }
 }
@@ -2699,6 +2704,6 @@ function rowToIdentity(row: Record<string, unknown>): typegraphIdentity {
   if (row.group_id) id.groupId = row.group_id as string
   if (row.user_id) id.userId = row.user_id as string
   if (row.agent_id) id.agentId = row.agent_id as string
-  if (row.conversation_id) id.conversationId = row.conversation_id as string
+  if (row.thread_id) id.threadId = row.thread_id as string
   return id
 }

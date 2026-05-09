@@ -1,10 +1,11 @@
 # @typegraph-ai/adapter-pgvector
 
-Postgres + [pgvector](https://github.com/pgvector/pgvector) storage for TypeGraph.
+Postgres + pgvector storage for TypeGraph self-hosted deployments.
 
-This adapter provides source/chunk storage, vector search, BM25 keyword search, hybrid retrieval, jobs, events, policies, and the memory/graph backing store used by TypeGraph graph and memory features.
-
-For complete setup instructions, see [Self-Hosted Initialization](https://typegraph.ai/docs/guides/self-hosted-initialization).
+This adapter is the default self-hosted storage target for the SDK. It stores
+documents, chunks, buckets, business events, threads, links, jobs, policies,
+ontology config, telemetry, and the memory/graph backing store used by
+`graphExtraction`, `graph.*`, `remember`, `recall`, and `correct`.
 
 ## Install
 
@@ -12,7 +13,18 @@ For complete setup instructions, see [Self-Hosted Initialization](https://typegr
 pnpm add @typegraph-ai/sdk @typegraph-ai/adapter-pgvector @ai-sdk/gateway @neondatabase/serverless
 ```
 
-Swap `@neondatabase/serverless` for `pg`, Supabase, or another Postgres client if that is what your app uses.
+Use `@neondatabase/serverless`, `pg`, Supabase, Drizzle, or any Postgres driver
+that can expose the adapter's small `SqlExecutor` function.
+
+## Requirements
+
+- Postgres with the `vector` extension available.
+- A database role allowed to run `CREATE EXTENSION IF NOT EXISTS vector`.
+- Permission to create tables and indexes in the configured schema.
+
+`typegraphDeploy(config)` creates the extension and all TypeGraph tables. Run it
+from deploy/setup code. Use `typegraphInit(config)` from app runtime after
+deployment.
 
 ## Basic Usage
 
@@ -20,16 +32,28 @@ Swap `@neondatabase/serverless` for `pg`, Supabase, or another Postgres client i
 import { gateway } from '@ai-sdk/gateway'
 import { neon } from '@neondatabase/serverless'
 import { PgVectorAdapter } from '@typegraph-ai/adapter-pgvector'
-import { typegraphDeploy, typegraphInit } from '@typegraph-ai/sdk'
+import { TenantId, typegraphDeploy, typegraphInit } from '@typegraph-ai/sdk'
 
 const sql = neon(process.env.DATABASE_URL!)
 const vectorStore = new PgVectorAdapter({ sql })
 
 const config = {
+  tenantId: TenantId('tenant_acme'),
   vectorStore,
   embedding: {
     model: gateway.embeddingModel('openai/text-embedding-3-small'),
     dimensions: 1536,
+  },
+  searchEmbedding: {
+    model: gateway.embeddingModel('openai/text-embedding-3-small'),
+    dimensions: 1536,
+  },
+  llm: {
+    model: gateway.languageModel('openai/gpt-4.1-mini'),
+  },
+  ontology: {
+    version: '2026-05-08',
+    presets: ['b2b-saas'],
   },
 }
 
@@ -37,7 +61,14 @@ await typegraphDeploy(config)
 const tg = await typegraphInit(config)
 ```
 
-The adapter accepts a small `SqlExecutor`, so it is driver-agnostic:
+Self-hosted apps should not construct public graph or memory bridges. When the
+config includes `vectorStore`, `embedding`, and `llm`, the SDK uses this
+adapter's `createMemoryStore()` capability to wire graph extraction, graph APIs,
+and memory APIs internally.
+
+## SqlExecutor
+
+The adapter accepts a driver-agnostic query function:
 
 ```ts
 type SqlExecutor = (
@@ -45,8 +76,6 @@ type SqlExecutor = (
   params?: unknown[],
 ) => Promise<Record<string, unknown>[]>
 ```
-
-## Driver Examples
 
 Neon:
 
@@ -72,67 +101,156 @@ const sql: SqlExecutor = (query, params) =>
 const adapter = new PgVectorAdapter({ sql })
 ```
 
-## Graph And Memory Store
+Optional transaction wrapper: pass `transaction` only when your Postgres driver
+can pin all statements to the same connection for the duration of the callback.
+The adapter uses it for iterative HNSW scan settings that rely on `SET LOCAL`.
 
-Graph and memory features use the same Postgres connection with `PgMemoryStoreAdapter`.
+## What It Stores
+
+Core storage created by `PgVectorAdapter.deploy()`:
+
+| Table | Purpose |
+| --- | --- |
+| `typegraph_buckets` | Named document/event containers and embedding settings |
+| `typegraph_documents` | Durable long-form records with `name`, `description`, metadata, and access scope |
+| `typegraph_document_chunks_*` | Per-embedding-model chunk tables with pgvector HNSW indexes and Postgres full-text indexes |
+| `typegraph_document_chunks_registry` | Registry mapping embedding model keys to dynamic chunk tables |
+| `typegraph_hashes` | Content hash and deduplication state |
+| `typegraph_hashes_run_times` | Last-run state for replace/sync flows |
+| `typegraph_events` | Business events |
+| `typegraph_threads` | Ordered containers for turns/messages |
+| `typegraph_links` | Internal relationship/provenance links |
+| `typegraph_ontology` | Config-driven ontology records |
+| `typegraph_telemetry` | SDK telemetry events |
+| `typegraph_policies` | Governance policy records |
+| `typegraph_jobs` | Job status/progress records |
+
+When graph/memory are enabled, TypeGraph also initializes the memory graph backing
+store through `PgMemoryStoreAdapter`. Those internal tables include memories,
+semantic entities, entity external IDs, graph edges, chunk mentions, and fact
+records. Public SDK calls expose these as entities, facts, graph results, and
+memories.
+
+## Embeddings
+
+The SDK uses separate ingest and search embedders when configured:
 
 ```ts
-import {
-  PgMemoryStoreAdapter,
-  PgVectorAdapter,
-} from '@typegraph-ai/adapter-pgvector'
-import {
-  createKnowledgeGraphBridge,
-  createMemoryBridge,
-} from '@typegraph-ai/sdk'
-
-const vectorStore = new PgVectorAdapter({ sql })
-const memoryStore = new PgMemoryStoreAdapter({
-  sql,
-  embeddingDimensions: 1536,
+await typegraphInit({
+  tenantId: 'tenant_acme',
+  vectorStore: adapter,
+  embedding: documentEmbedder,
+  searchEmbedding,
+  additionalEmbeddings: [specializedLegalEmbedder],
 })
-
-const config = {
-  vectorStore,
-  embedding,
-  llm,
-  memory: createMemoryBridge({ memoryStore, embedding, llm }),
-  knowledgeGraph: createKnowledgeGraphBridge({
-    memoryStore,
-    embedding,
-    resolveChunksTable: model => vectorStore.getTable(model),
-  }),
-}
 ```
 
-See [Graph RAG](https://typegraph.ai/docs/guides/graph-rag) for extraction and graph retrieval setup.
+Each embedding model/dimension pair gets a separate chunk table. Buckets store
+`embeddingModel` and optional `searchEmbeddingModel`; both must point at
+registered embedders in the same vector space.
+
+## Documents, Events, And Access
+
+The adapter persists the SDK's public document/event/thread model:
+
+```ts
+import { UserId, entityRef } from '@typegraph-ai/sdk'
+
+await tg.event.ingest(
+  {
+    id: 'zendesk:ticket:4242',
+    name: 'Acme SSO redirect loop ticket',
+    description: 'Acme reported a redirect loop after SAML setup.',
+    occurredAt: new Date(),
+    participants: [
+      entityRef('organization', 'org_acme'),
+      entityRef('product_area', 'auth'),
+      entityRef('issue', 'sso_redirect_loop'),
+    ],
+    documents: [
+      {
+        id: 'zendesk:ticket:4242:body',
+        name: 'Acme SSO ticket body',
+        description: 'Support ticket details and troubleshooting notes.',
+        content: ticketBody,
+        metadata: { provider: 'zendesk' },
+      },
+    ],
+    metadata: { provider: 'zendesk', ticketId: '4242' },
+  },
+  {
+    bucketId: 'zendesk',
+    context: {
+      userId: UserId('dana'),
+      access: [entityRef('group', 'support'), entityRef('group', 'product')],
+    },
+    graphExtraction: true,
+  },
+)
+```
+
+`context.access` is stored as `access_scope_ids` and enforced during search.
+Omitted or empty access means tenant-wide visibility. Participants are stored for
+business graph/provenance and do not grant access automatically.
+
+## Search Support
+
+The adapter supports:
+
+- Semantic vector search over chunk embeddings.
+- Postgres full-text keyword search over chunk content.
+- Hybrid search used by SDK `weights.semantic` and `weights.bm25`.
+- Metadata, bucket, document, tenant, identity, and access-scope filtering.
+- Recency fields used by SDK recency scoring.
+- Graph/memory backing store when configured through TypeGraph.
+
+Use SDK search options to select resources and weights:
+
+```ts
+const response = await tg.search('Which customers are blocked by SSO issues?', {
+  context: {
+    userId: UserId('dana'),
+    principals: [entityRef('group', 'product')],
+  },
+  resources: ['events', 'documents', 'facts', 'entities'],
+  weights: { semantic: 1, bm25: 0.7, graph: 0.8, recency: 0.3 },
+  promptBuilder: true,
+  explain: true,
+})
+```
 
 ## Configuration
 
 ```ts
 new PgVectorAdapter({
   sql,
+  transaction,
   schema: 'public',
-  tablePrefix: 'typegraph_chunks',
+  tablePrefix: 'typegraph_document_chunks',
   hashesTable: 'typegraph_hashes',
-  sourcesTable: 'typegraph_sources',
+  documentsTable: 'typegraph_documents',
   bucketsTable: 'typegraph_buckets',
   jobsTable: 'typegraph_jobs',
 })
 ```
 
-Most projects only need `sql`. Use `schema` or table overrides when sharing a database with existing applications.
+Most projects only need `sql`. Use `schema` when TypeGraph should live in a
+dedicated Postgres schema. Use table overrides only when integrating into an
+existing database naming scheme.
+
+`tablePrefix` controls the dynamic per-embedding-model chunk table prefix, not
+every TypeGraph table name.
 
 ## Exports
 
 | Export | Purpose |
 | --- | --- |
 | `PgVectorAdapter` | Main Postgres + pgvector adapter |
-| `PgMemoryStoreAdapter` | Persistent memory/entity/fact/passage backing store |
+| `PgMemoryStoreAdapter` | Internal persistent memory/entity/fact backing store |
 | `PgHashStore` | Content-hash deduplication store |
-| `PgSourceStore` | Source CRUD store |
+| `PgDocumentStore` | Document CRUD store |
 | `PgJobStore` | Job tracking store |
-| `PgEventSink` | Event sink for query/index telemetry |
+| `PgEventSink` | Telemetry event sink backed by `typegraph_telemetry` |
 | `PgPolicyStore` | Policy storage |
 | `SqlExecutor` | Driver-agnostic query function type |
 
@@ -140,5 +258,4 @@ Most projects only need `sql`. Use `schema` or table overrides when sharing a da
 
 - [TypeGraph docs](https://typegraph.ai/docs)
 - [Self-Hosted Initialization](https://typegraph.ai/docs/guides/self-hosted-initialization)
-- [Simple RAG](https://typegraph.ai/docs/guides/simple-rag)
-- [Graph RAG](https://typegraph.ai/docs/guides/graph-rag)
+- [Repository README](../../../README.md)

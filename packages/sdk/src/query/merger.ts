@@ -1,35 +1,34 @@
 import { createHash } from 'crypto'
 import type { QueryMemoryRecord, QuerySignals, NormalizedScores } from '../types/query.js'
-import type { SourceSubject } from '../types/connector.js'
+import type { AccessScope } from '../types/identity.js'
 import { computeCompositeScore } from './planner.js'
 
 export interface RetrievalCandidate {
   content: string
   bucketId: string
-  sourceId: string
-  rawScores: { semantic?: number | undefined; keyword?: number | undefined; rrf?: number | undefined; memory?: number | undefined; graph?: number | undefined; memorySimilarity?: number | undefined; memoryImportance?: number | undefined; memoryRecency?: number | undefined }
+  documentId: string
+  rawScores: { semantic?: number | undefined; keyword?: number | undefined; rrf?: number | undefined; memory?: number | undefined; graph?: number | undefined; recency?: number | undefined; memorySimilarity?: number | undefined; memoryImportance?: number | undefined; memoryRecency?: number | undefined }
   normalizedScore: number
   mode: 'indexed' | 'memory' | 'graph'
   metadata: Record<string, unknown>
   chunk?: { index: number; total: number } | undefined
   url?: string | undefined
-  title?: string | undefined
+  name?: string | undefined
   updatedAt?: Date | undefined
   tenantId?: string | undefined
-  // Source-level fields (populated when searchWithSources is used)
-  sourceStatus?: string | undefined
-  sourceVisibility?: string | undefined
-  sourceSubject?: SourceSubject | undefined
+  // Document-level fields (populated when searchWithDocuments is used)
+  documentStatus?: string | undefined
+  documentAccessScope?: AccessScope | undefined
   userId?: string | undefined
   groupId?: string | undefined
   agentId?: string | undefined
-  conversationId?: string | undefined
+  threadId?: string | undefined
   memoryRecord?: QueryMemoryRecord | undefined
 }
 
 export function dedupKey(r: RetrievalCandidate): string {
-  if (r.sourceId && r.chunk?.index !== undefined && r.bucketId) {
-    return `${r.bucketId}:${r.sourceId}:${r.chunk.index}`
+  if (r.documentId && r.chunk?.index !== undefined && r.bucketId) {
+    return `${r.bucketId}:${r.documentId}:${r.chunk.index}`
   }
   return createHash('sha256').update(r.content).digest('hex')
 }
@@ -103,7 +102,7 @@ export function mergeAndRank(
   count: number,
   weights?: Record<string, number>,
   signals?: Required<QuerySignals>,
-  scoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory', number>>
+  scoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory' | 'recency', number>>
 ): RetrievalCandidate[] {
   const numLists = runnerResults.length
   const rrfWeights = weights ?? deriveRRFWeights(scoreWeights)
@@ -130,7 +129,7 @@ export function mergeAndRank(
   }
 
   // Default signals if not provided (all active — preserves legacy behavior)
-  const resolvedSignals: Required<QuerySignals> = signals ?? { semantic: true, keyword: true, graph: true, memory: true }
+  const resolvedSignals: Required<QuerySignals> = signals ?? { semantic: true, keyword: true, graph: true, memory: true, recency: true }
 
   // Pass 1: aggregate raw scores per dedup group
   const groupEntries = Array.from(groups.values()).map(group => {
@@ -176,6 +175,7 @@ export function mergeAndRank(
       memory: hasMemory
         ? Math.min(Math.max(aggregatedScores.memory ?? 0, 0), 1)
         : undefined,
+      recency: resolvedSignals.recency ? aggregatedScores.recency : undefined,
     }
     const compositeScore = computeCompositeScore(normalizedScores, resolvedSignals, scoreWeights)
 

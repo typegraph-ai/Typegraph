@@ -1,4 +1,4 @@
-import type { typegraphIdentity } from '../types/identity.js'
+import type { AccessScope, TypeGraphContext, typegraphIdentity } from '../types/identity.js'
 import { ConfigError } from '../types/errors.js'
 
 export type Nullable<T> = T | null | undefined
@@ -52,10 +52,78 @@ export function compactIdentity(value: Nullable<typegraphIdentity>): typegraphId
     groupId: identity.groupId,
     userId: identity.userId,
     agentId: identity.agentId,
-    conversationId: identity.conversationId,
+    threadId: identity.threadId,
+    entities: identity.entities,
     agentName: identity.agentName,
     agentDescription: identity.agentDescription,
     agentVersion: identity.agentVersion,
+  })
+}
+
+const OLD_PUBLIC_CONTEXT_KEYS = [
+  'tenantId',
+  'groupId',
+  'userId',
+  'agentId',
+  'threadId',
+  'entities',
+  'identity',
+  'accessScope',
+  'traceId',
+  'spanId',
+] as const
+
+export function assertNoLegacyPublicContextKeys(value: object, method: string): void {
+  const input = value as Record<string, unknown>
+  for (const key of OLD_PUBLIC_CONTEXT_KEYS) {
+    if (input[key] !== undefined) {
+      throw new ConfigError(`${method} uses opts.context. Remove legacy top-level "${key}".`)
+    }
+  }
+}
+
+export function compactTypeGraphContext(context: Nullable<TypeGraphContext>, method: string): TypeGraphContext {
+  if (context == null) return {}
+  const value = optionalObject<TypeGraphContext>(context, method, 'context')
+  return compactObject({
+    groupId: value.groupId,
+    userId: value.userId,
+    agentId: value.agentId,
+    threadId: value.threadId,
+    principals: value.principals,
+    access: value.access,
+    agentName: value.agentName,
+    agentDescription: value.agentDescription,
+    agentVersion: value.agentVersion,
+    traceId: value.traceId,
+    spanId: value.spanId,
+  }) as TypeGraphContext
+}
+
+export function contextToIdentity(context: TypeGraphContext | null | undefined, tenantId?: string): typegraphIdentity {
+  const normalized = compactTypeGraphContext(context, 'context')
+  return compactObject({
+    tenantId,
+    groupId: normalized.groupId,
+    userId: normalized.userId,
+    agentId: normalized.agentId,
+    threadId: normalized.threadId,
+    entities: normalized.principals,
+    agentName: normalized.agentName,
+    agentDescription: normalized.agentDescription,
+    agentVersion: normalized.agentVersion,
+  })
+}
+
+export function contextAccess(context: TypeGraphContext | null | undefined): AccessScope | undefined {
+  return context?.access
+}
+
+export function contextTelemetry(context: TypeGraphContext | null | undefined): { traceId?: string | undefined; spanId?: string | undefined } {
+  const normalized = compactTypeGraphContext(context, 'context')
+  return compactObject({
+    traceId: normalized.traceId,
+    spanId: normalized.spanId,
   })
 }
 

@@ -1,4 +1,4 @@
-import type { EmbeddingProvider } from '../../embedding/provider.js'
+import type { Embedder } from '../../embedding/provider.js'
 import {
   ALL_PREDICATES,
   isSymmetricPredicate,
@@ -29,7 +29,7 @@ export class PredicateNormalizer {
   private readonly canonicalPredicates = new Set<string>()
   private readonly extraSynonymMap = new Map<string, string>()
 
-  constructor(_embedding: EmbeddingProvider, _threshold = 0.85, extraSynonyms?: readonly string[][]) {
+  constructor(_embedding: Embedder, _threshold = 0.85, extraSynonyms?: readonly string[][]) {
     for (const group of extraSynonyms ?? []) {
       const canonical = sanitizePredicate(group[0]!)
       for (const synonym of group) {

@@ -3,13 +3,12 @@ import type { LLMProvider } from '../types/llm-provider.js'
 import type { GraphIntentParserMode, GraphQueryIntent, GraphQueryIntentPredicate, ParsedGraphQueryIntent } from '../types/graph-bridge.js'
 import { ALL_PREDICATES, getPredicatesForPrompt } from '../index-engine/ontology.js'
 import { PredicateNormalizer } from '../memory/extraction/predicate-normalizer.js'
-import type { EmbeddingProvider } from '../embedding/provider.js'
+import type { Embedder } from '../embedding/provider.js'
 
-const EMPTY_EMBEDDING: EmbeddingProvider = {
-  model: 'predicate-normalizer-static',
+const EMPTY_EMBEDDING: Embedder = {
+  name: 'predicate-normalizer-static',
   dimensions: 1,
-  embed: async () => [0],
-  embedBatch: async (values: string[]) => values.map(() => [0]),
+  embed: async (input) => input.texts.map(() => [0]),
 }
 
 const predicateNormalizer = new PredicateNormalizer(EMPTY_EMBEDDING)

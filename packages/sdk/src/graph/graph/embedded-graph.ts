@@ -291,7 +291,7 @@ export class EmbeddedGraph {
     if (subgraph.entities.length === 0) return ''
 
     const entityLines = subgraph.entities.map(e =>
-      `- ${e.name} (${e.entityType}): ${Object.entries(e.properties).map(([k, v]) => `${k}=${v}`).join(', ') || 'no properties'}`
+      `- ${e.name} (${e.entityType}): ${Object.entries(e.metadata ?? {}).map(([k, v]) => `${k}=${v}`).join(', ') || 'no metadata'}`
     )
 
     const edgeLines = subgraph.edges.map(e => {

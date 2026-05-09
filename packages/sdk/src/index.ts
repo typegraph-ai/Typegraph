@@ -1,18 +1,51 @@
 // Main public API
-export { typegraphInit, typegraphDeploy, resolveEmbeddingProvider, resolveLLMProvider, DEFAULT_BUCKET_ID } from './typegraph.js'
-export type { typegraphConfig, typegraphInstance, BucketsApi, SourcesApi, JobsApi, GraphApi } from './typegraph.js'
-/** @deprecated Use LLMConfig instead. */
-export type { LLMInput } from './typegraph.js'
+export { typegraphInit, typegraphDeploy, resolveEmbedder, resolveLLMProvider, DEFAULT_BUCKET_ID } from './typegraph.js'
+export type { typegraphConfig, typegraphInstance, BucketsApi, DocumentsApi, EventsApi, ThreadsApi, JobsApi, GraphApi, RequestOptions, DocumentIngestOptions } from './typegraph.js'
 
 // Types
 export type {
-  SourceInput,
-  SourceSubject,
+  DocumentInput,
+  typegraphDocument,
+  DocumentStatus,
+  DocumentFilter,
+  DocumentStorageFilter,
+  UpsertDocumentInput,
+  UpsertedDocumentRecord,
+  EventInput,
+  EventFilter,
+  EventStorageFilter,
+  typegraphEventRecord,
+  UpsertEventInput,
+  ThreadInput,
+  ThreadTurnInput,
+  ThreadFilter,
+  ThreadStorageFilter,
+  typegraphThread,
+  UpsertThreadInput,
+  LinkKind,
+  typegraphLink,
+  UpsertLinkInput,
+  OntologyConfig,
+  OntologyEntityConfig,
+  OntologyRelationConfig,
+  CompiledOntology,
+  Extractor,
+  ExtractorCapabilities,
+  ExtractionCoreferenceCache,
+  ExtractionCoreferenceCacheKey,
+  ExtractorContext,
+  ExtractorInput,
+  ExtractedEntity,
+  ExtractedRelation,
+  ExtractionResult,
+  Reranker,
+  RerankerOptions,
   ChunkOpts,
   Chunk,
   Bucket,
   CreateBucketInput,
   BucketListFilter,
+  BucketStorageFilter,
   IndexDefaults,
   EmbeddingConfig,
   EmbeddedChunk,
@@ -23,16 +56,22 @@ export type {
   HashStoreAdapter,
   VectorStoreAdapter,
   UndeployResult,
-  ScoredChunkWithSource,
-  QuerySignals,
+  ScoredChunkWithDocument,
+  SearchOptions,
+  SearchResource,
+  SearchWeights,
+  SearchFusion,
+  SearchRerankOptions,
+  SearchExplanation,
+  OutputScores,
   QueryChunkResult,
   QueryMemoryRecord,
   QueryMemoryResult,
   QueryResults,
-  ContextFormat,
-  ContextSection,
-  QueryContextOptions,
-  QueryContextStats,
+  PromptFormat,
+  PromptSection,
+  PromptBuilderOptions,
+  PromptStats,
   RawScores,
   NormalizedScores,
   QueryEntityScope,
@@ -42,24 +81,17 @@ export type {
   IndexProgressEvent,
   IndexResult,
   ExtractionFailure,
-  typegraphSource,
-  SourceStatus,
-  Visibility,
-  SourceFilter,
-  UpsertSourceInput,
-  UpsertedSourceRecord,
   typegraphHooks,
   LLMProvider,
   LLMGenerateOptions,
   LLMConfig,
-  typegraphIdentity,
   MemoryBridge,
   MemorySubject,
   RememberOpts,
   ForgetOpts,
   CorrectOpts,
   RecallOpts,
-  AddConversationTurnOpts,
+  AddThreadTurnOpts,
   HealthCheckOpts,
   KnowledgeGraphBridge,
   GraphEntityRef,
@@ -96,7 +128,6 @@ export type {
   SubgraphOpts,
   SubgraphResult,
   GraphStats,
-  ExtractionConfig,
   typegraphEvent,
   typegraphEventType,
   typegraphEventSink,
@@ -115,7 +146,7 @@ export type {
   ExternalIdEncoding,
   MemoryRecord,
   ChunkRef,
-  ConversationTurnResult,
+  ThreadTurnResult,
   MemoryHealthReport,
   typegraphLogger,
   PaginationOpts,
@@ -127,14 +158,20 @@ export type {
   UpsertJobInput,
   JobStatusPatch,
 } from './types/index.js'
-/** @deprecated Use EmbeddingConfig instead. */
-export type { EmbeddingInput } from './types/index.js'
 export { IndexError } from './types/index.js'
-export { TypegraphError, NotFoundError, NotInitializedError, ConfigError } from './types/index.js'
+export {
+  TypegraphError,
+  NotFoundError,
+  NotInitializedError,
+  ConfigError,
+  GraphSelfEdgeError,
+} from './types/index.js'
+export type { GraphSelfEdgeErrorDetails } from './types/index.js'
+export * from './types/identity.js'
 
 // Embedding
-export type { EmbeddingProvider } from './embedding/index.js'
-export { aiSdkEmbeddingProvider, isAISDKEmbeddingInput, embeddingModelKey, parseEmbeddingModelKey } from './embedding/index.js'
+export type { Embedder, EmbedInput } from './embedding/index.js'
+export { aiSdkEmbedder, isAISDKEmbeddingInput, embeddingModelKey, parseEmbeddingModelKey } from './embedding/index.js'
 export type { AISDKEmbeddingInput } from './embedding/index.js'
 
 // LLM
@@ -150,6 +187,8 @@ export {
   defaultChunker,
   sha256,
   stripMarkdown,
+  DefaultGraphExtractor,
+  TripleExtractor,
   ENTITY_TYPES,
   DEFAULT_ENTITY_TYPE,
   VALID_ENTITY_TYPES,
@@ -165,7 +204,12 @@ export {
   sanitizePredicate,
   isSymmetricPredicate,
   getPredicatesForPrompt,
+  effectiveEntityTypes,
   normalizePredicateWithDirection,
+  normalizeTypeCandidates,
+  typeAffinityGroup,
+  typesShareAffinity,
+  validatePredicateEffectiveTypes,
   validatePredicateTypes,
 } from './index-engine/index.js'
 export type {
@@ -176,6 +220,7 @@ export type {
   PredicateTemporalStatus,
   PredicateNormalization,
   PredicateTypeValidation,
+  TypeCandidate,
 } from './index-engine/index.js'
 
 // Query engine
@@ -230,7 +275,6 @@ export type {
   MemoryOperationType,
   MemoryOperation,
   CandidateFact,
-  ExtractionResult,
   EntityResolverConfig,
   InvalidationConfig,
   Contradiction,
@@ -251,8 +295,6 @@ export { MemoryCorrector } from './memory/consolidation/correction.js'
 export type { CorrectionResult } from './memory/consolidation/correction.js'
 export { TypegraphMemory } from './memory/typegraph-memory.js'
 export type { typegraphMemoryConfig } from './memory/typegraph-memory.js'
-export { createMemoryBridge } from './memory/memory-bridge.js'
-export type { CreateMemoryBridgeConfig } from './memory/memory-bridge.js'
 
 // ── Knowledge Graph ──
 export { EmbeddedGraph } from './graph/graph/embedded-graph.js'
@@ -261,5 +303,3 @@ export { personalizedPageRank } from './graph/graph/ppr.js'
 export type { PPRConfig } from './graph/graph/ppr.js'
 export { EntityLinker } from './graph/graph/entity-linker.js'
 export type { EntityLinkerConfig, EntityLinkResult } from './graph/graph/entity-linker.js'
-export { createKnowledgeGraphBridge } from './graph/graph-bridge.js'
-export type { CreateKnowledgeGraphBridgeConfig } from './graph/graph-bridge.js'

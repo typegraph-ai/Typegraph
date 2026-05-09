@@ -7,10 +7,10 @@ const TOOL_NAMES: TypegraphToolName[] = [
   'typegraph_buckets_list',
   'typegraph_buckets_get',
   'typegraph_buckets_create',
-  'typegraph_source_ingest',
-  'typegraph_query',
-  'typegraph_memory_remember',
-  'typegraph_memory_correct',
+  'typegraph_document_ingest',
+  'typegraph_search',
+  'typegraph_remember',
+  'typegraph_correct',
   'typegraph_jobs_list',
   'typegraph_jobs_get',
 ]
@@ -24,16 +24,16 @@ function usage() {
 
 function createTarget(): TypegraphToolsTarget {
   return {
-    buckets: {
+    bucket: {
       create: vi.fn(async input => ({ id: 'bkt_1', status: 'active', ...input })),
       get: vi.fn(async id => ({ id, name: 'Docs', status: 'active', tenantId: 'tenant-1', userId: 'user-1' })),
       list: vi.fn(async () => []),
       update: vi.fn(),
       delete: vi.fn(),
     },
-    ingest: vi.fn(async (_sources, opts) => ({
+    document: {
+      ingest: vi.fn(async (_documents, opts) => ({
       bucketId: opts?.bucketId ?? 'bkt_default',
-      tenantId: opts?.tenantId,
       mode: opts?.mode ?? 'upsert',
       total: 1,
       skipped: 0,
@@ -42,12 +42,17 @@ function createTarget(): TypegraphToolsTarget {
       durationMs: 1,
       status: 'complete' as const,
     })),
-    query: vi.fn(async (text, opts) => ({
+      ingestPreChunked: vi.fn(),
+      get: vi.fn(),
+      list: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+    },
+    search: vi.fn(async (text, opts) => ({
       results: { chunks: [], facts: [], entities: [], memories: [] },
       buckets: {},
       query: {
         text,
-        tenantId: opts?.tenantId,
         durationMs: 1,
         mergeStrategy: 'test',
       },
@@ -61,17 +66,16 @@ function createTarget(): TypegraphToolsTarget {
       accessCount: 0,
       lastAccessedAt: new Date(),
       metadata: opts?.metadata ?? {},
-      scope: { tenantId: opts?.tenantId, userId: opts?.userId },
+      scope: { tenantId: 'tenant-1', userId: opts?.context?.userId },
       validAt: new Date(),
       createdAt: new Date(),
     })),
     correct: vi.fn(async () => ({ invalidated: 1, created: 1, summary: 'ok' })),
-    jobs: {
+    job: {
       get: vi.fn(async id => ({
         id,
         status: 'complete',
         type: 'ingest',
-        identity: { tenantId: 'tenant-1', userId: 'user-1' },
         createdAt: new Date(),
       })),
       list: vi.fn(async () => []),
@@ -115,127 +119,108 @@ describe('typegraphTools', () => {
     expect(providerToolNames).toEqual(TOOL_NAMES)
   })
 
-  it('merges trusted identity into scoped bucket, ingest, query, memory, and job calls', async () => {
+  it('merges trusted context into scoped bucket, ingest, search, and memory calls', async () => {
     const target = createTarget()
     const tools = typegraphTools(target, {
-      identity: { tenantId: 'tenant-1', userId: 'user-1', conversationId: 'conv-1' },
+      context: { userId: 'user-1', threadId: 'thread-1' },
     })
 
     await (tools.typegraph_buckets_list.execute as any)({ pagination: { limit: 10 } })
-    expect(target.buckets.list).toHaveBeenCalledWith(
-      { tenantId: 'tenant-1', userId: 'user-1', conversationId: 'conv-1' },
+    expect(target.bucket.list).toHaveBeenCalledWith(
+      {},
+      { context: { userId: 'user-1', threadId: 'thread-1' } },
       { limit: 10 },
     )
 
     await (tools.typegraph_buckets_create.execute as any)({ name: 'Docs' })
-    expect(target.buckets.create).toHaveBeenCalledWith({
-      name: 'Docs',
-      tenantId: 'tenant-1',
-      userId: 'user-1',
-      conversationId: 'conv-1',
-    })
+    expect(target.bucket.create).toHaveBeenCalledWith(
+      { name: 'Docs' },
+      { context: { userId: 'user-1', threadId: 'thread-1' } },
+    )
 
-    await (tools.typegraph_source_ingest.execute as any)({
-      source: {
+    await (tools.typegraph_document_ingest.execute as any)({
+      document: {
         content: 'Hello',
-        title: 'Greeting',
+        name: 'Greeting',
         updatedAt: '2026-01-01T00:00:00.000Z',
-        subject: {
-          externalIds: [{ type: 'document_id', id: 'doc-1' }],
-          name: 'Greeting Doc',
-        },
       },
-      options: { bucketId: 'bkt_1', visibility: 'user' },
+      options: { bucketId: 'bkt_1' },
     })
-    expect(target.ingest).toHaveBeenCalledWith(
+    expect(target.document.ingest).toHaveBeenCalledWith(
       [expect.objectContaining({
-        title: 'Greeting',
+        name: 'Greeting',
         updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-        subject: expect.objectContaining({
-          externalIds: [{ type: 'document_id', id: 'doc-1' }],
-        }),
       })],
       {
         bucketId: 'bkt_1',
-        visibility: 'user',
-        tenantId: 'tenant-1',
-        userId: 'user-1',
-        conversationId: 'conv-1',
+        context: { userId: 'user-1', threadId: 'thread-1' },
       },
     )
 
-    await (tools.typegraph_query.execute as any)({
+    await (tools.typegraph_search.execute as any)({
       text: 'find Alice',
       options: {
+        resources: ['documents', 'facts'],
+        weights: { semantic: 1, bm25: false },
         entityScope: {
           externalIds: [{ type: 'email', id: 'alice@example.com' }],
           mode: 'filter',
         },
-        sourceFilter: { bucketId: 'bkt_1' },
+        buckets: ['bkt_1'],
       },
     })
-    expect(target.query).toHaveBeenCalledWith('find Alice', {
+    expect(target.search).toHaveBeenCalledWith('find Alice', {
+      resources: ['documents', 'facts'],
+      weights: { semantic: 1, bm25: false },
       entityScope: {
         externalIds: [{ type: 'email', id: 'alice@example.com' }],
         mode: 'filter',
       },
-      sourceFilter: {
-        bucketId: 'bkt_1',
-        tenantId: 'tenant-1',
-        userId: 'user-1',
-        conversationId: 'conv-1',
-      },
-      tenantId: 'tenant-1',
-      userId: 'user-1',
-      conversationId: 'conv-1',
+      buckets: ['bkt_1'],
+      context: { userId: 'user-1', threadId: 'thread-1' },
     })
 
-    await (tools.typegraph_memory_remember.execute as any)({
+    await (tools.typegraph_remember.execute as any)({
       content: 'Alice prefers vegetarian meals.',
       subject: { externalIds: [{ type: 'email', id: 'alice@example.com' }], name: 'Alice' },
-      visibility: 'user',
     })
     expect(target.remember).toHaveBeenCalledWith('Alice prefers vegetarian meals.', {
       subject: { externalIds: [{ type: 'email', id: 'alice@example.com' }], name: 'Alice' },
-      visibility: 'user',
-      tenantId: 'tenant-1',
-      userId: 'user-1',
-      conversationId: 'conv-1',
+      context: { userId: 'user-1', threadId: 'thread-1' },
     })
 
     await (tools.typegraph_jobs_list.execute as any)({ filter: { status: 'complete' } })
-    expect(target.jobs.list).toHaveBeenCalledWith({
+    expect(target.job.list).toHaveBeenCalledWith({
       status: 'complete',
-      identity: { tenantId: 'tenant-1', userId: 'user-1', conversationId: 'conv-1' },
     })
   })
 
-  it('rejects direct lookups outside the configured identity scope', async () => {
+  it('rejects direct lookups outside the configured context', async () => {
     const target = createTarget()
-    vi.mocked(target.jobs.get).mockResolvedValueOnce({
+    vi.mocked(target.job.get).mockResolvedValueOnce({
       id: 'job_1',
       status: 'complete',
       type: 'ingest',
-      identity: { tenantId: 'other-tenant' },
+      identity: { userId: 'other-user' },
       createdAt: new Date(),
     })
 
-    const tools = typegraphTools(target, { identity: { tenantId: 'tenant-1' } })
+    const tools = typegraphTools(target, { context: { userId: 'user-1' } })
 
     await expect((tools.typegraph_jobs_get.execute as any)({ jobId: 'job_1' }))
       .rejects
-      .toThrow('outside the configured TypeGraph identity scope')
+      .toThrow('outside the configured TypeGraph context')
   })
 })
 
 describe('typegraphMemoryTools', () => {
   it('returns the scoped memory tool subset', () => {
     const target = createTarget()
-    const tools = typegraphMemoryTools(target, { identity: { tenantId: 'tenant-1' } })
+    const tools = typegraphMemoryTools(target, { context: { userId: 'user-1' } })
 
     expect(Object.keys(tools)).toEqual([
-      'typegraph_memory_remember',
-      'typegraph_memory_correct',
+      'typegraph_remember',
+      'typegraph_correct',
     ])
   })
 })

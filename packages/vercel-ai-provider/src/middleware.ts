@@ -58,13 +58,13 @@ export function typegraphMemoryMiddleware(memory: TypegraphMemory, opts: MemoryM
     },
 
     /**
-     * After a response, ingest the conversation turn into memory.
+     * After a response, ingest the thread turn into memory.
      */
     async afterResponse(
       messages: { role: 'user' | 'assistant'; content: string }[],
-      conversationId?: string,
+      threadId?: string,
     ): Promise<void> {
-      await memory.addConversationTurn(messages, { conversationId })
+      await memory.addThreadTurn(messages, { threadId })
     },
   }
 }

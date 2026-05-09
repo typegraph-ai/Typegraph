@@ -1,14 +1,16 @@
+import type { AccessScope } from './identity.js'
+
 export interface EmbeddedChunk {
   id: string
   idempotencyKey: string
   bucketId: string
-  tenantId?: string | undefined
+  tenantId: string
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
-  conversationId?: string | undefined
-  /** ID referencing typegraph_sources.id. */
-  sourceId: string
+  threadId?: string | undefined
+  /** ID referencing typegraph_documents.id. */
+  documentId: string
 
   content: string
   embedding: number[]
@@ -17,11 +19,10 @@ export interface EmbeddedChunk {
   totalChunks: number
 
   /**
-   * Denormalized from the parent source. Chunks are the query target, so the
-   * visibility gate has to live here or unscoped queries leak narrowly-visible
-   * rows. Defaults to 'tenant' when omitted.
+   * Denormalized from the parent document. Chunks are the query target, so the
+   * access gate has to live here or unrestricted queries leak restricted rows.
    */
-  visibility?: import('./source.js').Visibility | undefined
+  accessScope?: AccessScope | undefined
 
   metadata: Record<string, unknown>
   indexedAt: Date
@@ -29,7 +30,7 @@ export interface EmbeddedChunk {
 
 export interface ChunkRef {
   bucketId: string
-  sourceId: string
+  documentId: string
   chunkIndex: number
   embeddingModel?: string | undefined
   chunkId?: string | undefined
@@ -45,10 +46,11 @@ export interface ChunkFilter {
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
-  conversationId?: string | undefined
-  sourceId?: string | undefined
+  threadId?: string | undefined
+  documentId?: string | undefined
   idempotencyKey?: string | undefined
   metadata?: Record<string, unknown> | undefined
+  accessScope?: AccessScope | undefined
 }
 
 export interface ScoredChunk extends EmbeddedChunk {

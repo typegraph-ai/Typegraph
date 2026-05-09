@@ -1,29 +1,67 @@
 import type { Bucket } from '../types/bucket.js'
-import type { QueryChunkResult, QueryMemoryResult, QueryOpts, QueryResponse, QueryResults, QuerySignals, RawScores, NormalizedScores } from '../types/query.js'
+import type { QueryChunkResult, QueryMemoryResult, QueryOpts, QueryResponse, QueryResults, QuerySignals, RawScores, NormalizedScores, SearchResource, SearchWeights, SearchFusion, OutputScores } from '../types/query.js'
 import type { VectorStoreAdapter } from '../types/adapter.js'
-import type { EmbeddingProvider } from '../embedding/provider.js'
+import type { Embedder } from '../embedding/provider.js'
 import { embeddingModelKey } from '../embedding/provider.js'
 import type { EntityResult, FactResult, GraphSearchTrace, MemoryBridge, KnowledgeGraphBridge } from '../types/graph-bridge.js'
 import type { typegraphEvent, typegraphEventSink } from '../types/events.js'
 import type { typegraphLogger } from '../types/logger.js'
 import type { ChunkRef } from '../types/chunk.js'
 import { ConfigError } from '../types/errors.js'
-import { optionalCompactObject } from '../utils/input.js'
+import { compactTypeGraphContext, contextTelemetry, contextToIdentity, optionalCompactObject } from '../utils/input.js'
 import { IndexedRunner } from './runners/indexed.js'
 import { MemoryRunner } from './runners/memory-runner.js'
 import { GraphRunner, type GraphRunResult } from './runners/graph-runner.js'
 import { mergeAndRank, normalizeRRF, normalizeGraphPPR, calibrateSemantic, calibrateKeyword, type RetrievalCandidate } from './merger.js'
 import { classifyQuery } from './classifier.js'
 
-/** Resolve user-provided signals (or defaults) into a fully-specified signal set. */
+const DEFAULT_SEARCH_RESOURCES: SearchResource[] = ['documents', 'events', 'threads', 'entities', 'facts', 'memories']
+const DEFAULT_SEARCH_WEIGHTS: Required<Record<keyof SearchWeights, number | false>> = {
+  semantic: 1,
+  bm25: 0.7,
+  graph: 0.5,
+  recency: 0.3,
+}
+const DEFAULT_FUSION: Required<SearchFusion> = { method: 'rrf', k: 60 }
+
+function resolveResources(opts?: QueryOpts | null): SearchResource[] {
+  const resources = opts?.resources ?? DEFAULT_SEARCH_RESOURCES
+  return [...new Set(resources)]
+}
+
+function resolveWeights(opts?: QueryOpts | null): Required<Record<keyof SearchWeights, number | false>> {
+  return {
+    semantic: opts?.weights?.semantic ?? DEFAULT_SEARCH_WEIGHTS.semantic,
+    bm25: opts?.weights?.bm25 ?? DEFAULT_SEARCH_WEIGHTS.bm25,
+    graph: opts?.weights?.graph ?? DEFAULT_SEARCH_WEIGHTS.graph,
+    recency: opts?.weights?.recency ?? DEFAULT_SEARCH_WEIGHTS.recency,
+  }
+}
+
+function resolveFusion(opts?: QueryOpts | null): Required<SearchFusion> {
+  return {
+    method: opts?.fusion?.method ?? DEFAULT_FUSION.method,
+    k: opts?.fusion?.k ?? DEFAULT_FUSION.k,
+  }
+}
+
+function hasWeight(value: number | false | undefined): value is number {
+  return typeof value === 'number' && value > 0
+}
+
+/** Resolve public resources/weights into internal retrieval switches. */
 export function resolveSignals(opts?: QueryOpts | null): Required<QuerySignals> {
   const normalizedOpts = optionalCompactObject<QueryOpts>(opts, 'resolveSignals') as QueryOpts
-  const s = normalizedOpts.signals ?? {}
+  const resources = new Set(resolveResources(normalizedOpts))
+  const weights = resolveWeights(normalizedOpts)
+  const wantsIndexed = resources.has('documents') || resources.has('events') || resources.has('threads')
+  const wantsGraphRecords = resources.has('entities') || resources.has('facts')
   return {
-    semantic: s.semantic ?? true,
-    keyword: s.keyword ?? false,
-    graph: s.graph ?? false,
-    memory: s.memory ?? false,
+    semantic: wantsIndexed && hasWeight(weights.semantic),
+    keyword: wantsIndexed && hasWeight(weights.bm25),
+    graph: wantsGraphRecords && hasWeight(weights.graph),
+    memory: resources.has('memories'),
+    recency: hasWeight(weights.recency),
   }
 }
 
@@ -31,17 +69,18 @@ export function resolveSignals(opts?: QueryOpts | null): Required<QuerySignals> 
 export function signalLabel(signals: QuerySignals): string {
   const active: string[] = []
   if (signals.semantic) active.push('semantic')
-  if (signals.keyword) active.push('keyword')
+  if (signals.keyword) active.push('bm25')
   if (signals.graph) active.push('graph')
+  if (signals.recency) active.push('recency')
   if (signals.memory) active.push('memory')
   return active.join('+') || 'none'
 }
 
 /** Compute composite score with eligible/ineligible distinction.
- *  - `undefined` value = ineligible (result can't have this score, e.g. bucket source has no memory score).
+ *  - `undefined` value = ineligible (result can't have this score, e.g. bucket document has no memory score).
  *    Weight is redistributed proportionally to eligible categories.
  *  - `0` value = eligible but scored poorly. Full penalty proportional to category weight.
- *  This ensures bucket sources aren't penalized for lacking a memory score,
+ *  This ensures bucket documents aren't penalized for lacking a memory score,
  *  while memories that score 0 in keyword search are properly penalized. */
 function compositeScore(
   components: Array<{ weight: number; value: number | undefined }>
@@ -64,29 +103,13 @@ function compositeScore(
  *  RRF is excluded — it's a rank-fusion technique for merging lists,
  *  not a relevance signal. It's used during merge-time ranking only. */
 function getDefaultWeights(signals: Required<QuerySignals>): Record<string, number> {
-  const s = signals.semantic
-  const k = signals.keyword
-  const g = signals.graph
-  const m = signals.memory
-
-  if (s && !k && !g && !m) return { semantic: 1.0 }
-  if (s && k && !g && !m) return { semantic: 0.85, keyword: 0.15 }
-  if (s && !k && g && !m) return { semantic: 0.55, graph: 0.45 }
-  if (s && !k && !g && m) return { semantic: 0.55, memory: 0.45 }
-  if (s && k && g && !m) return { semantic: 0.45, keyword: 0.10, graph: 0.45 }
-  if (s && k && !g && m) return { semantic: 0.45, keyword: 0.10, memory: 0.45 }
-  if (s && k && g && m) return { semantic: 0.35, keyword: 0.05, graph: 0.30, memory: 0.30 }
-  if (s && !k && g && m) return { semantic: 0.35, graph: 0.35, memory: 0.30 }
-  // Non-semantic combinations (graph-only, memory-only, etc.)
-  if (!s && k && !g && !m) return { keyword: 1.0 }
-  if (!s && k && g && !m) return { keyword: 0.20, graph: 0.80 }
-  if (!s && k && !g && m) return { keyword: 0.20, memory: 0.80 }
-  if (!s && k && g && m) return { keyword: 0.10, graph: 0.45, memory: 0.45 }
-  if (!s && !k && g && m) return { graph: 0.50, memory: 0.50 }
-  if (!s && !k && g && !m) return { graph: 1.0 }
-  if (!s && !k && !g && m) return { memory: 1.0 }
-  // Fallback
-  return { semantic: 1.0 }
+  const weights: Record<string, number> = {}
+  if (signals.semantic) weights.semantic = DEFAULT_SEARCH_WEIGHTS.semantic as number
+  if (signals.keyword) weights.keyword = DEFAULT_SEARCH_WEIGHTS.bm25 as number
+  if (signals.graph) weights.graph = DEFAULT_SEARCH_WEIGHTS.graph as number
+  if (signals.memory) weights.memory = 0.5
+  if (signals.recency) weights.recency = DEFAULT_SEARCH_WEIGHTS.recency as number
+  return Object.keys(weights).length > 0 ? weights : { semantic: 1.0 }
 }
 
 /** Compute composite score from normalized signal scores and weights.
@@ -95,7 +118,7 @@ function getDefaultWeights(signals: Required<QuerySignals>): Record<string, numb
 export function computeCompositeScore(
   normalizedScores: NormalizedScores,
   signals: Required<QuerySignals>,
-  userWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory', number>>
+  userWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory' | 'recency', number>>
 ): number {
   const weights = (userWeights && Object.keys(userWeights).length > 0)
     ? userWeights
@@ -107,10 +130,15 @@ export function computeCompositeScore(
   if (weights.keyword) components.push({ weight: weights.keyword, value: normalizedScores.keyword })
   if (weights.graph) components.push({ weight: weights.graph, value: normalizedScores.graph })
   if (weights.memory) components.push({ weight: weights.memory, value: normalizedScores.memory })
+  if (weights.recency) components.push({ weight: weights.recency, value: normalizedScores.recency })
   // Allow user to include RRF in explicit weights if they want
   if (weights.rrf) components.push({ weight: weights.rrf, value: normalizedScores.rrf })
 
-  return compositeScore(components)
+  const totalWeight = components.reduce((sum, component) => sum + component.weight, 0)
+  const normalizedComponents = totalWeight > 0
+    ? components.map(component => ({ ...component, weight: component.weight / totalWeight }))
+    : components
+  return compositeScore(normalizedComponents)
 }
 
 /** Race a promise against a timeout. Returns the result or fallback on timeout.
@@ -123,6 +151,13 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
   ]).finally(() => { clearTimeout(timer) })
 }
 
+function recencyScore(date?: Date | null, now = Date.now()): number | undefined {
+  if (!date) return undefined
+  const ageMs = Math.max(0, now - date.getTime())
+  const halfLifeMs = 30 * 24 * 60 * 60 * 1000
+  return Math.exp(-ageMs / halfLifeMs)
+}
+
 function uniqueById<T extends { id: string }>(items: T[]): T[] {
   const byId = new Map<string, T>()
   for (const item of items) {
@@ -133,7 +168,7 @@ function uniqueById<T extends { id: string }>(items: T[]): T[] {
 
 interface ScoredCandidate {
   score: number
-  scores: { raw: RawScores; normalized: NormalizedScores }
+  scores: { raw: RawScores; normalized: NormalizedScores; output: OutputScores }
   sources: string[]
   modes: string[]
 }
@@ -144,7 +179,7 @@ function scoreCandidate(
   runnerArrayCount: number,
   needsGraph: boolean,
   needsMemory: boolean,
-  effectiveScoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory', number>>,
+  effectiveScoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory' | 'recency', number>>,
 ): ScoredCandidate {
   const merged = r as RetrievalCandidate & { modes?: string[]; finalScore?: number; compositeScore?: number }
   const agg = merged.rawScores ?? r.rawScores
@@ -188,10 +223,26 @@ function scoreCandidate(
       : undefined
   }
 
+  if (signals.recency) {
+    const recency = agg.recency ?? r.rawScores.recency ?? recencyScore(r.updatedAt)
+    rawScores.recency = recency
+    normalizedScores.recency = recency
+  }
+
   const score = computeCompositeScore(normalizedScores, signals, effectiveScoreWeights)
   return {
     score,
-    scores: { raw: rawScores, normalized: normalizedScores },
+    scores: {
+      raw: rawScores,
+      normalized: normalizedScores,
+      output: {
+        semantic: normalizedScores.semantic,
+        bm25: normalizedScores.keyword,
+        graph: normalizedScores.graph,
+        recency: normalizedScores.recency,
+        fused: score,
+      },
+    },
     sources: sourcesForResult(modes, rawScores, signals),
     modes,
   }
@@ -203,20 +254,19 @@ function toChunkResult(r: RetrievalCandidate, scored: ScoredCandidate): QueryChu
     score: scored.score,
     scores: scored.scores,
     sources: scored.sources,
-    source: {
-      id: r.sourceId,
+    document: {
+      id: r.documentId,
       bucketId: r.bucketId,
-      title: r.title ?? '',
+      name: r.name ?? '',
       url: r.url,
       updatedAt: r.updatedAt ?? new Date(),
-      status: r.sourceStatus,
-      visibility: r.sourceVisibility,
+      status: r.documentStatus,
+      accessScope: r.documentAccessScope,
       tenantId: r.tenantId,
       userId: r.userId,
       groupId: r.groupId,
       agentId: r.agentId,
-      conversationId: r.conversationId,
-      subject: r.sourceSubject,
+      threadId: r.threadId,
     },
     chunk: r.chunk ?? { index: 0, total: 1 },
     metadata: r.metadata,
@@ -227,7 +277,7 @@ function toChunkResult(r: RetrievalCandidate, scored: ScoredCandidate): QueryChu
 function fallbackMemoryRecord(r: RetrievalCandidate): Omit<QueryMemoryResult, 'score' | 'scores'> {
   const now = new Date()
   return {
-    id: r.sourceId,
+    id: r.documentId,
     category: 'semantic',
     status: 'active',
     content: r.content,
@@ -240,11 +290,11 @@ function fallbackMemoryRecord(r: RetrievalCandidate): Omit<QueryMemoryResult, 's
       groupId: r.groupId,
       userId: r.userId,
       agentId: r.agentId,
-      conversationId: r.conversationId,
+      threadId: r.threadId,
     },
     validAt: now,
     createdAt: r.updatedAt ?? now,
-    visibility: undefined,
+    accessScope: undefined,
   }
 }
 
@@ -266,7 +316,7 @@ function partitionResults(
   graphFacts: FactResult[],
   graphEntities: EntityResult[],
   graphTrace?: GraphSearchTrace | undefined,
-  effectiveScoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory', number>>,
+  effectiveScoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory' | 'recency', number>>,
 ): QueryResults {
   const chunks: QueryChunkResult[] = []
   const memories: QueryMemoryResult[] = []
@@ -309,9 +359,42 @@ function resultCounts(results: QueryResults): {
   }
 }
 
+function buildExplanation(
+  opts: {
+    resources: SearchResource[]
+    weights: Required<Record<keyof SearchWeights, number | false>>
+    fusion: Required<SearchFusion>
+    results: QueryResults
+    bucketTimings: QueryResponse['buckets']
+    graphTrace?: GraphSearchTrace | undefined
+    warnings: string[]
+    skippedResources?: Partial<Record<SearchResource, string>> | undefined
+  }
+): QueryResponse['explanation'] {
+  const counts = resultCounts(opts.results)
+  const explanation: NonNullable<QueryResponse['explanation']> = {
+    activeResources: opts.resources,
+    activeWeights: opts.weights,
+    fusion: opts.fusion,
+    candidateCounts: {
+      documents: counts.chunkCount,
+      facts: counts.factCount,
+      entities: counts.entityCount,
+      memories: counts.memoryCount,
+    },
+    timings: Object.fromEntries(
+      Object.entries(opts.bucketTimings).map(([key, value]) => [key, value.durationMs])
+    ),
+  }
+  if (opts.graphTrace) explanation.graphTrace = opts.graphTrace
+  if (opts.warnings.length > 0) explanation.warnings = opts.warnings
+  if (opts.skippedResources) explanation.skippedResources = opts.skippedResources
+  return explanation
+}
+
 function boostScopedCandidates(candidates: RetrievalCandidate[], chunkRefs: ChunkRef[]): void {
   if (chunkRefs.length === 0) return
-  const scoped = new Set(chunkRefs.map(ref => `${ref.bucketId}:${ref.sourceId}:${ref.chunkIndex}`))
+    const scoped = new Set(chunkRefs.map(ref => `${ref.bucketId}:${ref.documentId}:${ref.chunkIndex}`))
   for (const candidate of candidates) {
     if (!scoped.has(resultIdentityKey(candidate))) continue
     candidate.normalizedScore = Math.min(1, candidate.normalizedScore * 1.15 + 0.05)
@@ -323,50 +406,69 @@ export class QueryPlanner {
   constructor(
     private adapter: VectorStoreAdapter,
     private bucketIds: string[],
-    private bucketEmbeddings: Map<string, EmbeddingProvider>,
-    private bucketQueryEmbeddings: Map<string, EmbeddingProvider>,
+    private bucketEmbeddings: Map<string, Embedder>,
+    private bucketSearchEmbeddings: Map<string, Embedder>,
     private memory?: MemoryBridge,
     private knowledgeGraph?: KnowledgeGraphBridge,
     private eventSink?: typegraphEventSink,
     private logger?: typegraphLogger,
+    private tenantId?: string,
   ) {}
 
   async execute(text: string, opts?: QueryOpts | null): Promise<QueryResponse> {
     const normalizedOpts = optionalCompactObject<QueryOpts>(opts, 'QueryPlanner.execute') as QueryOpts
     const startMs = Date.now()
-    const count = normalizedOpts.count ?? 10
-    const tenantId = normalizedOpts.tenantId
+    const count = normalizedOpts.limit ?? 10
+    const resources = resolveResources(normalizedOpts)
+    const publicWeights = resolveWeights(normalizedOpts)
+    const fusion = resolveFusion(normalizedOpts)
+    const context = compactTypeGraphContext(normalizedOpts.context, 'search')
+    const telemetry = contextTelemetry(context)
+    const identity = contextToIdentity(context, this.tenantId)
+    const tenantId = identity.tenantId
     const signals = resolveSignals(normalizedOpts)
     const onBucketError = normalizedOpts.onBucketError ?? 'throw'
 
     // Auto-weights: classify query type and use optimized weight profile.
-    // User-provided scoreWeights always override.
-    let effectiveScoreWeights = normalizedOpts.scoreWeights
-    if (normalizedOpts.autoWeights && !effectiveScoreWeights) {
+    // User-provided weights always override.
+    let effectiveScoreWeights: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory' | 'recency', number>> | undefined = {
+      ...(publicWeights.semantic !== false ? { semantic: publicWeights.semantic } : {}),
+      ...(publicWeights.bm25 !== false ? { keyword: publicWeights.bm25 } : {}),
+      ...(publicWeights.graph !== false ? { graph: publicWeights.graph } : {}),
+      ...(publicWeights.recency !== false ? { recency: publicWeights.recency } : {}),
+    }
+    if (Object.keys(effectiveScoreWeights).length === 0) effectiveScoreWeights = undefined
+    if (normalizedOpts.autoWeights && !normalizedOpts.weights) {
       const classification = classifyQuery(text)
-      effectiveScoreWeights = classification.weights as Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory', number>>
+      const classified: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory' | 'recency', number>> = {}
+      if (classification.weights.semantic !== undefined) classified.semantic = classification.weights.semantic
+      if (classification.weights.keyword !== undefined) classified.keyword = classification.weights.keyword
+      if (classification.weights.graph !== undefined) classified.graph = classification.weights.graph
+      if (classification.weights.memory !== undefined) classified.memory = classification.weights.memory
+      if (publicWeights.recency !== false) classified.recency = publicWeights.recency
+      effectiveScoreWeights = classified
       this.logger?.debug('Auto-weights', { queryType: classification.type, confidence: classification.confidence, weights: classification.weights })
     }
 
     this.logger?.debug('Query start', { text: text.slice(0, 100), signals, count })
 
-    // Filter to requested sources or use all
+    // Filter to requested buckets or use all
     const activeBucketIds = normalizedOpts.buckets
       ? normalizedOpts.buckets.filter(id => this.bucketIds.includes(id))
       : this.bucketIds
 
-    // Group sources by ingest embedding model (determines table routing).
-    // Attach query embedding provider (may differ from ingest model).
-    const modelGroups = new Map<string, { embedding: EmbeddingProvider; ingestModelId: string; bucketIds: string[] }>()
+    // Group documents by ingest embedding model (determines table routing).
+    // Attach query embedder (may differ from ingest model).
+    const modelGroups = new Map<string, { embedding: Embedder; ingestModelId: string; bucketIds: string[] }>()
     const warnings: string[] = []
 
     for (const bucketId of activeBucketIds) {
       const ingestEmb = this.bucketEmbeddings.get(bucketId)
       if (!ingestEmb) {
-        warnings.push(`Bucket "${bucketId}" has no embedding provider - skipped`)
+        warnings.push(`Bucket "${bucketId}" has no embedder - skipped`)
         continue
       }
-      const queryEmb = this.bucketQueryEmbeddings.get(bucketId) ?? ingestEmb
+      const queryEmb = this.bucketSearchEmbeddings.get(bucketId) ?? ingestEmb
       const ingestModelId = embeddingModelKey(ingestEmb)
 
       const existing = modelGroups.get(ingestModelId)
@@ -380,7 +482,6 @@ export class QueryPlanner {
     const needsIndexedSearch = signals.semantic || signals.keyword
     const needsGraph = Boolean(signals.graph && this.knowledgeGraph)
     const needsMemory = Boolean(signals.memory && this.memory)
-    const identity = { tenantId: normalizedOpts.tenantId, groupId: normalizedOpts.groupId, userId: normalizedOpts.userId, agentId: normalizedOpts.agentId, conversationId: normalizedOpts.conversationId }
     const entityScopeMode = normalizedOpts.entityScope?.mode ?? 'filter'
     let scopedEntityIds: string[] = []
     let scopedChunkRefs: ChunkRef[] = []
@@ -483,8 +584,8 @@ export class QueryPlanner {
             bucket_count: activeBucketIds.length,
           },
           durationMs,
-          traceId: normalizedOpts.traceId,
-          spanId: normalizedOpts.spanId,
+          traceId: telemetry.traceId,
+          spanId: telemetry.spanId,
           timestamp: new Date(),
         }
         void this.eventSink.emit(event)
@@ -496,6 +597,9 @@ export class QueryPlanner {
         results,
         buckets: bucketTimings,
         query: { text, tenantId, durationMs, mergeStrategy: 'rrf' },
+        explanation: normalizedOpts.explain
+          ? buildExplanation({ resources, weights: publicWeights, fusion, results, bucketTimings, graphTrace, warnings })
+          : undefined,
         warnings: warnings.length > 0 ? warnings : undefined,
       }
     }
@@ -515,11 +619,11 @@ export class QueryPlanner {
             modelGroups,
             count,
             identity,
-            normalizedOpts.sourceFilter,
+            normalizedOpts.documentFilter,
             signals,
-            normalizedOpts.traceId,
-            normalizedOpts.spanId,
-            normalizedOpts.temporalAt,
+            telemetry.traceId,
+            telemetry.spanId,
+            normalizedOpts.asOf === 'now' ? undefined : normalizedOpts.asOf,
             normalizedOpts.entityScope && entityScopeMode === 'filter' ? scopedChunkRefs : undefined,
           ),
           timeouts.indexed,
@@ -536,10 +640,10 @@ export class QueryPlanner {
           }
         } else {
           for (const bucketId of activeBucketIds) {
-            const sourceResults = results.filter(r => r.bucketId === bucketId)
+            const documentResults = results.filter(r => r.bucketId === bucketId)
             bucketTimings[bucketId] = {
               mode: 'indexed',
-              resultCount: sourceResults.length,
+              resultCount: documentResults.length,
               durationMs: runnerDuration,
               status: 'ok',
             }
@@ -592,7 +696,7 @@ export class QueryPlanner {
         ? Promise.resolve([] as RetrievalCandidate[])
         : withTimeout(
             new MemoryRunner(this.memory!).run(text, identity, count, {
-              ...(normalizedOpts.temporalAt ? { temporalAt: normalizedOpts.temporalAt } : {}),
+              ...(normalizedOpts.asOf && normalizedOpts.asOf !== 'now' ? { temporalAt: normalizedOpts.asOf } : {}),
               ...(normalizedOpts.includeInvalidated != null ? { includeInvalidated: normalizedOpts.includeInvalidated } : {}),
               ...(normalizedOpts.entityScope ? { entityScope: normalizedOpts.entityScope } : {}),
               useKeyword: signals.keyword,
@@ -691,8 +795,8 @@ export class QueryPlanner {
           bucket_count: activeBucketIds.length,
         },
         durationMs,
-        traceId: normalizedOpts.traceId,
-        spanId: normalizedOpts.spanId,
+        traceId: telemetry.traceId,
+        spanId: telemetry.spanId,
         timestamp: new Date(),
       }
       void this.eventSink.emit(event)
@@ -709,12 +813,15 @@ export class QueryPlanner {
         durationMs,
         mergeStrategy: 'rrf',
       },
+      explanation: normalizedOpts.explain
+        ? buildExplanation({ resources, weights: publicWeights, fusion, results, bucketTimings, graphTrace, warnings })
+        : undefined,
       warnings: warnings.length > 0 ? warnings : undefined,
     }
   }
 }
 
-/** Map internal runner mode names to user-facing source labels. */
+/** Map internal runner mode names to user-facing retrieval signal labels. */
 function modeToSource(mode: string): string {
   switch (mode) {
     case 'indexed': return 'semantic'
@@ -729,7 +836,7 @@ function sourcesForResult(modes: string[], rawScores: RawScores, signals: Requir
   for (const mode of modes) {
     if (mode === 'indexed') {
       if (signals.semantic && rawScores.cosineSimilarity != null) sources.add('semantic')
-      if (signals.keyword && rawScores.bm25 != null) sources.add('keyword')
+      if (signals.keyword && rawScores.bm25 != null) sources.add('bm25')
       continue
     }
     sources.add(modeToSource(mode))
@@ -738,8 +845,8 @@ function sourcesForResult(modes: string[], rawScores: RawScores, signals: Requir
 }
 
 function resultIdentityKey(result: RetrievalCandidate): string {
-  if (result.sourceId && result.chunk?.index !== undefined && result.bucketId) {
-    return `${result.bucketId}:${result.sourceId}:${result.chunk.index}`
+  if (result.documentId && result.chunk?.index !== undefined && result.bucketId) {
+    return `${result.bucketId}:${result.documentId}:${result.chunk.index}`
   }
   return result.content
 }

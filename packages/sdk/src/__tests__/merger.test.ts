@@ -211,29 +211,6 @@ describe('mergeAndRank', () => {
     expect(result.compositeScore).toBeLessThanOrEqual(1)
   })
 
-  it('includes memory weight in composite score', () => {
-    // Memory-only result should get composite > 0 due to memory weight
-    const memResult = makeResult({ content: 'memory', mode: 'memory', normalizedScore: 0.95, rawScores: { memory: 0.95 } })
-    const merged = mergeAndRank([[memResult]], 10)
-    const result = merged[0] as any
-    // 0.15 * 0.95 = 0.1425 (memory weight contribution)
-    expect(result.compositeScore).toBeGreaterThan(0.1)
-  })
-
-  it('memory results influence ranking when merged with indexed', () => {
-    // Two results: one with high memory, one without
-    const highMemory = [makeResult({ content: 'remembered', mode: 'indexed', normalizedScore: 0.5, rawScores: { semantic: 0.5 } })]
-    const memoryRunner = [makeResult({ content: 'remembered', mode: 'memory', normalizedScore: 0.95, rawScores: { memory: 0.95 } })]
-    const noMemory = [makeResult({ content: 'forgotten', mode: 'indexed', normalizedScore: 0.5, rawScores: { semantic: 0.5 } })]
-
-    const merged = mergeAndRank([highMemory, memoryRunner, noMemory], 10)
-    const rememberedResult = merged.find(r => r.content === 'remembered') as any
-    const forgottenResult = merged.find(r => r.content === 'forgotten') as any
-
-    // Result with memory contribution should score higher
-    expect(rememberedResult.compositeScore).toBeGreaterThan(forgottenResult.compositeScore)
-  })
-
   it('respects count', () => {
     const results = Array.from({ length: 20 }, (_, i) =>
       makeResult({ content: `content-${i}`, normalizedScore: i / 20, rawScores: { semantic: i / 20 } })

@@ -7,7 +7,6 @@
  */
 
 import type {
-  AccessScope,
   MemoryStoreAdapter,
   MemoryFilter,
   MemorySearchOpts,
@@ -23,13 +22,13 @@ import type {
   SemanticChunkRecord,
   SemanticFactRecord,
   ChunkRef,
-  typegraphIdentity,
   MergeGraphEntitiesInput,
   MergeGraphEntitiesResult,
   DeleteGraphEntityOpts,
   DeleteGraphEntityResult,
 } from '@typegraph-ai/sdk'
 import { generateId } from '@typegraph-ai/sdk'
+import type { StorageAccessScope, TypeGraphStorageIdentity } from './identity.js'
 
 type SqlExecutor = (
   query: string,
@@ -88,6 +87,7 @@ function IDENTITY_COLUMNS_DDL(t: string, opts: { accessScope?: boolean } = {}) {
   ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS user_id TEXT;
   ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS agent_id TEXT;
   ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS thread_id TEXT;
+  ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS graph_id TEXT NOT NULL DEFAULT 'public';
   ${opts.accessScope
     ? `ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS visibility TEXT CHECK (visibility IS NULL OR visibility IN ('tenant', 'group', 'user', 'agent', 'conversation'));`
     : ''}
@@ -97,7 +97,7 @@ function IDENTITY_COLUMNS_DDL(t: string, opts: { accessScope?: boolean } = {}) {
 const MEMORY_ROW_COLUMNS = [
   'id', 'category', 'status', 'content', 'importance', 'access_count',
   'last_accessed_at', 'metadata', 'tenant_id', 'group_id', 'user_id',
-  'agent_id', 'thread_id', 'visibility', 'event_type', 'participants',
+  'agent_id', 'thread_id', 'graph_id', 'visibility', 'event_type', 'participants',
   'episodic_thread_id', 'sequence', 'consolidated_at', 'subject',
   'predicate', 'object', 'confidence', 'source_memory_ids', 'trigger', 'steps',
   'success_count', 'failure_count', 'last_outcome', 'valid_at', 'invalid_at',
@@ -107,7 +107,7 @@ const MEMORY_ROW_COLUMNS = [
 const ENTITY_ROW_COLUMNS = [
   'id', 'name', 'entity_type', 'aliases', 'properties', 'status',
   'merged_into_entity_id', 'deleted_at', 'description_embedding', 'tenant_id',
-  'group_id', 'user_id', 'agent_id', 'thread_id', 'visibility',
+  'group_id', 'user_id', 'agent_id', 'thread_id', 'graph_id', 'visibility',
   'valid_at', 'invalid_at', 'created_at', 'updated_at',
 ]
 
@@ -117,7 +117,7 @@ const EDGE_ROW_COLUMNS = [
   'from_chunk_index', 'from_embedding_model', 'from_chunk_id', 'to_bucket_id',
   'to_source_id', 'to_chunk_index', 'to_embedding_model', 'to_chunk_id',
   'tenant_id', 'group_id', 'user_id', 'agent_id', 'thread_id',
-  'visibility', 'evidence', 'valid_at', 'invalid_at', 'created_at',
+  'graph_id', 'visibility', 'evidence', 'valid_at', 'invalid_at', 'created_at',
   'updated_at',
 ]
 
@@ -125,7 +125,7 @@ const FACT_ROW_COLUMNS = [
   'id', 'edge_id', 'source_entity_id', 'target_entity_id', 'relation',
   'fact_text', 'description', 'evidence_text', 'fact_search_text',
   'from_chunk_id', 'weight', 'evidence_count', 'tenant_id', 'group_id',
-  'user_id', 'agent_id', 'thread_id', 'visibility', 'invalid_at',
+  'user_id', 'agent_id', 'thread_id', 'graph_id', 'visibility', 'invalid_at',
   'created_at', 'updated_at',
 ]
 
@@ -611,23 +611,24 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       `INSERT INTO ${this.memoriesTable}
         (id, category, status, content, embedding, importance, access_count,
          last_accessed_at, metadata,
-         tenant_id, group_id, user_id, agent_id, thread_id, visibility,
+         tenant_id, group_id, user_id, agent_id, thread_id, graph_id, visibility,
          event_type, participants, episodic_thread_id, sequence, consolidated_at,
          subject, predicate, object, confidence, source_memory_ids,
          trigger, steps, success_count, failure_count, last_outcome,
          valid_at, invalid_at, expired_at, updated_at)
        VALUES ($1,$2,$3,$4,$5::vector,$6,$7,$8,$9,
-               $10,$11,$12,$13,$14,$15,
-               $16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
-               $26,$27,$28,$29,$30,$31,$32,$33,NOW())
+               $10,$11,$12,$13,$14,$15,$16,
+               $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,
+               $27,$28,$29,$30,$31,$32,$33,$34,NOW())
        ON CONFLICT (id) DO UPDATE SET
          status = EXCLUDED.status, content = EXCLUDED.content,
          embedding = EXCLUDED.embedding, importance = EXCLUDED.importance,
          access_count = EXCLUDED.access_count, last_accessed_at = EXCLUDED.last_accessed_at,
-         metadata = EXCLUDED.properties,
+         metadata = EXCLUDED.metadata,
          tenant_id = EXCLUDED.tenant_id, group_id = EXCLUDED.group_id,
          user_id = EXCLUDED.user_id, agent_id = EXCLUDED.agent_id,
-         thread_id = EXCLUDED.thread_id, visibility = EXCLUDED.visibility,
+         thread_id = EXCLUDED.thread_id, graph_id = EXCLUDED.graph_id,
+         visibility = EXCLUDED.visibility,
          event_type = EXCLUDED.event_type, participants = EXCLUDED.participants,
          episodic_thread_id = EXCLUDED.episodic_thread_id, sequence = EXCLUDED.sequence,
          consolidated_at = EXCLUDED.consolidated_at,
@@ -651,6 +652,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         record.scope.userId ?? null,
         record.scope.agentId ?? null,
         record.scope.threadId ?? null,
+        record.graphId ?? record.scope.graphId ?? 'public',
         record.accessScope ?? null,
         // Episodic
         (record as any).eventType ?? null,
@@ -888,9 +890,9 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const rows = await this.sqlWithRetry(
       `INSERT INTO ${this.entitiesTable}
         (id, name, entity_type, aliases, properties, status, merged_into_entity_id, deleted_at, embedding, description_embedding,
-         tenant_id, group_id, user_id, agent_id, thread_id, visibility,
+         tenant_id, group_id, user_id, agent_id, thread_id, graph_id, visibility,
          valid_at, invalid_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::vector,$10::vector,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::vector,$10::vector,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name, entity_type = EXCLUDED.entity_type,
          aliases = EXCLUDED.aliases, properties = EXCLUDED.properties,
@@ -901,7 +903,8 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          description_embedding = COALESCE(EXCLUDED.description_embedding, ${tbl}.description_embedding),
          tenant_id = EXCLUDED.tenant_id, group_id = EXCLUDED.group_id,
          user_id = EXCLUDED.user_id, agent_id = EXCLUDED.agent_id,
-         thread_id = EXCLUDED.thread_id, visibility = EXCLUDED.visibility,
+         thread_id = EXCLUDED.thread_id, graph_id = EXCLUDED.graph_id,
+         visibility = EXCLUDED.visibility,
          valid_at = EXCLUDED.valid_at, invalid_at = EXCLUDED.invalid_at, updated_at = NOW()
        RETURNING ${selectColumns(ENTITY_ROW_COLUMNS)}`,
       [
@@ -916,6 +919,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         entity.scope.userId ?? null,
         entity.scope.agentId ?? null,
         entity.scope.threadId ?? null,
+        entity.graphId ?? entity.scope.graphId ?? 'public',
         entity.accessScope ?? null,
         entity.temporal.validAt.toISOString(),
         entity.temporal.invalidAt?.toISOString() ?? null,
@@ -936,7 +940,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return mapped!
   }
 
-  async upsertEntityExternalIds(entityId: string, externalIds: ExternalId[], scope: typegraphIdentity): Promise<void> {
+  async upsertEntityExternalIds(entityId: string, externalIds: ExternalId[], scope: TypeGraphStorageIdentity): Promise<void> {
     if (externalIds.length === 0) return
 
     const values: string[] = []
@@ -991,7 +995,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     }
   }
 
-  async findEntityByExternalId(externalId: ExternalId, scope?: typegraphIdentity): Promise<SemanticEntity | null> {
+  async findEntityByExternalId(externalId: ExternalId, scope?: TypeGraphStorageIdentity): Promise<SemanticEntity | null> {
     const normalized = normalizeExternalId(externalId)
     if (!normalized) return null
     const identity = buildGraphVisibilityWhere(scope, 3, 'e')
@@ -1019,7 +1023,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return mapped!
   }
 
-  async getEntity(id: string, scope?: typegraphIdentity): Promise<SemanticEntity | null> {
+  async getEntity(id: string, scope?: TypeGraphStorageIdentity): Promise<SemanticEntity | null> {
     const identity = buildGraphVisibilityWhere(scope, 1)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
     const rows = await this.sqlWithRetry(
@@ -1034,7 +1038,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return mapped!
   }
 
-  async getEntitiesBatch(ids: string[], scope?: typegraphIdentity): Promise<SemanticEntity[]> {
+  async getEntitiesBatch(ids: string[], scope?: TypeGraphStorageIdentity): Promise<SemanticEntity[]> {
     if (ids.length === 0) return []
     const identity = buildGraphVisibilityWhere(scope, 1)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
@@ -1048,7 +1052,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return this.attachExternalIds(rows.map(mapRowToEntity))
   }
 
-  async findEntities(query: string, scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]> {
+  async findEntities(query: string, scope: TypeGraphStorageIdentity, limit?: number): Promise<SemanticEntity[]> {
     const { where, params } = buildGraphVisibilityWhere(scope)
     const baseIdx = params.length
     params.push(`%${query}%`)
@@ -1075,7 +1079,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return this.attachExternalIds(rows.map(mapRowToEntity))
   }
 
-  async searchEntities(embedding: number[], scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]> {
+  async searchEntities(embedding: number[], scope: TypeGraphStorageIdentity, limit?: number): Promise<SemanticEntity[]> {
     const vectorStr = `[${embedding.join(',')}]`
     const { where, params } = buildGraphVisibilityWhere(scope, 1)
     const scopeClause = where ? ` AND ${where}` : ''
@@ -1095,7 +1099,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return this.attachExternalIds(rows.map(mapRowToEntity))
   }
 
-  async searchEntitiesHybrid(query: string, embedding: number[], scope: typegraphIdentity, limit?: number): Promise<SemanticEntity[]> {
+  async searchEntitiesHybrid(query: string, embedding: number[], scope: TypeGraphStorageIdentity, limit?: number): Promise<SemanticEntity[]> {
     const normalizedQuery = normalizeEntityText(query)
     const likeQuery = `%${escapeLike(query.trim())}%`
     const lowerQuery = query.trim().toLowerCase()
@@ -1187,7 +1191,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     for (const edge of edges) {
       const base = params.length
       const scope = edge.scope ?? {}
-      values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17},$${base + 18},$${base + 19},$${base + 20},$${base + 21},$${base + 22},$${base + 23},$${base + 24},$${base + 25},$${base + 26},$${base + 27})`)
+      values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17},$${base + 18},$${base + 19},$${base + 20},$${base + 21},$${base + 22},$${base + 23},$${base + 24},$${base + 25},$${base + 26},$${base + 27},$${base + 28})`)
       params.push(
         edge.id,
         edge.sourceType,
@@ -1212,6 +1216,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         scope.userId ?? null,
         scope.agentId ?? null,
         scope.threadId ?? null,
+        edge.graphId ?? scope.graphId ?? 'public',
         edge.accessScope ?? null,
         edge.evidence ?? [],
         edge.temporal.validAt.toISOString(),
@@ -1225,7 +1230,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         (id, source_type, source_id, target_type, target_id, relation, weight, properties,
          from_bucket_id, from_source_id, from_chunk_index, from_embedding_model, from_chunk_id,
          to_bucket_id, to_source_id, to_chunk_index, to_embedding_model, to_chunk_id,
-         tenant_id, group_id, user_id, agent_id, thread_id, visibility, evidence, valid_at, invalid_at)
+         tenant_id, group_id, user_id, agent_id, thread_id, graph_id, visibility, evidence, valid_at, invalid_at)
        VALUES ${values.join(',')}
        ON CONFLICT (source_type, source_id, target_type, target_id, relation) DO UPDATE SET
          weight = LEAST(5.0, ${tbl}.weight + EXCLUDED.weight),
@@ -1245,6 +1250,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          user_id = EXCLUDED.user_id,
          agent_id = EXCLUDED.agent_id,
          thread_id = EXCLUDED.thread_id,
+         graph_id = EXCLUDED.graph_id,
          visibility = EXCLUDED.visibility,
          evidence = ARRAY(SELECT DISTINCT v FROM unnest(${tbl}.evidence || EXCLUDED.evidence) AS v WHERE v <> ''),
          invalid_at = EXCLUDED.invalid_at,
@@ -1275,6 +1281,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       fact.scope.userId ?? null,
       fact.scope.agentId ?? null,
       fact.scope.threadId ?? null,
+      fact.graphId ?? fact.scope.graphId ?? 'public',
       fact.accessScope ?? null,
       fact.invalidAt?.toISOString() ?? null,
       fact.updatedAt.toISOString(),
@@ -1284,8 +1291,8 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         (id, edge_id, source_entity_id, target_entity_id, relation, fact_text,
          description, evidence_text, fact_search_text, from_chunk_id, weight,
          evidence_count, embedding, tenant_id, group_id, user_id, agent_id,
-         thread_id, visibility, invalid_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::vector,$14,$15,$16,$17,$18,$19,$20,$21)
+         thread_id, graph_id, visibility, invalid_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::vector,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        ON CONFLICT (${conflictTarget}) DO UPDATE SET
          ${conflictTarget === 'id'
            ? `edge_id = EXCLUDED.edge_id,
@@ -1306,6 +1313,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          user_id = EXCLUDED.user_id,
          agent_id = EXCLUDED.agent_id,
          thread_id = EXCLUDED.thread_id,
+         graph_id = EXCLUDED.graph_id,
          visibility = EXCLUDED.visibility,
          invalid_at = EXCLUDED.invalid_at,
          updated_at = EXCLUDED.updated_at
@@ -1320,7 +1328,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return mapRowToFact(rows[0]!)
   }
 
-  async searchFacts(embedding: number[], scope: typegraphIdentity, limit?: number): Promise<SemanticFactRecord[]> {
+  async searchFacts(embedding: number[], scope: TypeGraphStorageIdentity, limit?: number): Promise<SemanticFactRecord[]> {
     const vectorStr = `[${embedding.join(',')}]`
     const identity = buildGraphVisibilityWhere(scope, 1)
     const scopeClause = identity.where ? ` AND ${identity.where}` : ''
@@ -1337,7 +1345,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return rows.map(mapRowToFact)
   }
 
-  async searchFactsHybrid(query: string, embedding: number[] | undefined, scope: typegraphIdentity, limit?: number): Promise<SemanticFactRecord[]> {
+  async searchFactsHybrid(query: string, embedding: number[] | undefined, scope: TypeGraphStorageIdentity, limit?: number): Promise<SemanticFactRecord[]> {
     const maxRows = limit ?? 20
     const identity = buildGraphVisibilityWhere(scope, 2)
     const scopeClause = identity.where ? ` AND ${identity.where}` : ''
@@ -1375,7 +1383,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   async getChunkEdgesForEntities(
     entityIds: string[],
     opts?: {
-      scope?: typegraphIdentity | undefined
+      scope?: TypeGraphStorageIdentity | undefined
       bucketIds?: string[] | undefined
       limit?: number | undefined
     }
@@ -1414,7 +1422,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     chunkRefs: ChunkRef[],
     opts: {
       chunksTable: string
-      scope?: typegraphIdentity | undefined
+      scope?: TypeGraphStorageIdentity | undefined
       bucketIds?: string[] | undefined
     }
   ): Promise<SemanticChunkRecord[]> {
@@ -1449,7 +1457,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
 
   async searchChunks(
     embedding: number[],
-    scope: typegraphIdentity,
+    scope: TypeGraphStorageIdentity,
     opts: {
       chunksTable: string
       bucketIds?: string[] | undefined
@@ -1511,11 +1519,12 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const rows = await this.sqlWithRetry(
       `INSERT INTO ${this.edgesTable}
         (id, source_type, source_id, target_type, target_id, relation, weight, properties,
-         tenant_id, group_id, user_id, agent_id, thread_id, visibility,
+         tenant_id, group_id, user_id, agent_id, thread_id, graph_id, visibility,
          evidence, valid_at, invalid_at, updated_at)
-       VALUES ($1,'entity',$2,'entity',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
+       VALUES ($1,'entity',$2,'entity',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
        ON CONFLICT (source_type, source_id, target_type, target_id, relation) DO UPDATE SET
          weight = ${unqualified(this.edgesTable)}.weight + EXCLUDED.weight,
+         graph_id = EXCLUDED.graph_id,
          valid_at = LEAST(${unqualified(this.edgesTable)}.valid_at, EXCLUDED.valid_at),
          updated_at = NOW()
        RETURNING ${selectColumns(EDGE_ROW_COLUMNS)}`,
@@ -1527,6 +1536,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         edge.scope.userId ?? null,
         edge.scope.agentId ?? null,
         edge.scope.threadId ?? null,
+        edge.graphId ?? edge.scope.graphId ?? 'public',
         edge.accessScope ?? null,
         edge.evidence,
         edge.temporal.validAt.toISOString(),
@@ -1536,7 +1546,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return mapRowToEdge(rows[0]!)
   }
 
-  async getEdges(entityId: string, direction?: 'in' | 'out' | 'both', scope?: typegraphIdentity): Promise<SemanticEdge[]> {
+  async getEdges(entityId: string, direction?: 'in' | 'out' | 'both', scope?: TypeGraphStorageIdentity): Promise<SemanticEdge[]> {
     let query: string
     const identity = buildGraphVisibilityWhere(scope, 1)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
@@ -1555,7 +1565,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return rows.map(mapRowToEdge)
   }
 
-  async getEdgesBatch(entityIds: string[], direction: 'in' | 'out' | 'both' = 'both', scope?: typegraphIdentity): Promise<SemanticEdge[]> {
+  async getEdgesBatch(entityIds: string[], direction: 'in' | 'out' | 'both' = 'both', scope?: TypeGraphStorageIdentity): Promise<SemanticEdge[]> {
     if (entityIds.length === 0) return []
     const identity = buildGraphVisibilityWhere(scope, 1)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
@@ -1606,7 +1616,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     )
   }
 
-  async getMemoryIdsForEntities(entityIds: string[], scope?: typegraphIdentity): Promise<string[]> {
+  async getMemoryIdsForEntities(entityIds: string[], scope?: TypeGraphStorageIdentity): Promise<string[]> {
     if (entityIds.length === 0) return []
     const identity = buildGraphVisibilityWhere(scope, 1)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
@@ -2030,7 +2040,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
 
   async listChunkBackfillRecords(opts: {
     chunksTable: string
-    scope?: typegraphIdentity | undefined
+    scope?: TypeGraphStorageIdentity | undefined
     bucketIds?: string[] | undefined
     limit?: number | undefined
     offset?: number | undefined
@@ -2066,7 +2076,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
 
   async listChunkMentionBackfillRows(opts: {
     chunksTable: string
-    scope?: typegraphIdentity | undefined
+    scope?: TypeGraphStorageIdentity | undefined
     bucketIds?: string[] | undefined
     limit?: number | undefined
     offset?: number | undefined
@@ -2113,7 +2123,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   }
 
   async listSemanticEdgesForBackfill(opts?: {
-    scope?: typegraphIdentity | undefined
+    scope?: TypeGraphStorageIdentity | undefined
     limit?: number | undefined
     offset?: number | undefined
   }): Promise<SemanticEdge[]> {
@@ -2148,7 +2158,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return (rows[0]?.['n'] as number) ?? 0
   }
 
-  async countEntities(scope?: typegraphIdentity): Promise<number> {
+  async countEntities(scope?: TypeGraphStorageIdentity): Promise<number> {
     const identity = buildGraphVisibilityWhere(scope)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
     const rows = await this.sqlWithRetry(
@@ -2158,7 +2168,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return (rows[0]?.['n'] as number) ?? 0
   }
 
-  async countEdges(scope?: typegraphIdentity): Promise<number> {
+  async countEdges(scope?: TypeGraphStorageIdentity): Promise<number> {
     const identity = buildGraphVisibilityWhere(scope)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
     const rows = await this.sqlWithRetry(
@@ -2168,7 +2178,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return (rows[0]?.['n'] as number) ?? 0
   }
 
-  async getRelationTypes(scope?: typegraphIdentity): Promise<Array<{ relation: string; count: number }>> {
+  async getRelationTypes(scope?: TypeGraphStorageIdentity): Promise<Array<{ relation: string; count: number }>> {
     const identity = buildGraphVisibilityWhere(scope)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
     const rows = await this.sqlWithRetry(
@@ -2183,7 +2193,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return rows.map(r => ({ relation: r.relation as string, count: r.count as number }))
   }
 
-  async getEntityTypes(scope?: typegraphIdentity): Promise<Array<{ entityType: string; count: number }>> {
+  async getEntityTypes(scope?: TypeGraphStorageIdentity): Promise<Array<{ entityType: string; count: number }>> {
     const identity = buildGraphVisibilityWhere(scope)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
     const rows = await this.sqlWithRetry(
@@ -2196,7 +2206,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return rows.map(r => ({ entityType: r.entity_type as string, count: r.count as number }))
   }
 
-  async getDegreeDistribution(scope?: typegraphIdentity): Promise<Array<{ degree: number; count: number }>> {
+  async getDegreeDistribution(scope?: TypeGraphStorageIdentity): Promise<Array<{ degree: number; count: number }>> {
     const identity = buildGraphVisibilityWhere(scope)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
     const rows = await this.sqlWithRetry(
@@ -2232,6 +2242,7 @@ function mapRowToMemory(row: Record<string, unknown>): MemoryRecord {
   }
   const base: MemoryRecord = {
     id: row.id as string,
+    graphId: (row.graph_id as string | null) ?? 'public',
     category: row.category as MemoryRecord['category'],
     status: row.status as MemoryRecord['status'],
     content: row.content as string,
@@ -2286,6 +2297,7 @@ function mapRowToEntity(row: Record<string, unknown>): SemanticEntity {
   }
   return {
     id: row.id as string,
+    graphId: (row.graph_id as string | null) ?? 'public',
     name: row.name as string,
     entityType: row.entity_type as string,
     aliases: row.aliases as string[] ?? [],
@@ -2309,6 +2321,7 @@ function mapRowToEntity(row: Record<string, unknown>): SemanticEntity {
 function mapRowToEdge(row: Record<string, unknown>): SemanticEdge {
   return {
     id: row.id as string,
+    graphId: (row.graph_id as string | null) ?? 'public',
     sourceType: 'entity',
     sourceId: row.source_id as string,
     targetType: 'entity',
@@ -2333,6 +2346,7 @@ function mapRowToEdge(row: Record<string, unknown>): SemanticEdge {
 function mapRowToFact(row: Record<string, unknown>): SemanticFactRecord {
   return {
     id: row.id as string,
+    graphId: (row.graph_id as string | null) ?? 'public',
     edgeId: row.edge_id as string,
     sourceEntityId: row.source_entity_id as string,
     targetEntityId: row.target_entity_id as string,
@@ -2355,6 +2369,7 @@ function mapRowToEntityChunkEdge(row: Record<string, unknown>): SemanticEntityCh
   const props = parseJson(row.metadata)
   return {
     id: row.id as string,
+    graphId: (row.graph_id as string | null) ?? 'public',
     entityId: row.source_id as string,
     chunkRef: {
       bucketId: row.to_bucket_id as string,
@@ -2384,6 +2399,7 @@ function mapRowToChunkBackfillRecord(row: Record<string, unknown>): ChunkBackfil
     embeddingModel: row.embedding_model as string,
     content: row.content as string,
     metadata: parseJson(row.metadata),
+    graphId: (row.graph_id as string | null) ?? 'public',
     accessScope: parseJsonArray(row.visibility) as ChunkBackfillRecord['accessScope'],
     tenantId: (row.tenant_id as string) ?? undefined,
     groupId: (row.group_id as string) ?? undefined,
@@ -2403,6 +2419,7 @@ function mapRowToChunkContent(row: Record<string, unknown>): SemanticChunkRecord
     embeddingModel: (row.embedding_model as string | null) ?? undefined,
     totalChunks: row.total_chunks as number,
     metadata: parseJson(row.metadata),
+    graphId: (row.graph_id as string | null) ?? 'public',
     tenantId: (row.tenant_id as string) ?? undefined,
     groupId: (row.group_id as string) ?? undefined,
     userId: (row.user_id as string) ?? undefined,
@@ -2441,10 +2458,10 @@ function parseJson(val: unknown): Record<string, unknown> {
   return (val ?? {}) as Record<string, unknown>
 }
 
-function parseJsonArray(val: unknown): AccessScope | undefined {
+function parseJsonArray(val: unknown): StorageAccessScope | undefined {
   if (val == null) return undefined
   const parsed = typeof val === 'string' ? JSON.parse(val) : val
-  return Array.isArray(parsed) ? parsed as AccessScope : undefined
+  return Array.isArray(parsed) ? parsed as StorageAccessScope : undefined
 }
 
 /** Parse a pgvector string "[0.1,0.2,0.3]" into a number[], or return undefined if null/missing. */
@@ -2559,6 +2576,20 @@ function buildMemoryWhere(
     params.push(filter.scope.threadId)
     conditions.push(`thread_id = ${p()}`)
   }
+  if (filter.graphIds) {
+    if (filter.graphIds.length === 0) {
+      conditions.push('FALSE')
+    } else {
+      params.push(filter.graphIds)
+      conditions.push(`graph_id = ANY(${p()}::text[])`)
+    }
+  } else if (filter.graphId) {
+    params.push(filter.graphId)
+    conditions.push(`graph_id = ${p()}`)
+  } else if (filter.scope?.graphId) {
+    params.push(filter.scope.graphId)
+    conditions.push(`graph_id = ${p()}`)
+  }
   if (filter.accessScope) {
     if (Array.isArray(filter.accessScope)) {
       params.push(filter.accessScope)
@@ -2603,11 +2634,11 @@ function buildMemoryWhere(
 }
 
 /**
- * Build WHERE conditions from a typegraphIdentity for entity/edge queries.
+ * Build WHERE conditions from a TypeGraphStorageIdentity for entity/edge queries.
  * Only adds conditions for non-null identity fields.
  */
 function buildIdentityWhere(
-  identity: typegraphIdentity,
+  identity: TypeGraphStorageIdentity,
   paramOffset = 0
 ): { where: string; params: unknown[] } {
   const conditions: string[] = []
@@ -2619,6 +2650,17 @@ function buildIdentityWhere(
   if (identity.userId) { params.push(identity.userId); conditions.push(`user_id = ${p()}`) }
   if (identity.agentId) { params.push(identity.agentId); conditions.push(`agent_id = ${p()}`) }
   if (identity.threadId) { params.push(identity.threadId); conditions.push(`thread_id = ${p()}`) }
+  if (identity.graphIds) {
+    if (identity.graphIds.length === 0) {
+      conditions.push('FALSE')
+    } else {
+      params.push(identity.graphIds)
+      conditions.push(`graph_id = ANY(${p()}::text[])`)
+    }
+  } else if (identity.graphId) {
+    params.push(identity.graphId)
+    conditions.push(`graph_id = ${p()}`)
+  }
 
   return {
     where: conditions.join(' AND '),
@@ -2627,7 +2669,7 @@ function buildIdentityWhere(
 }
 
 function buildGraphVisibilityWhere(
-  identity: typegraphIdentity | undefined,
+  identity: TypeGraphStorageIdentity | undefined,
   paramOffset = 0,
   alias?: string,
 ): { where: string; params: unknown[] } {
@@ -2667,6 +2709,17 @@ function buildGraphVisibilityWhere(
     conversationParam = p()
     conditions.push(`${col('thread_id')} = ${conversationParam}`)
   }
+  if (identity?.graphIds) {
+    if (identity.graphIds.length === 0) {
+      conditions.push('FALSE')
+    } else {
+      params.push(identity.graphIds)
+      conditions.push(`${col('graph_id')} = ANY(${p()}::text[])`)
+    }
+  } else if (identity?.graphId) {
+    params.push(identity.graphId)
+    conditions.push(`${col('graph_id')} = ${p()}`)
+  }
 
   const visibilityBranches = [`${col('visibility')} IS NULL`]
   if (tenantParam) visibilityBranches.push(`(${col('visibility')} = 'tenant' AND ${col('tenant_id')} = ${tenantParam})`)
@@ -2684,13 +2737,13 @@ function buildGraphVisibilityWhere(
 
 function buildAliasedIdentityWhere(
   alias: string,
-  identity: typegraphIdentity,
+  identity: TypeGraphStorageIdentity,
   paramOffset = 0
 ): { where: string; params: unknown[] } {
   const base = buildIdentityWhere(identity, paramOffset)
   if (!base.where) return base
   return {
-    where: base.where.replace(/\b(tenant_id|group_id|user_id|agent_id|thread_id)\b/g, `${alias}.$1`),
+    where: base.where.replace(/\b(tenant_id|group_id|user_id|agent_id|thread_id|graph_id)\b/g, `${alias}.$1`),
     params: base.params,
   }
 }
@@ -2698,12 +2751,13 @@ function buildAliasedIdentityWhere(
 /**
  * Extract identity from a DB row's explicit columns.
  */
-function rowToIdentity(row: Record<string, unknown>): typegraphIdentity {
-  const id: typegraphIdentity = {}
+function rowToIdentity(row: Record<string, unknown>): TypeGraphStorageIdentity {
+  const id: TypeGraphStorageIdentity = {}
   if (row.tenant_id) id.tenantId = row.tenant_id as string
   if (row.group_id) id.groupId = row.group_id as string
   if (row.user_id) id.userId = row.user_id as string
   if (row.agent_id) id.agentId = row.agent_id as string
   if (row.thread_id) id.threadId = row.thread_id as string
+  if (row.graph_id) id.graphId = row.graph_id as string
   return id
 }

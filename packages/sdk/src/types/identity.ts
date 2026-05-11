@@ -9,6 +9,7 @@ declare const brand: unique symbol
 export type Brand<T, B extends string> = T & { readonly [brand]: B }
 
 export type TenantId = Brand<string, 'TenantId'>
+export type OrganizationId = Brand<string, 'OrganizationId'>
 export type GroupId = Brand<string, 'GroupId'>
 export type UserId = Brand<string, 'UserId'>
 export type AgentId = Brand<string, 'AgentId'>
@@ -16,6 +17,7 @@ export type ThreadId = Brand<string, 'ThreadId'>
 export type EntityId = Brand<string, 'EntityId'>
 
 export const TenantId = (id: string): TenantId => id as TenantId
+export const OrganizationId = (id: string): OrganizationId => id as OrganizationId
 export const GroupId = (id: string): GroupId => id as GroupId
 export const UserId = (id: string): UserId => id as UserId
 export const AgentId = (id: string): AgentId => id as AgentId
@@ -26,17 +28,15 @@ export const entityRef = (type: string, id: string): EntityRef => ({ type, id })
 /**
  * Public request context for TypeGraph operations.
  *
- * `tenantId` is the hard outer namespace boundary. `principals` are additional
- * caller principals used for read access checks. `access` is the write-side
- * access list for records created or updated by the operation.
+ * The TypeGraph client configuration owns the hard tenant namespace boundary.
+ * Graph configuration owns read/write access. Context identifies the actor.
  */
 export interface TypeGraphContext {
+  organizationId?: OrganizationId | string | undefined
   groupId?: GroupId | string | undefined
   userId?: UserId | string | undefined
   agentId?: AgentId | string | undefined
   threadId?: ThreadId | string | undefined
-  principals?: EntityRef[] | undefined
-  access?: EntityRef[] | undefined
   /** Human-readable agent name. Maps to gen_ai.agent.name in OpenTelemetry. */
   agentName?: string | undefined
   /** Agent description. Maps to gen_ai.agent.description in OpenTelemetry. */
@@ -61,16 +61,19 @@ export interface TypeGraphWriteOptions extends TypeGraphOptions {
 }
 
 /**
- * Internal identity shape used by lower-level bridges. The public request
+ * Internal identity shape used by lower-level storage services. The public request
  * identity requires `tenantId`; internals allow it to be defaulted by the
  * TypeGraph instance before execution.
  */
 export interface typegraphIdentity {
   tenantId?: string | undefined
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
+  graphId?: string | undefined
+  graphIds?: string[] | undefined
   entities?: EntityRef[] | undefined
   agentName?: string | undefined
   agentDescription?: string | undefined
@@ -89,6 +92,7 @@ export function accessScopeKeys(accessScope?: AccessScope | null): string[] {
 export function identityAccessScope(identity?: typegraphIdentity | null): AccessScope {
   const refs: EntityRef[] = []
   if (!identity) return refs
+  if (identity.organizationId) refs.push({ type: 'organization', id: identity.organizationId })
   if (identity.groupId) refs.push({ type: 'group', id: identity.groupId })
   if (identity.userId) refs.push({ type: 'user', id: identity.userId })
   if (identity.agentId) refs.push({ type: 'agent', id: identity.agentId })

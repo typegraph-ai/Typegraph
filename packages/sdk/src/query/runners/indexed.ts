@@ -3,8 +3,7 @@ import type { Embedder } from '../../embedding/provider.js'
 import { embedText } from '../../embedding/provider.js'
 import type { DocumentStorageFilter } from '../../types/document.js'
 import type { typegraphIdentity } from '../../types/identity.js'
-import { identityAccessScope } from '../../types/identity.js'
-import type { QuerySignals } from '../../types/query.js'
+import type { RetrievalSwitches } from '../../types/query.js'
 import type { ChunkRef } from '../../types/chunk.js'
 import type { RetrievalCandidate } from '../merger.js'
 import type { typegraphEvent, typegraphEventSink } from '../../types/events.js'
@@ -25,7 +24,7 @@ export class IndexedRunner {
     count: number,
     identity?: typegraphIdentity,
     documentFilter?: DocumentStorageFilter,
-    signals?: Required<QuerySignals>,
+    switches?: Required<RetrievalSwitches>,
     traceId?: string,
     spanId?: string,
     temporalAt?: Date,
@@ -33,8 +32,8 @@ export class IndexedRunner {
   ): Promise<RetrievalCandidate[]> {
     const allResults: RetrievalCandidate[] = []
     const fetchCount = count * 3
-    const useSemantic = signals?.semantic ?? true
-    const useKeyword = signals?.keyword ?? false
+    const useSemantic = switches?.semantic ?? true
+    const useKeyword = switches?.keyword ?? false
 
     for (const [, group] of documentsByModel) {
       const modelId = group.ingestModelId
@@ -43,12 +42,8 @@ export class IndexedRunner {
 
       const filter = {
         tenantId: identity?.tenantId,
-        groupId: identity?.groupId,
-        userId: identity?.userId,
-        agentId: identity?.agentId,
-        threadId: identity?.threadId,
         bucketIds: group.bucketIds,
-        accessScope: identityAccessScope(identity),
+        graphIds: documentFilter?.graphIds,
         chunkRefs: chunkRefs
           ?.filter(ref => ref.embeddingModel == null || ref.embeddingModel === modelId),
       }
@@ -60,10 +55,10 @@ export class IndexedRunner {
           filter,
           documentFilter: {
             ...documentFilter,
-            accessScope: documentFilter.accessScope ?? identityAccessScope(identity),
+            graphIds: documentFilter.graphIds,
           },
           temporalAt,
-          signals: { semantic: useSemantic, keyword: useKeyword },
+          retrieval: { semantic: useSemantic, keyword: useKeyword },
         })
 
         for (const chunk of chunks) {
@@ -87,8 +82,8 @@ export class IndexedRunner {
             name: chunk.document?.name ?? chunk.metadata.name as string | undefined,
             updatedAt: chunk.indexedAt,
             tenantId: chunk.tenantId,
+            graphId: chunk.graphId,
             documentStatus: chunk.document?.status,
-            documentAccessScope: chunk.document?.accessScope,
             userId: chunk.document?.userId,
             groupId: chunk.document?.groupId,
             agentId: chunk.document?.agentId,
@@ -102,7 +97,7 @@ export class IndexedRunner {
               count: fetchCount,
               filter,
               temporalAt,
-              signals: { semantic: useSemantic, keyword: useKeyword },
+              retrieval: { semantic: useSemantic, keyword: useKeyword },
             })
           : useSemantic
             ? await this.adapter.search(modelId, searchEmbedding, { count: fetchCount, filter, temporalAt })
@@ -129,6 +124,7 @@ export class IndexedRunner {
             name: chunk.metadata.name as string | undefined,
             updatedAt: chunk.indexedAt,
             tenantId: chunk.tenantId,
+            graphId: chunk.graphId,
           })
         }
       }
@@ -142,7 +138,7 @@ export class IndexedRunner {
             id: crypto.randomUUID(),
             eventType: 'query.bucket_result',
             identity: identity ?? {},
-            payload: { bucketId, resultCount: bucketResultCount, signals },
+            payload: { bucketId, resultCount: bucketResultCount, retrieval: switches },
             durationMs: bucketDurationMs,
             traceId,
             spanId,

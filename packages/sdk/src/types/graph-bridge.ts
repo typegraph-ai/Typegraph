@@ -1,8 +1,8 @@
-import type { AccessScope, TypeGraphContext, TypeGraphOptions, typegraphIdentity } from './identity.js'
-import type { ThreadTurnResult, MemoryHealthReport } from './memory.js'
-import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
+import type { AccessScope, TypeGraphOptions, typegraphIdentity } from './identity.js'
+import type { MemoryHealthReport } from './memory.js'
+import type { ExternalId } from '../memory/types/memory.js'
 import type { ChunkRef } from './chunk.js'
-import type { QueryEntityScope, QuerySignals } from './query.js'
+import type { QueryEntityScope, RetrievalSwitches } from './query.js'
 import type { PaginationOpts } from './pagination.js'
 import type { TelemetryOpts } from './events.js'
 import type { PredicateTemporalStatus } from '../index-engine/ontology.js'
@@ -23,12 +23,6 @@ export interface CorrectOpts extends TypeGraphOptions {
   subject?: MemorySubject | undefined
   relatedEntities?: MemorySubject[] | undefined
   graphExtraction?: boolean | undefined
-}
-
-export interface AddThreadTurnOpts extends TypeGraphOptions {
-  threadId?: string | undefined
-  subject?: MemorySubject | undefined
-  relatedEntities?: MemorySubject[] | undefined
 }
 
 export interface RecallOpts extends TypeGraphOptions {
@@ -147,49 +141,9 @@ export interface DeleteGraphEntityResult {
 }
 
 /**
- * Memory bridge — conversational memory operations (remember, recall, forget, correct).
- * Independent of the knowledge graph. Use this when you only need memory without entity graphs.
- */
-export interface MemoryBridge {
-  /** Deploy memory tables. Called by typegraph.deploy() when memory is configured. */
-  deploy?(): Promise<void>
-
-  /** Store a memory. LLM extracts triples → memory record. */
-  remember(content: string, opts?: RememberOpts | null): Promise<MemoryRecord>
-
-  /** Invalidate a memory. Caller must prove ownership via identity. */
-  forget(id: string, opts?: ForgetOpts | null): Promise<void>
-
-  /** Apply a natural language correction (e.g., "Actually, Alice works at Beta Inc now"). */
-  correct(correction: string, opts?: CorrectOpts | null): Promise<{ invalidated: number; created: number; summary: string }>
-
-  /** Ingest a conversation turn with extraction. */
-  addThreadTurn(
-    messages: Array<{ role: string; content: string; timestamp?: Date }>,
-    opts?: AddThreadTurnOpts | null,
-  ): Promise<ThreadTurnResult>
-
-  /** Recall memories by semantic similarity. Returns a formatted string when `format` is set. */
-  recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
-  recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
-
-  /** Recall memories using hybrid search (vector + BM25 keyword).
-   *  When the memory store supports it, uses RRF to fuse vector and keyword results.
-   *  Falls back to vector-only recall if not implemented. */
-  recallHybrid?(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
-  recallHybrid?(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
-
-  /** Get memory system health statistics. */
-  healthCheck?(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport>
-
-  /** Check if the memory store has any active memories. Used to skip memory runner when empty. */
-  hasMemories?(): Promise<boolean>
-}
-
-/**
- * Knowledge graph bridge — entity-relationship graph for source retrieval.
+ * Internal graph storage service — entity-relationship graph for document retrieval.
  * Stores entities and edges extracted during indexing, provides PPR-based retrieval.
- * Independent of conversational memory.
+ * Independent of explicit memory storage.
  */
 export interface KnowledgeGraphBridge {
   /** Deploy graph tables (entities, edges). Called by typegraph.deploy() when graph is configured. */
@@ -283,10 +237,10 @@ export interface KnowledgeGraphBridge {
   searchEntities?(query: string, identity: typegraphIdentity, limit?: number): Promise<EntityResult[]>
 
   /** Search persisted facts by semantic similarity. */
-  searchFacts?(query: string, opts?: FactSearchOpts | null): Promise<FactResult[]>
+  searchFacts?(query: string, opts?: InternalFactSearchOpts | null): Promise<FactResult[]>
 
   /** Explore a semantic subgraph using anchor resolution and predicate-first intent parsing. */
-  explore?(query: string, opts?: GraphExploreOpts | null): Promise<GraphExploreResult>
+  explore?(query: string, opts?: InternalGraphExploreOpts | null): Promise<GraphExploreResult>
 
   /** Resolve entity/external-ID scope to concrete graph and chunk anchors. */
   resolveEntityScope?(scope: QueryEntityScope, identity: typegraphIdentity, opts?: {
@@ -307,7 +261,7 @@ export interface KnowledgeGraphBridge {
   searchGraphChunks?(query: string, identity: typegraphIdentity, opts?: GraphSearchOpts | null): Promise<GraphSearchResult>
 
   /** Explain a heterogeneous graph query without changing retrieval behavior. */
-  explainQuery?(query: string, opts?: GraphExplainOpts | null): Promise<GraphSearchTrace>
+  explainQuery?(query: string, opts?: InternalGraphExplainOpts | null): Promise<GraphSearchTrace>
 
   /** Backfill entity-chunk graph edges and fact records from existing indexed graph data. */
   backfill?(identity: typegraphIdentity, opts?: GraphBackfillOpts | null): Promise<GraphBackfillResult>
@@ -390,9 +344,13 @@ export interface FactResult {
 
 export type FactRelevanceFilter = (query: string, facts: FactResult[]) => Promise<string[]>
 
-export interface FactSearchOpts extends typegraphIdentity {
+export interface FactSearchOpts extends TypeGraphOptions {
   limit?: number | undefined
 }
+
+export type InternalFactSearchOpts = {
+  limit?: number | undefined
+} & typegraphIdentity & TelemetryOpts
 
 export interface EntityScopeResolution {
   entityIds: string[]
@@ -402,7 +360,7 @@ export interface EntityScopeResolution {
 
 export interface KnowledgeSearchOpts {
   count?: number | undefined
-  signals?: Pick<QuerySignals, 'semantic' | 'keyword'> | undefined
+  retrieval?: Pick<RetrievalSwitches, 'semantic' | 'keyword'> | undefined
   entityScope?: QueryEntityScope | undefined
   resolvedEntityIds?: string[] | undefined
 }
@@ -428,7 +386,9 @@ export interface GraphExploreOptions {
   explain?: boolean | undefined
 }
 
-export type GraphExploreOpts = GraphExploreOptions & typegraphIdentity & TelemetryOpts
+export type GraphExploreOpts = GraphExploreOptions & TypeGraphOptions
+
+export type InternalGraphExploreOpts = GraphExploreOptions & typegraphIdentity & TelemetryOpts
 
 export type GraphIntentParserMode = 'deterministic' | 'llm' | 'none'
 
@@ -530,7 +490,9 @@ export interface FactChainResult {
   entityIds: string[]
 }
 
-export type GraphExplainOpts = GraphSearchOpts & typegraphIdentity
+export type GraphExplainOpts = GraphSearchOpts & TypeGraphOptions
+
+export type InternalGraphExplainOpts = GraphSearchOpts & typegraphIdentity & TelemetryOpts
 
 export interface GraphSearchTrace {
   intent?: GraphQueryIntent | undefined

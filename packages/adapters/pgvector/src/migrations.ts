@@ -57,6 +57,7 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
     id              TEXT PRIMARY KEY,
     bucket_id       TEXT NOT NULL,
     tenant_id       TEXT NOT NULL,
+    graph_id        TEXT NOT NULL DEFAULT 'public',
     group_id        TEXT,
     user_id         TEXT,
     agent_id        TEXT,
@@ -82,6 +83,9 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
 
   CREATE INDEX IF NOT EXISTS ${idx('bucket_tenant_idx')}
     ON ${chunksTable} (bucket_id, tenant_id);
+
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_graph_idx')}
+    ON ${chunksTable} (tenant_id, graph_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('fts_idx')}
     ON ${chunksTable} USING gin (search_vector);
@@ -171,6 +175,7 @@ export const DOCUMENTS_TABLE_SQL = (documentsTable: string) => {
     id              TEXT PRIMARY KEY,
     bucket_id       TEXT NOT NULL,
     tenant_id       TEXT NOT NULL,
+    graph_id        TEXT NOT NULL DEFAULT 'public',
     group_id        TEXT,
     user_id         TEXT,
     agent_id        TEXT,
@@ -195,6 +200,9 @@ export const DOCUMENTS_TABLE_SQL = (documentsTable: string) => {
 
   CREATE INDEX IF NOT EXISTS ${idx('bucket_idx')}
     ON ${documentsTable} (bucket_id, tenant_id);
+
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_graph_idx')}
+    ON ${documentsTable} (tenant_id, graph_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('status_idx')}
     ON ${documentsTable} (status);
@@ -241,6 +249,7 @@ export const BUCKETS_TABLE_SQL = (table: string) => {
     status      TEXT NOT NULL DEFAULT 'active'
                 CHECK (status IN ('active', 'inactive')),
     tenant_id   TEXT NOT NULL,
+    graph_id    TEXT NOT NULL DEFAULT 'public',
     group_id    TEXT,
     user_id     TEXT,
     agent_id    TEXT,
@@ -257,8 +266,32 @@ export const BUCKETS_TABLE_SQL = (table: string) => {
   CREATE INDEX IF NOT EXISTS ${idx('tenant_idx')}
     ON ${table} (tenant_id);
 
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_graph_idx')}
+    ON ${table} (tenant_id, graph_id);
+
   CREATE INDEX IF NOT EXISTS ${idx('access_scope_ids_idx')}
     ON ${table} USING gin (access_scope_ids);
+`
+}
+
+export const GRAPHS_TABLE_SQL = (table: string) => {
+  const idx = (suffix: string) => safeIdx(table, suffix)
+  return `
+  CREATE TABLE IF NOT EXISTS ${table} (
+    id          TEXT NOT NULL,
+    tenant_id   TEXT NOT NULL,
+    name        TEXT,
+    description TEXT,
+    extends     TEXT[] NOT NULL DEFAULT '{}',
+    access      JSONB,
+    metadata    JSONB NOT NULL DEFAULT '{}',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (tenant_id, id)
+  );
+
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_idx')}
+    ON ${table} (tenant_id);
 `
 }
 
@@ -268,6 +301,7 @@ export const BUSINESS_EVENTS_TABLE_SQL = (eventsTable: string) => {
   CREATE TABLE IF NOT EXISTS ${eventsTable} (
     id               TEXT NOT NULL,
     tenant_id        TEXT NOT NULL,
+    graph_id         TEXT NOT NULL DEFAULT 'public',
     group_id         TEXT,
     user_id          TEXT,
     agent_id         TEXT,
@@ -289,6 +323,9 @@ export const BUSINESS_EVENTS_TABLE_SQL = (eventsTable: string) => {
   CREATE INDEX IF NOT EXISTS ${idx('tenant_time_idx')}
     ON ${eventsTable} (tenant_id, occurred_at DESC);
 
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_graph_idx')}
+    ON ${eventsTable} (tenant_id, graph_id);
+
   CREATE INDEX IF NOT EXISTS ${idx('thread_time_idx')}
     ON ${eventsTable} (tenant_id, thread_id, occurred_at DESC);
 
@@ -306,6 +343,7 @@ export const THREADS_TABLE_SQL = (threadsTable: string) => {
   CREATE TABLE IF NOT EXISTS ${threadsTable} (
     id               TEXT NOT NULL,
     tenant_id        TEXT NOT NULL,
+    graph_id         TEXT NOT NULL DEFAULT 'public',
     group_id         TEXT,
     user_id          TEXT,
     agent_id         TEXT,
@@ -322,6 +360,9 @@ export const THREADS_TABLE_SQL = (threadsTable: string) => {
   CREATE INDEX IF NOT EXISTS ${idx('tenant_updated_idx')}
     ON ${threadsTable} (tenant_id, updated_at DESC);
 
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_graph_idx')}
+    ON ${threadsTable} (tenant_id, graph_id);
+
   CREATE INDEX IF NOT EXISTS ${idx('access_scope_ids_idx')}
     ON ${threadsTable} USING gin (access_scope_ids);
 `
@@ -333,6 +374,7 @@ export const LINKS_TABLE_SQL = (linksTable: string) => {
   CREATE TABLE IF NOT EXISTS ${linksTable} (
     id          TEXT PRIMARY KEY,
     tenant_id   TEXT NOT NULL,
+    graph_id    TEXT NOT NULL DEFAULT 'public',
     from_kind   TEXT NOT NULL,
     from_id     TEXT NOT NULL,
     to_kind     TEXT NOT NULL,

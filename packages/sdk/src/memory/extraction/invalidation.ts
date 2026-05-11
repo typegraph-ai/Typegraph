@@ -80,8 +80,7 @@ export class InvalidationEngine {
             reasoning: result.reasoning,
           })
         }
-      } catch (err) {
-        console.error('[typegraph] Contradiction check failed, skipping:', err instanceof Error ? err.message : err)
+      } catch {
         continue
       }
     }

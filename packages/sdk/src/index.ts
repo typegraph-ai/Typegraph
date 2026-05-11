@@ -1,5 +1,5 @@
 // Main public API
-export { typegraphInit, typegraphDeploy, resolveEmbedder, resolveLLMProvider, DEFAULT_BUCKET_ID } from './typegraph.js'
+export { typegraphInit, typegraphDeploy, resolveEmbedder, resolveLLMProvider, DEFAULT_BUCKET_ID, DEFAULT_GRAPH_ID } from './typegraph.js'
 export type { typegraphConfig, typegraphInstance, BucketsApi, DocumentsApi, EventsApi, ThreadsApi, JobsApi, GraphApi, RequestOptions, DocumentIngestOptions } from './typegraph.js'
 
 // Types
@@ -65,8 +65,6 @@ export type {
   SearchExplanation,
   OutputScores,
   QueryChunkResult,
-  QueryMemoryRecord,
-  QueryMemoryResult,
   QueryResults,
   PromptFormat,
   PromptSection,
@@ -75,7 +73,6 @@ export type {
   RawScores,
   NormalizedScores,
   QueryEntityScope,
-  QueryOpts,
   QueryResponse,
   IngestOptions,
   IndexProgressEvent,
@@ -85,15 +82,12 @@ export type {
   LLMProvider,
   LLMGenerateOptions,
   LLMConfig,
-  MemoryBridge,
   MemorySubject,
   RememberOpts,
   ForgetOpts,
   CorrectOpts,
   RecallOpts,
-  AddThreadTurnOpts,
   HealthCheckOpts,
-  KnowledgeGraphBridge,
   GraphEntityRef,
   UpsertGraphEntityInput,
   UpsertGraphEdgeInput,
@@ -103,8 +97,6 @@ export type {
   DeleteGraphEntityOpts,
   DeleteGraphEntityResult,
   EntityScopeResolution,
-  KnowledgeSearchOpts,
-  KnowledgeSearchResult,
   EntityResult,
   EntityDetail,
   EdgeResult,
@@ -167,7 +159,32 @@ export {
   GraphSelfEdgeError,
 } from './types/index.js'
 export type { GraphSelfEdgeErrorDetails } from './types/index.js'
-export * from './types/identity.js'
+export {
+  TenantId,
+  OrganizationId,
+  GroupId,
+  UserId,
+  AgentId,
+  ThreadId,
+  EntityId,
+  entityRef,
+} from './types/identity.js'
+export type {
+  Brand,
+  EntityRef,
+  TypeGraphContext,
+  TypeGraphOptions,
+  TypeGraphWriteOptions,
+} from './types/identity.js'
+export {
+  GraphId,
+} from './types/graph.js'
+export type {
+  GraphAccessConfig,
+  GraphAccessPrincipals,
+  GraphConfig,
+  TypeGraphGraphRecord,
+} from './types/graph.js'
 
 // Embedding
 export type { Embedder, EmbedInput } from './embedding/index.js'
@@ -222,10 +239,6 @@ export type {
   PredicateTypeValidation,
   TypeCandidate,
 } from './index-engine/index.js'
-
-// Query engine
-export { mergeAndRank, minMaxNormalize, calibrateSemantic, calibrateKeyword, normalizeGraphPPR } from './query/index.js'
-export { resolveSignals, signalLabel, computeCompositeScore, classifyQuery, type QueryClassification, type QueryType } from './query/index.js'
 
 // Utilities
 export { generateId, chunkIdFor } from './utils/id.js'
@@ -293,13 +306,4 @@ export { ForgettingEngine } from './memory/consolidation/forgetting.js'
 export type { ForgettingPolicy, ForgettingResult } from './memory/consolidation/forgetting.js'
 export { MemoryCorrector } from './memory/consolidation/correction.js'
 export type { CorrectionResult } from './memory/consolidation/correction.js'
-export { TypegraphMemory } from './memory/typegraph-memory.js'
-export type { typegraphMemoryConfig } from './memory/typegraph-memory.js'
-
 // ── Knowledge Graph ──
-export { EmbeddedGraph } from './graph/graph/embedded-graph.js'
-export type { GraphNode, GraphPath, Subgraph } from './graph/graph/embedded-graph.js'
-export { personalizedPageRank } from './graph/graph/ppr.js'
-export type { PPRConfig } from './graph/graph/ppr.js'
-export { EntityLinker } from './graph/graph/entity-linker.js'
-export type { EntityLinkerConfig, EntityLinkResult } from './graph/graph/entity-linker.js'

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createMemoryBridge } from '../memory-bridge.js'
+import { MemoryService } from '../service.js'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
 import type { ExternalId, MemoryRecord, SemanticEntity, SemanticEdge, SemanticGraphEdge } from '../types/memory.js'
 import { buildScope } from '../types/scope.js'
@@ -55,58 +55,57 @@ function mockLLM() {
   }
 }
 
-describe('createMemoryBridge', () => {
-  it('remember delegates to TypegraphMemory', async () => {
+describe('MemoryService', () => {
+  it('stores memories directly through the service', async () => {
     const store = mockStore()
-    const bridge = createMemoryBridge({
+    const runtime = new MemoryService({
       memoryStore: store,
       embedding: mockEmbedding(),
       llm: mockLLM(),
     })
 
-    const result = await bridge.remember('test memory', { ...testScope })
+    const result = await runtime.remember('test memory', { identity: testScope })
     expect(result).toBeDefined()
     expect(store.upsert).toHaveBeenCalled()
   })
 
   it('forget calls store.invalidate directly', async () => {
     const store = mockStore()
-    const bridge = createMemoryBridge({
+    const runtime = new MemoryService({
       memoryStore: store,
       embedding: mockEmbedding(),
       llm: mockLLM(),
     })
 
-    await bridge.forget('some-id', { ...testScope })
+    await runtime.forget('some-id', { identity: testScope })
     expect(store.invalidate).toHaveBeenCalledWith('some-id')
     expect(store.invalidateGraphEdgesForNode).toHaveBeenCalledWith('memory', 'some-id')
   })
 
-  it('recall delegates to TypegraphMemory', async () => {
+  it('recalls memories directly through the runtime', async () => {
     const store = mockStore()
-    const bridge = createMemoryBridge({
+    const runtime = new MemoryService({
       memoryStore: store,
       embedding: mockEmbedding(),
       llm: mockLLM(),
     })
 
-    const results = await bridge.recall('query', { ...testScope })
+    const results = await runtime.recall('query', { identity: testScope })
     expect(Array.isArray(results)).toBe(true)
     expect(store.search).toHaveBeenCalled()
   })
 
-  it('treats null memory opts as omitted', async () => {
+  it('uses explicit identity for service operations', async () => {
     const store = mockStore()
-    const bridge = createMemoryBridge({
+    const runtime = new MemoryService({
       memoryStore: store,
       embedding: mockEmbedding(),
       llm: mockLLM(),
-      scope: testScope,
     })
 
-    await bridge.remember('test memory', null)
-    const results = await bridge.recall('query', null)
-    await bridge.forget('some-id', null)
+    await runtime.remember('test memory', { identity: testScope })
+    const results = await runtime.recall('query', { identity: testScope })
+    await runtime.forget('some-id', { identity: testScope })
 
     expect(Array.isArray(results)).toBe(true)
     expect(store.upsert).toHaveBeenCalled()
@@ -153,20 +152,22 @@ describe('createMemoryBridge', () => {
       }),
     })
 
-    const bridge = createMemoryBridge({
+    const runtime = new MemoryService({
       memoryStore: store,
       embedding: mockEmbedding(),
       llm: mockLLM(),
-      scope: { tenantId: 'acme' },
     })
+    const identity = { tenantId: 'acme' }
 
-    const memory = await bridge.remember('Prefers SMS for urgent notices', {
+    const memory = await runtime.remember('Prefers SMS for urgent notices', {
+      identity,
       subject: {
         externalIds: [email],
         entityType: 'person',
       },
     })
-    const recalled = await bridge.recall('urgent notices', {
+    const recalled = await runtime.recall('urgent notices', {
+      identity,
       entityScope: { externalIds: [email] },
     })
 
@@ -185,7 +186,7 @@ describe('createMemoryBridge', () => {
       scope: expect.objectContaining({ tenantId: 'acme' }),
       accessScope: undefined,
     })])
-    expect(store.getMemoryIdsForEntities).toHaveBeenCalledWith([expect.any(String)], { tenantId: 'acme' })
+    expect(store.getMemoryIdsForEntities).toHaveBeenCalledWith([expect.any(String)], identity)
     expect(recalled).toEqual([memory])
   })
 
@@ -197,14 +198,15 @@ describe('createMemoryBridge', () => {
       getMemoryIdsForEntities: vi.fn().mockResolvedValue(['should-not-be-used']),
       search: vi.fn().mockResolvedValue([]),
     })
-    const bridge = createMemoryBridge({
+    const runtime = new MemoryService({
       memoryStore: store,
       embedding: mockEmbedding(),
       llm: mockLLM(),
-      scope: { tenantId: 'acme' },
     })
+    const identity = { tenantId: 'acme' }
 
-    const recalled = await bridge.recall('urgent notices', {
+    const recalled = await runtime.recall('urgent notices', {
+      identity,
       entityScope: { externalIds: [email] },
     })
 

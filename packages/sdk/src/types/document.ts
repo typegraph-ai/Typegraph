@@ -1,5 +1,3 @@
-import type { AccessScope } from './identity.js'
-
 export type DocumentStatus = 'pending' | 'processing' | 'complete' | 'failed'
 
 export interface DocumentInput<TMeta extends Record<string, unknown> = Record<string, unknown>> {
@@ -34,13 +32,13 @@ export interface typegraphDocument {
   userId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
+  graphId: string
   name: string
   description?: string | undefined
   url?: string | undefined
   contentHash: string
   chunkCount: number
   status: DocumentStatus
-  accessScope?: AccessScope | undefined
   indexedAt: Date
   createdAt: Date
   updatedAt: Date
@@ -63,7 +61,7 @@ export interface DocumentStorageFilter extends DocumentFilter {
   userId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
-  accessScope?: AccessScope | undefined
+  graphIds?: string[] | undefined
 }
 
 export interface UpsertDocumentInput {
@@ -74,12 +72,12 @@ export interface UpsertDocumentInput {
   userId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
+  graphId: string
   name: string
   description?: string | undefined
   url?: string | undefined
   contentHash: string
   chunkCount: number
   status: DocumentStatus
-  accessScope?: AccessScope | undefined
   metadata?: Record<string, unknown> | undefined
 }

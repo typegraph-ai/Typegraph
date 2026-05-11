@@ -1,5 +1,4 @@
 import type { DocumentInput } from './document.js'
-import type { AccessScope } from './identity.js'
 
 /**
  * Options for an ingest() call.
@@ -8,21 +7,23 @@ import type { AccessScope } from './identity.js'
  *
  * - **Bucket-mergeable** (inherit from `bucket.indexDefaults` when unset):
  *   `chunkSize`, `chunkOverlap`, `deduplicateBy`, `propagateMetadata`,
- *   `stripMarkdownForEmbedding`, `preprocessForEmbedding`, `accessScope`,
- *   `graphExtraction`.
+ *   `stripMarkdownForEmbedding`, `preprocessForEmbedding`, `graphExtraction`.
  *
  * - **Runtime-only** (never inherit from bucket defaults):
- *   `bucketId`, `mode`, `tenantId`, `groupId`, `userId`, `agentId`, `threadId`,
+ *   `bucketId`, `graphId`, `mode`, `tenantId`, `groupId`, `userId`, `agentId`, `threadId`,
  *   `removeDeleted`, `dryRun`, `concurrency`, `onProgress`, `traceId`, `spanId`.
  */
 export interface IngestOptions {
   // Targeting
   /** Target bucket. Defaults to the system default bucket. */
   bucketId?: string | undefined
+  /** Resolved write graph. Internal: bucket-routed, never supplied directly by public ingest calls. */
+  graphId?: string | undefined
   mode?: 'upsert' | 'replace' | undefined
 
   // Identity (runtime only)
   tenantId?: string | undefined
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
@@ -31,10 +32,6 @@ export interface IngestOptions {
   // Chunking (bucket-mergeable)
   chunkSize?: number | undefined
   chunkOverlap?: number | undefined
-
-  // Document properties (bucket-mergeable)
-  /** Access principals allowed to retrieve documents from this ingest call. */
-  accessScope?: AccessScope | undefined
 
   // Processing (bucket-mergeable)
   deduplicateBy?: string[] | ((document: DocumentInput) => string) | undefined

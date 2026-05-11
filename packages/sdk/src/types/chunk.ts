@@ -1,5 +1,3 @@
-import type { AccessScope } from './identity.js'
-
 export interface EmbeddedChunk {
   id: string
   idempotencyKey: string
@@ -9,6 +7,7 @@ export interface EmbeddedChunk {
   userId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
+  graphId: string
   /** ID referencing typegraph_documents.id. */
   documentId: string
 
@@ -17,12 +16,6 @@ export interface EmbeddedChunk {
   embeddingModel: string
   chunkIndex: number
   totalChunks: number
-
-  /**
-   * Denormalized from the parent document. Chunks are the query target, so the
-   * access gate has to live here or unrestricted queries leak restricted rows.
-   */
-  accessScope?: AccessScope | undefined
 
   metadata: Record<string, unknown>
   indexedAt: Date
@@ -47,10 +40,10 @@ export interface ChunkFilter {
   userId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
+  graphIds?: string[] | undefined
   documentId?: string | undefined
   idempotencyKey?: string | undefined
   metadata?: Record<string, unknown> | undefined
-  accessScope?: AccessScope | undefined
 }
 
 export interface ScoredChunk extends EmbeddedChunk {

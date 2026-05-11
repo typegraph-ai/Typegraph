@@ -4,6 +4,7 @@ import type { EventStorageFilter, typegraphEventRecord, UpsertEventInput } from 
 import type { ThreadStorageFilter, typegraphThread, UpsertThreadInput } from './thread.js'
 import type { UpsertLinkInput } from './link.js'
 import type { Bucket, BucketStorageFilter } from './bucket.js'
+import type { TypeGraphGraphRecord } from './graph.js'
 import type { PaginationOpts, PaginatedResult } from './pagination.js'
 import type { Job, JobFilter, UpsertJobInput, JobStatusPatch } from './job.js'
 import type { MemoryStoreAdapter } from '../memory/types/adapter.js'
@@ -13,8 +14,8 @@ export interface SearchOpts {
   filter?: ChunkFilter | undefined
   approximate?: boolean | undefined
   iterativeScan?: boolean | undefined
-  /** Internal indexed-search signal selection. Defaults to semantic-only for search(), semantic+keyword for hybridSearch(). */
-  signals?: { semantic?: boolean | undefined; keyword?: boolean | undefined } | undefined
+  /** Internal indexed retrieval selection. Defaults to semantic-only for search(), semantic+keyword for hybridSearch(). */
+  retrieval?: { semantic?: boolean | undefined; keyword?: boolean | undefined } | undefined
   /** Only return chunks indexed before this date. Used for point-in-time queries. */
   temporalAt?: Date | undefined
 }
@@ -91,7 +92,7 @@ export interface VectorStoreAdapter {
   /** Update a document's status and optionally its chunk count. */
   updateDocumentStatus?(id: string, status: DocumentStatus, chunkCount?: number): Promise<void>
   /** Update document metadata fields. Returns updated document. */
-  updateDocument?(id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'accessScope' | 'metadata'>>): Promise<typegraphDocument>
+  updateDocument?(id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'metadata'>>): Promise<typegraphDocument>
 
   upsertEvent?(input: UpsertEventInput): Promise<typegraphEventRecord>
   getEvent?(tenantId: string, id: string): Promise<typegraphEventRecord | null>
@@ -100,6 +101,10 @@ export interface VectorStoreAdapter {
   getThread?(tenantId: string, id: string): Promise<typegraphThread | null>
   listThreads?(filter?: ThreadStorageFilter | null): Promise<typegraphThread[]>
   upsertLink?(input: UpsertLinkInput): Promise<void>
+  upsertGraphRecord?(input: TypeGraphGraphRecord): Promise<TypeGraphGraphRecord>
+  getGraphRecord?(tenantId: string, id: string): Promise<TypeGraphGraphRecord | null>
+  listGraphRecords?(tenantId: string): Promise<TypeGraphGraphRecord[]>
+  deleteGraphRecord?(tenantId: string, id: string): Promise<void>
 
   // --- Job record methods (optional - adapters that persist job state implement these) ---
 

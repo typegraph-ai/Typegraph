@@ -192,8 +192,7 @@ Respond with only valid JSON: [{"content": "...", "subject": "...", "predicate":
           const updated: EpisodicMemory = { ...ep, status: 'consolidated', consolidatedAt: new Date() }
           await this.store.upsert(updated)
         }
-      } catch (err) {
-        console.error('[typegraph] Episodic consolidation batch failed:', err instanceof Error ? err.message : err)
+      } catch {
         continue
       }
     }
@@ -271,8 +270,7 @@ Respond with only valid JSON: [{"trigger": "...", "steps": ["..."], "confidence"
       }
 
       return { proceduresCreated: created }
-    } catch (err) {
-      console.error('[typegraph] Procedural promotion failed:', err instanceof Error ? err.message : err)
+    } catch {
       return { proceduresCreated: 0 }
     }
   }

@@ -41,39 +41,70 @@ import {
 
 const tg = await typegraphInit({
   apiKey: process.env.TYPEGRAPH_API_KEY!,
-  tenantId: TenantId('tenant_acme'),
 })
 ```
 
-Per-call identity and permissions live under one key: `context`.
+Graphs are the logical knowledge boundaries inside a tenant. The default bucket
+is `public`, the default graph is `public`, and the `public` bucket writes to
+the `public` graph. Buckets own write routing; ingest calls choose a bucket, not
+an ad hoc graph.
+
+```ts
+const tg = await typegraphInit({
+  apiKey: process.env.TYPEGRAPH_API_KEY!,
+  tenantId: TenantId('tenant_acme'),
+  graphs: {
+    public: { access: 'public' },
+    internal: {
+      extends: ['public'],
+      access: {
+        read: { groups: [GroupId('employees')] },
+        write: { groups: [GroupId('employees')] },
+      },
+    },
+  },
+  buckets: {
+    public: { graph: 'public' },
+    gong: { name: 'Gong Calls', graph: 'internal', graphExtraction: true },
+  },
+})
+```
+
+Per-call actor identity lives under one key: `context`.
 
 ```ts
 const context = {
   userId: UserId('dana'),
   groupId: GroupId('success'),
   agentId: AgentId('successbot'),
-  principals: [entityRef('group', 'product')],
-  access: [entityRef('group', 'success'), entityRef('group', 'product')],
 }
 ```
 
-`context.access` is write visibility. It controls who may retrieve the records
-created by the operation. It does not create graph relationships and does not
-limit graph extraction. Graph relationships come from event participants,
-document content, extracted entities, explicit facts, and links.
-
-If `context.access` is omitted or empty, the record is visible tenant-wide. Event
+Graph access belongs on graph config, not on individual records. Event
 participants are provenance and business graph context only; they never grant
 read access automatically.
 
 ## Cloud Quick Start
 
 ```ts
-import { GroupId, UserId, entityRef, typegraphInit } from '@typegraph-ai/sdk'
+import { GroupId, UserId, typegraphInit } from '@typegraph-ai/sdk'
 
 const tg = await typegraphInit({
   apiKey: process.env.TYPEGRAPH_API_KEY!,
-  tenantId: 'tenant_acme',
+  graphs: {
+    public: { access: 'public' },
+    internal: {
+      extends: ['public'],
+      access: {
+        read: { groups: [GroupId('it')] },
+        write: { groups: [GroupId('it')] },
+      },
+    },
+  },
+  buckets: {
+    public: { graph: 'public' },
+    it: { name: 'IT Knowledge', graph: 'internal', graphExtraction: true },
+  },
 })
 
 await tg.document.ingest(
@@ -88,16 +119,16 @@ await tg.document.ingest(
     context: {
       userId: UserId('dana'),
       groupId: GroupId('it'),
-      access: [entityRef('group', 'it')],
     },
-    graphExtraction: true,
+    bucketId: 'it',
   },
 )
 
 const response = await tg.search('How do employees configure SSO?', {
+  graph: 'internal',
   context: {
     userId: UserId('dana'),
-    principals: [entityRef('group', 'it')],
+    groupId: GroupId('it'),
   },
   resources: ['documents', 'facts', 'entities'],
   weights: { semantic: 1, bm25: 0.7, graph: 0.5, recency: 0.3 },
@@ -173,9 +204,7 @@ await tg.document.ingest(
     bucketId: 'support',
     context: {
       userId: UserId('dana'),
-      access: [entityRef('group', 'support')],
     },
-    graphExtraction: true,
   },
 )
 ```
@@ -226,21 +255,19 @@ await tg.event.ingest(
     bucketId: 'gong',
     context: {
       userId: UserId('dana'),
-      access: [entityRef('group', 'success'), entityRef('group', 'product')],
+      groupId: GroupId('success'),
     },
-    graphExtraction: true,
   },
 )
 ```
 
 In this example, `organization:org_acme`, `product_area:auth`, and
-`issue:sso_redirect_loop` are graph/business participants. The product and
-success groups are the read permissions. Product can later ask cross-customer
-questions because the customer is modeled as an entity inside the same tenant,
-not as a separate tenant boundary.
+`issue:sso_redirect_loop` are graph/business participants. The `gong` bucket
+routes the write into the graph configured for that bucket. Product can ask
+cross-customer questions when it searches the graph that contains those records.
 
 `event.ingest()` accepts one event or an array. Attached documents inherit the
-same `context.access` as the event.
+selected bucket and therefore the selected bucket's graph.
 
 ## Threads
 
@@ -254,7 +281,7 @@ await tg.thread.upsert(
     description: 'Working thread for Acme renewal risk and next steps.',
     metadata: { crmAccountId: '001-acme' },
   },
-  { context: { access: [entityRef('group', 'success')] } },
+  { bucketId: 'gong', context: { groupId: GroupId('success') } },
 )
 
 await tg.thread.addTurn(
@@ -269,9 +296,9 @@ await tg.thread.addTurn(
     context: {
       userId: UserId('dana'),
       threadId: 'thread_123',
-      access: [entityRef('group', 'success'), entityRef('group', 'product')],
+      groupId: GroupId('success'),
     },
-    graphExtraction: true,
+    bucketId: 'gong',
   },
 )
 ```
@@ -286,9 +313,10 @@ assembly.
 
 ```ts
 const response = await tg.search('Which customers are blocked by SSO issues?', {
+  graph: 'internal',
   context: {
     userId: UserId('dana'),
-    principals: [entityRef('group', 'product')],
+    groupId: GroupId('product'),
   },
   buckets: ['gong', 'zendesk', 'salesforce'],
   resources: ['events', 'documents', 'facts', 'entities'],
@@ -312,7 +340,6 @@ const response = await tg.search('Which customers are blocked by SSO issues?', {
 response.results.chunks
 response.results.facts
 response.results.entities
-response.results.memories
 response.prompt
 response.promptStats
 response.explanation
@@ -327,7 +354,6 @@ type SearchResource =
   | 'threads'
   | 'entities'
   | 'facts'
-  | 'memories'
 ```
 
 Search weights:
@@ -386,7 +412,6 @@ interface Embedder {
 
 ```ts
 await typegraphInit({
-  tenantId: 'tenant_acme',
   vectorStore,
   embedding: documentEmbedder,
   searchEmbedding,
@@ -405,7 +430,6 @@ extractor wins. Single-pass, two-pass, and prompt staging are not public API.
 
 ```ts
 await typegraphInit({
-  tenantId: 'tenant_acme',
   vectorStore,
   embedding,
   llm: { model: gateway.languageModel('openai/gpt-4.1-mini') },
@@ -447,18 +471,16 @@ the same config-driven model.
 Memory operations share the same `context` and optional `graphExtraction` shape:
 
 ```ts
-await tg.remember('Dana prefers concise renewal risk summaries.', {
+await tg.memory.remember('Dana prefers concise renewal risk summaries.', {
   context: {
     userId: UserId('dana'),
-    access: [entityRef('user', 'dana')],
   },
   graphExtraction: true,
 })
 
-await tg.correct('Dana no longer owns Acme renewals; Taylor does.', {
+await tg.memory.correct('Dana no longer owns Acme renewals; Taylor does.', {
   context: {
     userId: UserId('taylor'),
-    access: [entityRef('group', 'success')],
   },
   graphExtraction: true,
 })

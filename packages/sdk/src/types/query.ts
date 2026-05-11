@@ -1,13 +1,12 @@
 import type { EntityResult, FactResult, GraphSearchOpts, GraphSearchTrace } from './graph-bridge.js'
-import type { MemoryRecord } from '../memory/types/memory.js'
 import type { ExternalId } from '../memory/types/memory.js'
-import type { AccessScope, TypeGraphContext } from './identity.js'
+import type { TypeGraphContext } from './identity.js'
 import type { DocumentFilter } from './document.js'
 
 export type QueryGraphOptions = GraphSearchOpts
 
 export type PromptFormat = 'xml' | 'markdown' | 'plain'
-export type PromptSection = 'facts' | 'entities' | 'chunks' | 'memories'
+export type PromptSection = 'facts' | 'entities' | 'chunks'
 
 export interface PromptBuilderOptions {
   format?: PromptFormat | undefined
@@ -17,7 +16,6 @@ export interface PromptBuilderOptions {
   maxChunkTokens?: number | undefined
   maxFactTokens?: number | undefined
   maxEntityTokens?: number | undefined
-  maxMemoryTokens?: number | undefined
 }
 
 export interface PromptStats {
@@ -38,7 +36,6 @@ export type SearchResource =
   | 'threads'
   | 'entities'
   | 'facts'
-  | 'memories'
 
 export type SearchWeights = {
   semantic?: number | false | undefined
@@ -60,6 +57,9 @@ export type SearchRerankOptions =
     }
 
 export interface SearchExplanation {
+  requestedGraph: string
+  graphClosure: string[]
+  deniedGraphs?: string[] | undefined
   activeResources: SearchResource[]
   activeWeights: Required<Record<keyof SearchWeights, number | false>>
   fusion: Required<SearchFusion>
@@ -71,15 +71,13 @@ export interface SearchExplanation {
 }
 
 /** Internal retrieval switches derived from public resources/weights. */
-export interface QuerySignals {
+export interface RetrievalSwitches {
   /** Semantic embedding search against chunk embeddings. Default: true */
   semantic?: boolean | undefined
   /** BM25 keyword search (requires adapter.hybridSearch). */
   keyword?: boolean | undefined
-  /** PPR graph traversal via entity embeddings. Requires graph bridge. */
+  /** PPR graph traversal via entity embeddings. Requires graph storage. */
   graph?: boolean | undefined
-  /** Cognitive memory recall. Requires memory bridge. */
-  memory?: boolean | undefined
   /** Recency score. */
   recency?: boolean | undefined
 }
@@ -92,10 +90,6 @@ export interface RawScores {
   ppr?: number | undefined
   importance?: number | undefined
   recency?: number | undefined
-  /** Memory sub-signals — exposed for observability when memory signal is active */
-  memorySimilarity?: number | undefined
-  memoryImportance?: number | undefined
-  memoryRecency?: number | undefined
 }
 
 /** Normalized capability-level scores — all 0-1, cross-query comparable */
@@ -104,7 +98,6 @@ export interface NormalizedScores {
   keyword?: number | undefined
   rrf?: number | undefined
   graph?: number | undefined
-  memory?: number | undefined
   recency?: number | undefined
 }
 
@@ -129,22 +122,17 @@ export interface QueryChunkResult {
     output: OutputScores
   }
   /** Which retrieval systems contributed to this result (e.g. ["semantic"], ["semantic", "graph"]) */
-  sources: string[]
+  matchedBy: string[]
 
   document: {
     id: string
     bucketId: string
+    graph: string
     name: string
     description?: string | undefined
     url?: string | undefined
     updatedAt: Date
     status?: string | undefined
-    accessScope?: AccessScope | undefined
-    tenantId?: string | undefined
-    groupId?: string | undefined
-    userId?: string | undefined
-    agentId?: string | undefined
-    threadId?: string | undefined
   }
 
   chunk: {
@@ -153,25 +141,12 @@ export interface QueryChunkResult {
   }
 
   metadata: Record<string, unknown>
-  tenantId?: string | undefined
-}
-
-export type QueryMemoryRecord = Omit<MemoryRecord, 'embedding'>
-
-export type QueryMemoryResult = QueryMemoryRecord & {
-  score: number
-  scores: {
-    raw: RawScores
-    normalized: NormalizedScores
-    output: OutputScores
-  }
 }
 
 export interface QueryResults {
   chunks: QueryChunkResult[]
   facts: FactResult[]
   entities: EntityResult[]
-  memories: QueryMemoryResult[]
   graphTrace?: GraphSearchTrace | undefined
 }
 
@@ -181,7 +156,10 @@ export interface QueryEntityScope {
   mode?: 'filter' | 'boost' | undefined
 }
 
-export interface QueryOpts {
+export interface SearchOptions {
+  graph?: string | undefined
+  /** Internal resolved graph closure. Public callers should pass `graph`, not this field. */
+  graphIds?: string[] | undefined
   context?: TypeGraphContext | undefined
   resources?: SearchResource[] | undefined
   weights?: SearchWeights | undefined
@@ -211,16 +189,14 @@ export interface QueryOpts {
   graphReinforcement?: 'only' | 'prefer' | 'off' | undefined
 
   /** Heterogeneous graph traversal options. */
-  graph?: GraphSearchOpts | undefined
+  graphOptions?: GraphSearchOpts | undefined
 
-  /** Timeouts per retrieval signal (milliseconds). */
+  /** Timeouts per retrieval path (milliseconds). */
   timeouts?: {
     /** Timeout for semantic/keyword indexed search. Default: 30000. */
     indexed?: number | undefined
     /** Timeout for graph PPR traversal. Default: 30000. */
     graph?: number | undefined
-    /** Timeout for memory recall. Default: 10000. */
-    memory?: number | undefined
   } | undefined
 
   /** How to handle errors from individual buckets.
@@ -232,7 +208,7 @@ export interface QueryOpts {
   /** Point-in-time query: only return results indexed before this timestamp. */
   asOf?: Date | 'now' | undefined
   validBetween?: [Date, Date] | undefined
-  /** Include invalidated/expired results (memories, graph edges). Default: false. */
+  /** Include invalidated/expired graph edges. Default: false. */
   includeInvalidated?: boolean | undefined
 
   /** Build an LLM-ready prompt string from query results. When set, response includes `prompt`. */
@@ -243,7 +219,7 @@ export interface QueryOpts {
 export interface QueryResponse {
   results: QueryResults
   buckets: Record<string, {
-    mode: 'indexed' | 'memory' | 'graph'
+    mode: 'indexed' | 'graph'
     resultCount: number
     durationMs: number
     status: 'ok' | 'timeout' | 'error'
@@ -251,7 +227,6 @@ export interface QueryResponse {
   }>
   query: {
     text: string
-    tenantId?: string | undefined
     durationMs: number
     mergeStrategy: string
   }
@@ -261,5 +236,3 @@ export interface QueryResponse {
   explanation?: SearchExplanation | undefined
   warnings?: string[] | undefined
 }
-
-export type SearchOptions = QueryOpts

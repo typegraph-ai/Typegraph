@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { typegraphInit } from '../typegraph.js'
+import { GroupId } from '../types/identity.js'
 import { createMockAdapter } from './helpers/mock-adapter.js'
 import { createMockEmbedding } from './helpers/mock-embedding.js'
 import { createMockBucket } from './helpers/mock-document.js'
@@ -120,8 +121,8 @@ describe('integration', () => {
     const responseA = await instanceA.search('Documents')
     const responseB = await instanceB.search('Documents')
 
-    expect(responseA.query.tenantId).toBe('tenant-a')
-    expect(responseB.query.tenantId).toBe('tenant-b')
+    expect('tenantId' in responseA.query).toBe(false)
+    expect('tenantId' in responseB.query).toBe(false)
   })
 
   it('ingestPreChunked → query', async () => {
@@ -161,52 +162,96 @@ describe('integration', () => {
     expect(plainResponse.prompt).not.toContain('<')
   })
 
-  describe('access scope isolation', () => {
+  describe('graph overlay isolation', () => {
     const tenantId = 'tenant-x'
 
-    it.each([
-      ['user',   { userId: 'u1' },   { userId: 'u2' },   { type: 'user', id: 'u1' }],
-      ['agent',  { agentId: 'a1' },  { agentId: 'a2' },  { type: 'agent', id: 'a1' }],
-      ['thread', { threadId: 't1' }, { threadId: 't2' }, { type: 'thread', id: 't1' }],
-      ['group',  { groupId: 'g1' },  { groupId: 'g2' },  { type: 'group', id: 'g1' }],
-    ] as const)('accessScope=%s ignores unscoped + wrong-identity queries, returns only matching', async (_kind, match, wrong, accessRef) => {
+    it('public graph cannot read child graph data, while child graph reads its ancestors', async () => {
       const adapter = createMockAdapter()
       const embedding = createMockEmbedding()
-      const instance = await typegraphInit({ vectorStore: adapter, embedding, tenantId })
-
-      const documents = createTestDocuments(1, 'PrivateDoc')
-      const { bucket, ingestOptions } = createMockBucket({ documents: documents })
-      registerTestBucket(instance, bucket, embedding)
-
-      await instance.document.ingest(documents, {
-        ...ingestOptions,
-        bucketId: bucket.id,
-        context: { ...match, access: [accessRef] },
+      const instance = await typegraphInit({
+        vectorStore: adapter,
+        embedding,
+        tenantId,
+        graphs: {
+          public: { access: 'public' },
+          internal: {
+            extends: ['public'],
+            access: {
+              read: { groups: [GroupId('employees')] },
+              write: { groups: [GroupId('employees')] },
+            },
+          },
+        },
       })
 
-      const unscoped = await instance.search('PrivateDoc')
-      expect(unscoped.results.chunks).toHaveLength(0)
+      const publicDocs = [createTestDocument({ id: 'public-doc', content: 'PublicDoc content for everyone', name: 'PublicDoc' })]
+      const internalDocs = [createTestDocument({ id: 'internal-doc', content: 'InternalDoc content for employees', name: 'InternalDoc' })]
+      const { bucket: publicBucket, ingestOptions: publicIngestOptions } = createMockBucket({ id: 'public', documents: publicDocs })
+      const { bucket: internalBucket, ingestOptions: internalIngestOptions } = createMockBucket({ id: 'gong', documents: internalDocs })
+      registerTestBucket(instance, { ...publicBucket, graph: 'public' }, embedding)
+      registerTestBucket(instance, { ...internalBucket, graph: 'internal' }, embedding)
 
-      const wrongIdentity = await instance.search('PrivateDoc', { context: wrong })
-      expect(wrongIdentity.results.chunks).toHaveLength(0)
+      await instance.document.ingest(publicDocs, { ...publicIngestOptions, bucketId: publicBucket.id })
+      await instance.document.ingest(internalDocs, {
+        ...internalIngestOptions,
+        bucketId: internalBucket.id,
+        context: { groupId: 'employees' },
+      })
 
-      const matchingIdentity = await instance.search('PrivateDoc', { context: match })
-      expect(matchingIdentity.results.chunks.length).toBeGreaterThan(0)
+      const publicPerspective = await instance.search('PublicDoc', {
+        weights: { semantic: false, bm25: 1, graph: false, recency: false },
+      })
+      expect(publicPerspective.results.chunks.map(chunk => chunk.content).join('\n')).toContain('PublicDoc')
+      expect(publicPerspective.results.chunks.map(chunk => chunk.content).join('\n')).not.toContain('InternalDoc')
+
+      await expect(instance.search('InternalDoc', {
+        graph: 'internal',
+        context: { groupId: 'contractors' },
+      })).rejects.toThrow('Context is not allowed to read graph(s): internal')
+
+      const internalPublicPerspective = await instance.search('PublicDoc', {
+        graph: 'internal',
+        context: { groupId: 'employees' },
+        weights: { semantic: false, bm25: 1, graph: false, recency: false },
+      })
+      expect(internalPublicPerspective.results.chunks.map(chunk => chunk.content).join('\n')).toContain('PublicDoc')
+
+      const internalPrivatePerspective = await instance.search('InternalDoc', {
+        graph: 'internal',
+        context: { groupId: 'employees' },
+        weights: { semantic: false, bm25: 1, graph: false, recency: false },
+      })
+      expect(internalPrivatePerspective.results.chunks.map(chunk => chunk.content).join('\n')).toContain('InternalDoc')
     })
 
-    it('empty accessScope returns rows for tenant-scoped queries', async () => {
+    it('bucket graph routes writes and rejects per-ingest graph overrides', async () => {
       const adapter = createMockAdapter()
       const embedding = createMockEmbedding()
-      const instance = await typegraphInit({ vectorStore: adapter, embedding, tenantId })
+      const instance = await typegraphInit({
+        vectorStore: adapter,
+        embedding,
+        tenantId,
+        graphs: {
+          public: { access: 'public' },
+          internal: { extends: ['public'], access: 'public' },
+        },
+      })
 
-      const documents = createTestDocuments(1, 'PublicDoc')
-      const { bucket, ingestOptions } = createMockBucket({ documents: documents })
-      registerTestBucket(instance, bucket, embedding)
+      const documents = createTestDocuments(1, 'RoutedDoc')
+      const { bucket, ingestOptions } = createMockBucket({ id: 'gong', documents: documents })
+      registerTestBucket(instance, { ...bucket, graph: 'internal' }, embedding)
 
       await instance.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
 
-      const tenantScoped = await instance.search('PublicDoc')
-      expect(tenantScoped.results.chunks.length).toBeGreaterThan(0)
+      const storedDocument = [...adapter._documents.values()][0]!
+      expect(storedDocument.graphId).toBe('internal')
+      expect([...adapter._chunks.values()][0]![0]!.graphId).toBe('internal')
+
+      await expect(instance.document.ingest(documents, {
+        ...ingestOptions,
+        bucketId: bucket.id,
+        graph: 'public',
+      } as never)).rejects.toThrow('document.ingest does not accept graph')
     })
 
     it('tenant_id remains the hard namespace boundary', async () => {
@@ -232,32 +277,20 @@ describe('integration', () => {
       expect(matchingTenant.results.chunks.length).toBeGreaterThan(0)
     })
 
-    it('updating document accessScope cascades to indexed chunks', async () => {
+    it('default bucket and graph are public', async () => {
       const adapter = createMockAdapter()
       const embedding = createMockEmbedding()
       const instance = await typegraphInit({ vectorStore: adapter, embedding, tenantId })
 
-      const documents = createTestDocuments(1, 'MigratingDoc')
-      const { bucket, ingestOptions } = createMockBucket({ documents: documents })
-      registerTestBucket(instance, bucket, embedding)
+      const documents = createTestDocuments(1, 'DefaultPublicDoc')
+      const { ingestOptions } = createMockBucket({ documents: documents })
 
-      await instance.document.ingest(documents, {
-        ...ingestOptions,
-        bucketId: bucket.id,
-        context: { userId: 'u1' },
-      })
+      await instance.document.ingest(documents, ingestOptions)
 
-      const before = await instance.search('MigratingDoc')
-      expect(before.results.chunks.length).toBeGreaterThan(0)
-
-      const documentId = [...adapter._documents.values()][0]!.id
-      await instance.document.update(documentId, {}, { context: { access: [{ type: 'user', id: 'u1' }] } })
-
-      const afterUnscoped = await instance.search('MigratingDoc')
-      expect(afterUnscoped.results.chunks).toHaveLength(0)
-
-      const afterScoped = await instance.search('MigratingDoc', { context: { userId: 'u1' } })
-      expect(afterScoped.results.chunks.length).toBeGreaterThan(0)
+      const storedDocument = [...adapter._documents.values()][0]!
+      expect(storedDocument.bucketId).toBe('public')
+      expect(storedDocument.graphId).toBe('public')
+      expect([...adapter._chunks.values()][0]![0]!.graphId).toBe('public')
     })
   })
 

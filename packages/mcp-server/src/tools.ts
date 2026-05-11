@@ -1,8 +1,8 @@
-import type { TypegraphMemory, typegraphEventSink } from '@typegraph-ai/sdk'
+import type { TypeGraphContext, typegraphEventSink, typegraphInstance } from '@typegraph-ai/sdk'
 
 // ── MCP Tool Definitions ──
 // These define the tools that the MCP server exposes to AI agents.
-// Each tool maps to a TypegraphMemory method.
+// Each tool maps to the TypeGraph memory namespace.
 
 export interface MCPToolDefinition {
   name: string
@@ -72,26 +72,19 @@ export function getToolDefinitions(): MCPToolDefinition[] {
       },
     },
     {
-      name: 'typegraph_add_thread_turn',
-      description: 'Ingest thread messages into memory. Extracts episodic and semantic memories.',
+      name: 'typegraph_thread_add_turn',
+      description: 'Add a turn to a TypeGraph thread. The turn is stored as a linked event.',
       inputSchema: {
         type: 'object',
         properties: {
-          messages: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                role: { type: 'string', enum: ['user', 'assistant', 'system', 'tool'] },
-                content: { type: 'string' },
-              },
-              required: ['role', 'content'],
-            },
-            description: 'Thread messages to ingest',
-          },
-          threadId: { type: 'string', description: 'Optional thread identifier' },
+          threadId: { type: 'string', description: 'Thread identifier' },
+          role: { type: 'string', enum: ['user', 'assistant', 'system', 'tool'] },
+          content: { type: 'string' },
+          timestamp: { type: 'string', description: 'Optional ISO timestamp' },
+          metadata: { type: 'object', additionalProperties: true },
+          graphExtraction: { type: 'boolean', description: 'Run configured graph extraction for this turn' },
         },
-        required: ['messages'],
+        required: ['threadId', 'role', 'content'],
       },
     },
     {
@@ -106,15 +99,33 @@ export function getToolDefinitions(): MCPToolDefinition[] {
 }
 
 /**
- * Execute an MCP tool call against a TypegraphMemory instance.
+ * Execute an MCP tool call against a TypeGraph instance.
  */
+export interface MCPExecuteOptions {
+  eventSink?: typegraphEventSink | undefined
+  identity?: {
+    tenantId?: string | undefined
+    groupId?: string | undefined
+    userId?: string | undefined
+    agentId?: string | undefined
+    threadId?: string | undefined
+  } | undefined
+  context?: TypeGraphContext | undefined
+}
+
+type MCPTypegraphTarget = Pick<
+  typegraphInstance,
+  'memory' | 'thread'
+>
+
 export async function executeTool(
-  memory: TypegraphMemory,
+  typegraph: MCPTypegraphTarget,
   toolName: string,
   args: Record<string, unknown>,
-  eventSink?: typegraphEventSink,
+  opts: MCPExecuteOptions = {},
 ): Promise<unknown> {
-  const identity = memory.identity
+  const { eventSink, identity, context } = opts
+  const scoped = context ? { context } : undefined
 
   if (eventSink && identity) {
     eventSink.emit({
@@ -132,44 +143,55 @@ export async function executeTool(
     let result: unknown
     switch (toolName) {
       case 'typegraph_remember':
-        result = await memory.remember(
+        result = await typegraph.memory.remember(
           args['content'] as string,
-          { category: (args['category'] as 'episodic' | 'semantic' | 'procedural') ?? 'semantic' },
+          { ...scoped, category: (args['category'] as 'episodic' | 'semantic' | 'procedural') ?? 'semantic' },
         )
         break
 
       case 'typegraph_recall':
-        result = await memory.recall(args['query'] as string, {
+        result = await typegraph.memory.recall(args['query'] as string, {
+          ...scoped,
           types: args['types'] as ('episodic' | 'semantic' | 'procedural')[] | undefined,
           limit: args['limit'] as number | undefined,
         })
         break
 
       case 'typegraph_recall_facts':
-        result = await memory.recallFacts(
-          args['query'] as string,
-          (args['limit'] as number) ?? 10,
-        )
+        result = await typegraph.memory.recall(args['query'] as string, {
+          ...scoped,
+          types: ['semantic'],
+          limit: (args['limit'] as number) ?? 10,
+        })
         break
 
       case 'typegraph_forget':
-        await memory.forget(args['id'] as string)
+        await typegraph.memory.forget(args['id'] as string, scoped)
         result = { success: true }
         break
 
       case 'typegraph_correct':
-        result = await memory.correct(args['correction'] as string)
+        result = await typegraph.memory.correct(args['correction'] as string, scoped)
         break
 
-      case 'typegraph_add_thread_turn':
-        result = await memory.addThreadTurn(
-          args['messages'] as { role: 'user' | 'assistant' | 'system' | 'tool'; content: string }[],
-          { threadId: args['threadId'] as string | undefined },
+      case 'typegraph_thread_add_turn':
+        result = await typegraph.thread.addTurn(
+          args['threadId'] as string,
+          {
+            role: args['role'] as string,
+            content: args['content'] as string,
+            ...(args['timestamp'] ? { timestamp: new Date(args['timestamp'] as string) } : {}),
+            ...(args['metadata'] ? { metadata: args['metadata'] as Record<string, unknown> } : {}),
+          },
+          {
+            ...scoped,
+            ...(args['graphExtraction'] !== undefined ? { graphExtraction: Boolean(args['graphExtraction']) } : {}),
+          },
         )
         break
 
       case 'typegraph_health_check':
-        result = await memory.healthCheck()
+        result = await typegraph.memory.healthCheck(scoped)
         break
 
       default:

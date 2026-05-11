@@ -9,13 +9,13 @@ export interface QueryClassification {
   confidence: number
 }
 
-/** Weight profiles per query type: { semantic, keyword, graph, memory } */
+/** Weight profiles per query type: { semantic, keyword, graph } */
 const WEIGHT_PROFILES: Record<QueryType, Record<string, number>> = {
-  'factual-lookup':  { semantic: 0.40, keyword: 0.25, graph: 0.05, memory: 0.30 },
-  'entity-centric':  { semantic: 0.30, keyword: 0.10, graph: 0.45, memory: 0.15 },
-  'relational':      { semantic: 0.20, keyword: 0.05, graph: 0.65, memory: 0.10 },
-  'temporal':        { semantic: 0.30, keyword: 0.10, graph: 0.15, memory: 0.45 },
-  'exploratory':     { semantic: 0.45, keyword: 0.05, graph: 0.25, memory: 0.25 },
+  'factual-lookup':  { semantic: 0.60, keyword: 0.35, graph: 0.05 },
+  'entity-centric':  { semantic: 0.40, keyword: 0.15, graph: 0.45 },
+  'relational':      { semantic: 0.25, keyword: 0.10, graph: 0.65 },
+  'temporal':        { semantic: 0.55, keyword: 0.20, graph: 0.25 },
+  'exploratory':     { semantic: 0.60, keyword: 0.10, graph: 0.30 },
 }
 
 // ── Pattern sets ──

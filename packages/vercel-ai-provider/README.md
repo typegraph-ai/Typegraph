@@ -16,12 +16,11 @@ the model to provide tenant, user, group, agent, or thread IDs.
 ```ts
 import { generateText, stepCountIs } from 'ai'
 import { openai } from '@ai-sdk/openai'
-import { ThreadId, UserId, typegraphInit } from '@typegraph-ai/sdk'
+import { AgentId, ThreadId, UserId, typegraphInit } from '@typegraph-ai/sdk'
 import { typegraphTools } from '@typegraph-ai/vercel-ai-provider'
 
 const tg = await typegraphInit({
   apiKey: process.env.TYPEGRAPH_API_KEY!,
-  tenantId: 'tenant_acme',
 })
 
 export async function answerQuestion(req: Request) {
@@ -31,7 +30,7 @@ export async function answerQuestion(req: Request) {
     context: {
       userId: UserId(userId),
       threadId: ThreadId(threadId),
-      agentId: 'support-agent',
+      agentId: AgentId('support-agent'),
     },
   })
 
@@ -52,7 +51,7 @@ export async function answerQuestion(req: Request) {
 | `typegraph_buckets_get` | Fetch one bucket by ID and verify context |
 | `typegraph_buckets_create` | Create a bucket in the configured context |
 | `typegraph_document_ingest` | Ingest one or more documents |
-| `typegraph_search` | Search TypeGraph retrieval, graph, and memory results |
+| `typegraph_search` | Search TypeGraph documents, events, threads, entities, and facts |
 | `typegraph_remember` | Store scoped memory |
 | `typegraph_correct` | Correct scoped memory |
 | `typegraph_jobs_list` | List jobs |
@@ -76,7 +75,8 @@ The provider merges that context into bucket, document ingest, search, memory,
 and correction calls. Direct lookup tools such as `typegraph_buckets_get` and
 `typegraph_jobs_get` reject records that conflict with the configured context.
 
-Use `context.access` when writing data to control who can read it later:
+Graph access is configured on TypeGraph graphs, not on model-selected tool
+inputs. Use buckets to route document/event writes to the intended graph:
 
 ```ts
 await tools.typegraph_document_ingest.execute({
@@ -90,8 +90,9 @@ await tools.typegraph_document_ingest.execute({
 }, { toolCallId: 'manual', messages: [] })
 ```
 
-The model cannot choose access principals through this tool surface. Set
-`context.access` in your trusted server-side call to `typegraphTools()`.
+The model cannot choose graph access through this tool surface. Set graph access
+in trusted `typegraphInit({ graphs })` config and expose only the buckets/tools
+your agent should use.
 
 ## External IDs
 
@@ -118,7 +119,7 @@ Use external IDs in search to filter around the same entity:
 await tools.typegraph_search.execute({
   text: 'What should I know before replying to Alice?',
   options: {
-    resources: ['documents', 'facts', 'entities', 'memories'],
+    resources: ['documents', 'facts', 'entities'],
     weights: { semantic: 1, bm25: 0.7, graph: 0.5, recency: 0.3 },
     entityScope: {
       externalIds: [{ type: 'email', id: 'alice@example.com' }],
@@ -126,7 +127,7 @@ await tools.typegraph_search.execute({
     },
     promptBuilder: {
       format: 'markdown',
-      sections: ['facts', 'chunks', 'memories'],
+      sections: ['facts', 'chunks'],
     },
   },
 }, { toolCallId: 'manual', messages: [] })
@@ -143,7 +144,6 @@ import { typegraphTools } from '@typegraph-ai/vercel-ai-provider'
 
 const tg = await typegraphInit({
   apiKey: process.env.TYPEGRAPH_API_KEY!,
-  tenantId: 'tenant_demo',
 })
 
 const tools = typegraphTools(tg, {
@@ -163,16 +163,15 @@ await tools.typegraph_remember.execute({
   },
 }, toolOptions)
 
-const result = await tools.typegraph_search.execute({
-  text: 'What answer style does this user prefer?',
-  options: {
-    resources: ['memories'],
-    weights: { semantic: 1, bm25: false, graph: false, recency: 0.3 },
-    promptBuilder: true,
+const memories = await tg.memory.recall('What answer style does this user prefer?', {
+  context: {
+    userId: UserId('demo-user'),
+    threadId: 'demo-thread',
   },
-}, toolOptions)
+  limit: 5,
+})
 
-console.log(result.prompt ?? result.results.memories)
+console.log(memories)
 ```
 
 ## API

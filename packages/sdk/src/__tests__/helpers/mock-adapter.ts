@@ -1,7 +1,6 @@
 import type { VectorStoreAdapter, HashStoreAdapter, SearchOpts, HashRecord, UndeployResult, ScoredChunkWithDocument } from '../../types/adapter.js'
 import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '../../types/chunk.js'
 import type { DocumentFilter, DocumentStatus, typegraphDocument, UpsertDocumentInput, UpsertedDocumentRecord } from '../../types/document.js'
-import { accessScopeKeys } from '../../types/identity.js'
 import { createHash } from 'crypto'
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -17,19 +16,11 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return mag === 0 ? 0 : dot / mag
 }
 
-function matchesAccessScope(recordScope: EmbeddedChunk['accessScope'], filterScope: ChunkFilter['accessScope']): boolean {
-  const recordKeys = accessScopeKeys(recordScope)
-  if (recordKeys.length === 0) return true
-  if (filterScope === undefined) return true
-  const filterKeys = new Set(accessScopeKeys(filterScope))
-  if (filterKeys.size === 0) return false
-  return recordKeys.some(key => filterKeys.has(key))
-}
-
 function matchesFilter(chunk: EmbeddedChunk, filter: ChunkFilter | null | undefined): boolean {
   if (!filter) return true
   if (filter.bucketId && chunk.bucketId !== filter.bucketId) return false
   if (filter.bucketIds && filter.bucketIds.length > 0 && !filter.bucketIds.includes(chunk.bucketId)) return false
+  if (filter.graphIds && filter.graphIds.length > 0 && !filter.graphIds.includes(chunk.graphId ?? 'public')) return false
   if (filter.chunkRefs) {
     if (filter.chunkRefs.length === 0) return false
     const matched = filter.chunkRefs.some(ref =>
@@ -52,12 +43,13 @@ function matchesFilter(chunk: EmbeddedChunk, filter: ChunkFilter | null | undefi
       if (chunk.metadata[k] !== v) return false
     }
   }
-  return matchesAccessScope(chunk.accessScope, filter.accessScope)
+  return true
 }
 
 function matchesDocumentFilter(document: typegraphDocument, filter: DocumentFilter | null | undefined): boolean {
   if (!filter) return true
   if (filter.bucketId && document.bucketId !== filter.bucketId) return false
+  if ('graphIds' in filter && Array.isArray(filter.graphIds) && filter.graphIds.length > 0 && !filter.graphIds.includes(document.graphId ?? 'public')) return false
   if (filter.tenantId && document.tenantId !== filter.tenantId) return false
   if (filter.groupId && document.groupId !== filter.groupId) return false
   if (filter.userId && document.userId !== filter.userId) return false
@@ -68,7 +60,7 @@ function matchesDocumentFilter(document: typegraphDocument, filter: DocumentFilt
     const statuses = Array.isArray(filter.status) ? filter.status : [filter.status]
     if (!statuses.includes(document.status)) return false
   }
-  return matchesAccessScope(document.accessScope, filter.accessScope)
+  return true
 }
 
 export function createMockHashStore(): HashStoreAdapter & {
@@ -166,8 +158,8 @@ export function createMockAdapter(): VectorStoreAdapter & {
     const filtered = opts?.filter ? store.filter(c => matchesFilter(c, opts.filter)) : store
     const count = opts?.count ?? 10
     const queryTerms = query.toLowerCase().split(/\s+/)
-    const useSemantic = opts?.signals?.semantic !== false
-    const useKeyword = opts?.signals?.keyword ?? true
+    const useSemantic = opts?.retrieval?.semantic !== false
+    const useKeyword = opts?.retrieval?.keyword ?? true
     if (!useSemantic && !useKeyword) return []
 
     return filtered
@@ -234,7 +226,7 @@ export function createMockAdapter(): VectorStoreAdapter & {
       const store = chunks.get(model)!
       for (const chunk of newChunks) {
         const existingIdx = store.findIndex(
-          c => c.idempotencyKey === chunk.idempotencyKey && c.chunkIndex === chunk.chunkIndex
+          c => c.bucketId === chunk.bucketId && c.idempotencyKey === chunk.idempotencyKey && c.chunkIndex === chunk.chunkIndex
         )
         if (existingIdx >= 0) {
           store[existingIdx] = chunk
@@ -284,13 +276,13 @@ export function createMockAdapter(): VectorStoreAdapter & {
         id,
         bucketId: input.bucketId,
         tenantId: input.tenantId,
+        graphId: input.graphId ?? 'public',
         name: input.name,
         description: input.description,
         url: input.url,
         contentHash: input.contentHash,
         chunkCount: input.chunkCount,
         status: input.status,
-        accessScope: input.accessScope,
         groupId: input.groupId,
         userId: input.userId,
         agentId: input.agentId,
@@ -341,19 +333,12 @@ export function createMockAdapter(): VectorStoreAdapter & {
 
     async updateDocument(
       id: string,
-      input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'accessScope' | 'metadata'>>
+      input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'metadata'>>
     ): Promise<typegraphDocument> {
       calls.push({ method: 'updateDocument', args: [id, input] })
       const document = documents.get(id)
       if (!document) throw new Error(`Document ${id} not found`)
       Object.assign(document, input, { updatedAt: new Date() })
-      for (const store of chunks.values()) {
-        for (const chunk of store) {
-          if (chunk.documentId === id && input.accessScope !== undefined) {
-            chunk.accessScope = input.accessScope
-          }
-        }
-      }
       return document
     },
 

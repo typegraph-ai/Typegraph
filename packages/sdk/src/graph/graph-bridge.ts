@@ -5,7 +5,7 @@ import { embeddingModelKey } from '../embedding/provider.js'
 import type { AccessScope, typegraphIdentity } from '../types/identity.js'
 import type { EmbeddingConfig } from '../types/bucket.js'
 import type { LLMConfig, LLMProvider } from '../types/llm-provider.js'
-import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, EntityScopeResolution, KnowledgeSearchOpts, KnowledgeSearchResult, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult } from '../types/graph-bridge.js'
+import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, InternalFactSearchOpts, InternalGraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, InternalGraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, EntityScopeResolution, KnowledgeSearchOpts, KnowledgeSearchResult, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult } from '../types/graph-bridge.js'
 import { resolveEmbedder, resolveLLMProvider } from '../typegraph.js'
 import type { ExternalId, MemoryStoreAdapter, SemanticEdge, SemanticEntity, SemanticEntityMention, SemanticEntityChunkEdge, SemanticFactRecord, SemanticGraphEdge } from '../memory/types/index.js'
 import type { ChunkRef } from '../types/chunk.js'
@@ -1775,9 +1775,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
   async function searchFacts(
     query: string,
-    opts?: FactSearchOpts | null,
+    opts?: InternalFactSearchOpts | null,
   ): Promise<FactResult[]> {
-    const normalizedOpts = optionalCompactObject<FactSearchOpts>(opts, 'graph.searchFacts') as FactSearchOpts
+    const normalizedOpts = optionalCompactObject<InternalFactSearchOpts>(opts, 'graph.searchFacts') as InternalFactSearchOpts
     if (!memoryStore.searchFacts && !memoryStore.searchFactsHybrid) return []
     const searchEmbedding = await embedText(embedding, query)
     const identity = {
@@ -1795,9 +1795,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
   async function explore(
     query: string,
-    opts?: GraphExploreOpts | null,
+    opts?: InternalGraphExploreOpts | null,
   ): Promise<GraphExploreResult> {
-    const normalizedOpts = optionalCompactObject<GraphExploreOpts>(opts, 'graph.explore') as GraphExploreOpts
+    const normalizedOpts = optionalCompactObject<InternalGraphExploreOpts>(opts, 'graph.explore') as InternalGraphExploreOpts
     const identity = {
       tenantId: normalizedOpts.tenantId,
       groupId: normalizedOpts.groupId,
@@ -2101,7 +2101,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const hasEntityScopeFilter = Boolean(normalizedOpts.entityScope && normalizedOpts.entityScope.mode !== 'boost')
     if (hasEntityScopeFilter && scopeEntityIds.size === 0) return { facts: [], entities: [] }
     const shouldFilter = hasEntityScopeFilter
-    const searchEmbedding = normalizedOpts.signals?.semantic !== false || normalizedOpts.signals?.keyword
+    const searchEmbedding = normalizedOpts.retrieval?.semantic !== false || normalizedOpts.retrieval?.keyword
       ? await embedText(embedding, query)
       : undefined
 
@@ -2434,8 +2434,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     return { results, facts: selectedFactResults, entities: selectedEntityResults, factChains, trace }
   }
 
-  async function explainQuery(query: string, opts?: GraphExplainOpts | null): Promise<GraphSearchTrace> {
-    const normalizedOpts = optionalCompactObject<GraphExplainOpts>(opts, 'graph.explainQuery') as GraphExplainOpts
+  async function explainQuery(query: string, opts?: InternalGraphExplainOpts | null): Promise<GraphSearchTrace> {
+    const normalizedOpts = optionalCompactObject<InternalGraphExplainOpts>(opts, 'graph.explainQuery') as InternalGraphExplainOpts
     const identity = {
       tenantId: normalizedOpts.tenantId,
       groupId: normalizedOpts.groupId,

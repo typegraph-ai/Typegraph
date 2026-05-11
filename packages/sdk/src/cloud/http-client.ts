@@ -1,5 +1,6 @@
 const DEFAULT_BASE_URL = 'https://typegraph.ai/api'
 const DEFAULT_TIMEOUT = 30_000
+const DEFAULT_TENANT_ID = 'public'
 
 export interface CloudConfig {
   /** API key for the typegraph cloud service. */
@@ -7,7 +8,7 @@ export interface CloudConfig {
   /** Base URL for the cloud API. Defaults to 'https://typegraph.ai/api'. */
   baseUrl?: string | undefined
   /** Default tenant ID for all operations. */
-  tenantId: string
+  tenantId?: string | undefined
   /** Request timeout in milliseconds. Default: 30000. */
   timeout?: number | undefined
 }
@@ -32,7 +33,7 @@ export class HttpClient {
   constructor(config: CloudConfig) {
     this.baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '')
     this.apiKey = config.apiKey
-    this.tenantId = config.tenantId
+    this.tenantId = config.tenantId?.trim() || DEFAULT_TENANT_ID
     this.timeout = config.timeout ?? DEFAULT_TIMEOUT
   }
 

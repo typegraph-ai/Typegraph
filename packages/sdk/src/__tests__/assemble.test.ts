@@ -7,7 +7,7 @@ function makeChunk(overrides: Partial<QueryChunkResult> = {}): QueryChunkResult 
     content: 'Maud is a poem by Alfred Tennyson.',
     score: 0.9123,
     scores: { raw: { cosineSimilarity: 0.9123 }, normalized: { semantic: 0.9123 } },
-    sources: ['semantic'],
+    matchedBy: ['semantic'],
     document: {
       id: 'source-1',
       bucketId: 'books',
@@ -26,7 +26,6 @@ function makeResults(chunks: QueryChunkResult[] = [makeChunk()], overrides: Part
     chunks,
     facts: [],
     entities: [],
-    memories: [],
     ...overrides,
   }
 }

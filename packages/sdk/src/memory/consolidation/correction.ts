@@ -140,8 +140,7 @@ Respond with only valid JSON:
         undefined,
         { schema: correctionSchema },
       )
-    } catch (err) {
-      console.error('[typegraph] Memory correction parse failed:', err instanceof Error ? err.message : err)
+    } catch {
       return {}
     }
   }

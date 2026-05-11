@@ -1,19 +1,19 @@
-import type { typegraphInstance, typegraphConfig, BucketsApi, DocumentsApi, EventsApi, ThreadsApi, JobsApi, GraphApi, RequestOptions, DocumentIngestOptions } from '../typegraph.js'
+import type { typegraphInstance, typegraphConfig, BucketsApi, DocumentsApi, EventsApi, ThreadsApi, JobsApi, GraphApi, RequestOptions, DocumentIngestOptions, MemoryApi } from '../typegraph.js'
 import type { Bucket, CreateBucketInput, BucketListFilter } from '../types/bucket.js'
-import type { QueryOpts, QueryResponse } from '../types/query.js'
+import type { SearchOptions, QueryResponse } from '../types/query.js'
 import type { IngestOptions, IndexResult } from '../types/index-types.js'
 import type { Embedder } from '../embedding/provider.js'
 import type { DocumentInput, Chunk, typegraphDocument, DocumentFilter } from '../types/document.js'
 import type { EventFilter, EventInput, typegraphEventRecord } from '../types/event.js'
 import type { ThreadFilter, ThreadInput, ThreadTurnInput, ThreadTurnResult as GraphThreadTurnResult, typegraphThread } from '../types/thread.js'
-import type { TypeGraphOptions, typegraphIdentity } from '../types/identity.js'
+import type { TypeGraphOptions, TypeGraphWriteOptions, typegraphIdentity } from '../types/identity.js'
 import type { CreatePolicyInput, UpdatePolicyInput, Policy, PolicyType } from '../types/policy.js'
 import type { UndeployResult } from '../types/adapter.js'
 import type { PaginationOpts, PaginatedResult } from '../types/pagination.js'
-import type { ThreadTurnResult, MemoryHealthReport } from '../types/memory.js'
+import type { MemoryHealthReport } from '../types/memory.js'
 import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
 import type { Job, JobFilter } from '../types/job.js'
-import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult, RememberOpts, ForgetOpts, CorrectOpts, HealthCheckOpts, AddThreadTurnOpts } from '../types/graph-bridge.js'
+import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult, RememberOpts, ForgetOpts, CorrectOpts, HealthCheckOpts } from '../types/graph-bridge.js'
 import { DEFAULT_BUCKET_ID, normalizeDocumentInput } from '../typegraph.js'
 import { HttpClient } from './http-client.js'
 import type { CloudConfig } from './http-client.js'
@@ -32,6 +32,7 @@ export interface typegraphCloudInstance extends typegraphInstance {}
 export function createCloudInstance(config: CloudConfig): typegraphCloudInstance {
   const client = new HttpClient(config)
   const e = encodeURIComponent
+  const tenantId = config.tenantId?.trim() || 'public'
 
   function normalizeOpts<T extends object>(opts: T | null | undefined, method: string): T {
     return optionalCompactObject<T>(opts, method) as T
@@ -44,7 +45,7 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     const normalized = normalizeOpts<T>(opts, method) as T & Record<string, unknown>
     const { context, ...rest } = normalized
     return {
-      identity: contextToIdentity(compactTypeGraphContext(context as TypeGraphOptions['context'], method), config.tenantId),
+      identity: contextToIdentity(compactTypeGraphContext(context as TypeGraphOptions['context'], method), tenantId),
       rest: rest as Omit<T, 'context'>,
     }
   }
@@ -52,6 +53,9 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
 
   const bucket: BucketsApi = {
     async create(input: CreateBucketInput): Promise<Bucket> {
+      return client.post<Bucket>('/v1/buckets', input)
+    },
+    async upsert(input: CreateBucketInput & { id: string }): Promise<Bucket> {
       return client.post<Bucket>('/v1/buckets', input)
     },
     async get(bucketId: string): Promise<Bucket | undefined> {
@@ -123,7 +127,7 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
       return client.post('/v1/events/ingest', { event: input, identity, ...rest })
     },
     async get(id: string): Promise<typegraphEventRecord | null> {
-      return client.get<typegraphEventRecord | null>(`/v1/events/${e(config.tenantId)}/${e(id)}`)
+      return client.get<typegraphEventRecord | null>(`/v1/events/${e(tenantId)}/${e(id)}`)
     },
     async list(filter?: EventFilter | null): Promise<typegraphEventRecord[]> {
       return client.post<typegraphEventRecord[]>('/v1/events/list', optionalCompactObject<EventFilter>(filter, 'event.list', 'filter'))
@@ -131,19 +135,19 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
   }
 
   const thread: ThreadsApi = {
-    async upsert(input: ThreadInput, opts?: RequestOptions | null): Promise<typegraphThread> {
+    async upsert(input: ThreadInput, opts?: TypeGraphWriteOptions | null): Promise<typegraphThread> {
       const { identity } = splitContextOpts(opts, 'thread.upsert')
       return client.post<typegraphThread>('/v1/threads', { thread: input, identity })
     },
     async get(id: string): Promise<typegraphThread | null> {
-      return client.get<typegraphThread | null>(`/v1/threads/${e(config.tenantId)}/${e(id)}`)
+      return client.get<typegraphThread | null>(`/v1/threads/${e(tenantId)}/${e(id)}`)
     },
     async list(filter?: ThreadFilter | null): Promise<typegraphThread[]> {
       return client.post<typegraphThread[]>('/v1/threads/list', optionalCompactObject<ThreadFilter>(filter, 'thread.list', 'filter'))
     },
-    async addTurn(threadId: string, turn: ThreadTurnInput, opts?: RequestOptions | null): Promise<GraphThreadTurnResult> {
-      const { identity } = splitContextOpts(opts, 'thread.addTurn')
-      return client.post<GraphThreadTurnResult>(`/v1/threads/${e(threadId)}/turns`, { turn, identity })
+    async addTurn(threadId: string, turn: ThreadTurnInput, opts?: TypeGraphWriteOptions | null): Promise<GraphThreadTurnResult> {
+      const { identity, rest } = splitContextOpts(opts, 'thread.addTurn')
+      return client.post<GraphThreadTurnResult>(`/v1/threads/${e(threadId)}/turns`, { turn, identity, ...rest })
     },
   }
 
@@ -292,11 +296,31 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
   function recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
   function recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
   function recall(query: string, opts?: RecallOpts | null): Promise<string | MemoryRecord[]> {
-    const { identity, rest } = splitContextOpts<RecallOpts>(opts, 'recall')
+    const { identity, rest } = splitContextOpts<RecallOpts>(opts, 'memory.recall')
     if (rest.format) {
       return client.post<string>('/v1/memory/recall', { query, identity, ...rest })
     }
     return client.post<MemoryRecord[]>('/v1/memory/recall', { query, identity, ...rest })
+  }
+
+  const memory: MemoryApi = {
+    async remember(content: string, opts?: RememberOpts | null): Promise<MemoryRecord> {
+      const { identity, rest } = splitContextOpts<RememberOpts>(opts, 'memory.remember')
+      return client.post<MemoryRecord>('/v1/memory/remember', { content, identity, ...rest })
+    },
+    async forget(id: string, opts?: ForgetOpts | null): Promise<void> {
+      const { identity, rest } = splitContextOpts<ForgetOpts>(opts, 'memory.forget')
+      await client.post('/v1/memory/forget', { id, identity, ...rest })
+    },
+    async correct(correction: string, opts?: CorrectOpts | null): Promise<{ invalidated: number; created: number; summary: string }> {
+      const { identity, rest } = splitContextOpts<CorrectOpts>(opts, 'memory.correct')
+      return client.post('/v1/memory/correct', { correction, identity, ...rest })
+    },
+    recall: recall as MemoryApi['recall'],
+    async healthCheck(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport> {
+      const { identity, rest } = splitContextOpts<HealthCheckOpts>(opts, 'memory.healthCheck')
+      return client.post<MemoryHealthReport>('/v1/memory/health', { identity, ...rest })
+    },
   }
 
   const instance: typegraphCloudInstance = {
@@ -317,6 +341,7 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     event,
     thread,
     job,
+    memory,
     graph,
 
     policy: {
@@ -353,38 +378,8 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
       throw new Error('getSearchEmbeddingForBucket() is not available in cloud mode — embedding is managed server-side.')
     },
 
-    async search(text: string, opts?: QueryOpts | null): Promise<QueryResponse> {
-      return client.post<QueryResponse>('/v1/search', { text, ...normalizeOpts<QueryOpts>(opts, 'search') })
-    },
-
-    async remember(content: string, opts?: RememberOpts | null): Promise<MemoryRecord> {
-      const { identity, rest } = splitContextOpts<RememberOpts>(opts, 'remember')
-      return client.post<MemoryRecord>('/v1/memory/remember', { content, identity, ...rest })
-    },
-
-    async forget(id: string, opts?: ForgetOpts | null): Promise<void> {
-      const { identity, rest } = splitContextOpts<ForgetOpts>(opts, 'forget')
-      await client.post('/v1/memory/forget', { id, identity, ...rest })
-    },
-
-    async correct(correction: string, opts?: CorrectOpts | null): Promise<{ invalidated: number; created: number; summary: string }> {
-      const { identity, rest } = splitContextOpts<CorrectOpts>(opts, 'correct')
-      return client.post('/v1/memory/correct', { correction, identity, ...rest })
-    },
-
-    recall: recall as typegraphInstance['recall'],
-
-    async healthCheck(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport> {
-      const { identity, rest } = splitContextOpts<HealthCheckOpts>(opts, 'healthCheck')
-      return client.post<MemoryHealthReport>('/v1/memory/health', { identity, ...rest })
-    },
-
-    async addThreadTurn(
-      messages: Array<{ role: string; content: string; timestamp?: Date }>,
-      opts?: AddThreadTurnOpts | null,
-    ): Promise<ThreadTurnResult> {
-      const { identity, rest } = splitContextOpts<AddThreadTurnOpts>(opts, 'addThreadTurn')
-      return client.post<ThreadTurnResult>('/v1/memory/conversation', { messages, identity, ...rest })
+    async search(text: string, opts?: SearchOptions | null): Promise<QueryResponse> {
+      return client.post<QueryResponse>('/v1/search', { text, ...normalizeOpts<SearchOptions>(opts, 'search') })
     },
 
     async flush(): Promise<void> {

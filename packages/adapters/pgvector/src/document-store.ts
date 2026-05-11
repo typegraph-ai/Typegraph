@@ -1,4 +1,4 @@
-import { ConfigError, accessScopeKeys } from '@typegraph-ai/sdk'
+import { ConfigError } from '@typegraph-ai/sdk'
 import type { DocumentStatus, DocumentStorageFilter, PaginatedResult, PaginationOpts, typegraphDocument, UpsertDocumentInput, UpsertedDocumentRecord } from '@typegraph-ai/sdk'
 import type { SqlExecutor } from './adapter.js'
 
@@ -8,11 +8,11 @@ function parseJson<T>(value: unknown, fallback: T): T {
 }
 
 function mapDocumentRow(row: Record<string, unknown>): typegraphDocument {
-  const accessScopeRaw = parseJson(row.access_scope, [])
   return {
     id: row.id as string,
     bucketId: row.bucket_id as string,
     tenantId: row.tenant_id as string,
+    graphId: (row.graph_id as string) ?? 'public',
     groupId: (row.group_id as string) ?? undefined,
     userId: (row.user_id as string) ?? undefined,
     agentId: (row.agent_id as string) ?? undefined,
@@ -23,7 +23,6 @@ function mapDocumentRow(row: Record<string, unknown>): typegraphDocument {
     contentHash: row.content_hash as string,
     chunkCount: row.chunk_count as number,
     status: row.status as typegraphDocument['status'],
-    accessScope: Array.isArray(accessScopeRaw) ? accessScopeRaw : undefined,
     indexedAt: new Date(row.indexed_at as string),
     createdAt: new Date(row.created_at as string),
     updatedAt: new Date(row.updated_at as string),
@@ -40,12 +39,13 @@ export class PgDocumentStore {
   async upsert(input: UpsertDocumentInput): Promise<UpsertedDocumentRecord> {
     const rows = await this.sql(
       `INSERT INTO ${this.tableName}
-        (id, bucket_id, tenant_id, group_id, user_id, agent_id, thread_id,
+        (id, bucket_id, tenant_id, graph_id, group_id, user_id, agent_id, thread_id,
          name, description, url, content_hash, chunk_count, status,
          access_scope, access_scope_ids, metadata, indexed_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15::text[], $16::jsonb, NOW(), NOW())
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, '[]'::jsonb, '{}'::text[], $15::jsonb, NOW(), NOW())
        ON CONFLICT (bucket_id, tenant_id, content_hash)
          DO UPDATE SET
+           graph_id = EXCLUDED.graph_id,
            name = EXCLUDED.name,
            description = EXCLUDED.description,
            url = EXCLUDED.url,
@@ -55,8 +55,6 @@ export class PgDocumentStore {
            user_id = EXCLUDED.user_id,
            agent_id = EXCLUDED.agent_id,
            thread_id = EXCLUDED.thread_id,
-           access_scope = EXCLUDED.access_scope,
-           access_scope_ids = EXCLUDED.access_scope_ids,
            metadata = EXCLUDED.metadata,
            indexed_at = NOW(),
            updated_at = NOW()
@@ -65,6 +63,7 @@ export class PgDocumentStore {
         input.id,
         input.bucketId,
         input.tenantId,
+        input.graphId,
         input.groupId ?? null,
         input.userId ?? null,
         input.agentId ?? null,
@@ -75,8 +74,6 @@ export class PgDocumentStore {
         input.contentHash,
         input.chunkCount,
         input.status,
-        JSON.stringify(input.accessScope ?? []),
-        accessScopeKeys(input.accessScope),
         JSON.stringify(input.metadata ?? {}),
       ]
     )
@@ -119,16 +116,12 @@ export class PgDocumentStore {
     return { count: rows.length, ids: rows.map(r => r.id as string) }
   }
 
-  async update(id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'accessScope' | 'metadata'>>): Promise<typegraphDocument | null> {
+  async update(id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'metadata'>>): Promise<typegraphDocument | null> {
     const setClauses: string[] = ['updated_at = NOW()']
     const params: unknown[] = []
     if (input.name !== undefined) { params.push(input.name); setClauses.push(`name = $${params.length}`) }
     if (input.description !== undefined) { params.push(input.description); setClauses.push(`description = $${params.length}`) }
     if (input.url !== undefined) { params.push(input.url); setClauses.push(`url = $${params.length}`) }
-    if (input.accessScope !== undefined) {
-      params.push(JSON.stringify(input.accessScope ?? [])); setClauses.push(`access_scope = $${params.length}::jsonb`)
-      params.push(accessScopeKeys(input.accessScope)); setClauses.push(`access_scope_ids = $${params.length}::text[]`)
-    }
     if (input.metadata !== undefined) { params.push(JSON.stringify(input.metadata)); setClauses.push(`metadata = $${params.length}::jsonb`) }
     params.push(id)
     const rows = await this.sql(`UPDATE ${this.tableName} SET ${setClauses.join(', ')} WHERE id = $${params.length} RETURNING *`, params)
@@ -160,6 +153,14 @@ export function buildDocumentWhere(filter?: DocumentStorageFilter | null, alias?
   if (filter?.userId != null) { params.push(filter.userId); conditions.push(`${col('user_id')} = $${params.length}`) }
   if (filter?.agentId != null) { params.push(filter.agentId); conditions.push(`${col('agent_id')} = $${params.length}`) }
   if (filter?.threadId != null) { params.push(filter.threadId); conditions.push(`${col('thread_id')} = $${params.length}`) }
+  if (filter?.graphIds != null) {
+    if (filter.graphIds.length === 0) {
+      conditions.push('FALSE')
+    } else {
+      params.push(filter.graphIds)
+      conditions.push(`${col('graph_id')} = ANY($${params.length}::text[])`)
+    }
+  }
   if (filter?.status != null) {
     if (Array.isArray(filter.status)) {
       params.push(filter.status)
@@ -173,15 +174,5 @@ export function buildDocumentWhere(filter?: DocumentStorageFilter | null, alias?
     params.push(filter.documentIds)
     conditions.push(`${col('id')} = ANY($${params.length}::text[])`)
   }
-  if (filter?.accessScope !== undefined) {
-    const accessScopeIds = accessScopeKeys(filter.accessScope)
-    if (accessScopeIds.length === 0) {
-      conditions.push(`cardinality(${col('access_scope_ids')}) = 0`)
-    } else {
-      params.push(accessScopeIds)
-      conditions.push(`(cardinality(${col('access_scope_ids')}) = 0 OR ${col('access_scope_ids')} && $${params.length}::text[])`)
-    }
-  }
-
   return { where: conditions.join(' AND '), params }
 }

@@ -87,12 +87,4 @@ export type { ForgettingPolicy, ForgettingResult } from './consolidation/forgett
 export { MemoryCorrector } from './consolidation/correction.js'
 export type { CorrectionResult } from './consolidation/correction.js'
 
-// ── Unified API ──
-
-export { TypegraphMemory } from './typegraph-memory.js'
-export type { typegraphMemoryConfig, MemoryHealthReport } from './typegraph-memory.js'
-
-// ── Memory Bridge ──
-
-export { createMemoryBridge } from './memory-bridge.js'
-export type { CreateMemoryBridgeConfig } from './memory-bridge.js'
+export type { MemoryHealthReport } from '../types/memory.js'

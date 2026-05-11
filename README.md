@@ -20,7 +20,8 @@ Postgres with pgvector.
 
 This branch reflects the current breaking SDK shape. The old `source` and
 `query` surfaces have been replaced by `document` and `search`, `tenantId` is
-client-scoped, per-call identity/access lives under `context`, and SQLite vector
+client-scoped, per-call actor identity lives under `context`, graph access lives
+on graph config, and SQLite vector
 storage is no longer supported.
 
 For deeper guides and production patterns, use the docs:
@@ -44,15 +45,28 @@ pnpm add @typegraph-ai/sdk @typegraph-ai/adapter-pgvector @ai-sdk/gateway @neond
 ## Quick Start
 
 Cloud mode runs storage, embedding, indexing, graph, and memory server-side.
-`tenantId` is required on init and is the hard namespace boundary for every
-record.
+`tenantId` defaults to `public`; pass a tenant only when you need separate
+customer/account graphs.
 
 ```ts
-import { typegraphInit, UserId, entityRef } from '@typegraph-ai/sdk'
+import { typegraphInit, GroupId, UserId } from '@typegraph-ai/sdk'
 
 const tg = await typegraphInit({
   apiKey: process.env.TYPEGRAPH_API_KEY!,
-  tenantId: 'tenant_acme',
+  graphs: {
+    public: { access: 'public' },
+    internal: {
+      extends: ['public'],
+      access: {
+        read: { groups: [GroupId('employees')] },
+        write: { groups: [GroupId('employees')] },
+      },
+    },
+  },
+  buckets: {
+    public: { graph: 'public' },
+    handbook: { name: 'Employee Handbook', graph: 'internal', graphExtraction: true },
+  },
 })
 
 await tg.document.ingest(
@@ -66,17 +80,17 @@ await tg.document.ingest(
   {
     context: {
       userId: UserId('dana'),
-      principals: [entityRef('group', 'it')],
-      access: [entityRef('group', 'it')],
+      groupId: GroupId('employees'),
     },
-    graphExtraction: true,
+    bucketId: 'handbook',
   },
 )
 
 const response = await tg.search('How do employees configure SSO?', {
+  graph: 'internal',
   context: {
     userId: UserId('dana'),
-    principals: [entityRef('group', 'it')],
+    groupId: GroupId('employees'),
   },
   resources: ['documents', 'facts', 'entities'],
   weights: { semantic: 1, bm25: 0.7, graph: 0.5, recency: 0.3 },
@@ -105,7 +119,6 @@ const sql = neon(process.env.DATABASE_URL!)
 const vectorStore = new PgVectorAdapter({ sql })
 
 const config = {
-  tenantId: 'tenant_acme',
   vectorStore,
   embedding: {
     model: gateway.embeddingModel('openai/text-embedding-3-small'),
@@ -164,52 +177,41 @@ The main public namespaces are:
 | `tg.thread` | Ordered containers; turns are stored as linked events. |
 | `tg.search` | Unified retrieval over selected resources. |
 | `tg.graph` | Entity, fact, edge, external ID, merge, explore, and graph search APIs. |
-| `tg.remember`, `tg.recall`, `tg.correct`, `tg.forget` | Memory operations. |
+| `tg.memory` | Private memory operations: remember, recall, correct, forget, healthCheck. |
 | `tg.job` | Job tracking primitives. |
 | `tg.policy` | Governance policy CRUD when a policy store is configured. |
 
-## Identity And Access
+## Identity, Graphs, And Access
 
 `tenantId` is configured once on `typegraphInit()` or `typegraphDeploy()`.
-Per-call identity and record access use one optional key: `context`.
+Per-call actor identity uses one optional key: `context`.
 
 ```ts
 import {
   AgentId,
   GroupId,
+  OrganizationId,
   ThreadId,
   UserId,
-  entityRef,
   type TypeGraphContext,
 } from '@typegraph-ai/sdk'
 
 const context: TypeGraphContext = {
+  organizationId: OrganizationId('org_acme'),
   groupId: GroupId('product'),
   userId: UserId('dana'),
   agentId: AgentId('product-ops-agent'),
   threadId: ThreadId('thread_123'),
-  principals: [entityRef('group', 'success')],
-  access: [entityRef('group', 'product'), entityRef('group', 'success')],
 }
 ```
 
-`context.access` is not the graph model. It does not mean "link this record to
-these entities." It only controls who can search the record later. Empty or
-omitted means tenant-wide visibility. A non-empty access list is OR-based: the
-record is searchable when the caller has at least one matching read principal.
-Read principals are derived from `groupId`, `userId`, `agentId`, `threadId`,
-plus `principals`.
+Graphs are the logical knowledge boundaries inside a tenant. Reads from graph
+`internal` include `internal` plus its ancestors, such as `public`. Parent
+graphs never read child graph data.
 
-Use events, participants, entities, and facts to model business relationships.
-Use `context.access` to model read permissions. Event `participants` are
-provenance only; they do not grant access.
-
-For B2B product intelligence, do not scope every customer signal only to the
-customer organization. If a product manager needs to ask "Which customers are
-experiencing SSO redirect loops?", the product team must be able to read the
-customer-signal records. Use `participants` to link the signal to
-`org_acme`; use `context.access` to make the signal visible to internal teams
-such as product and customer success.
+Buckets own write routing. If no bucket is supplied, writes use bucket `public`,
+which writes to graph `public`. Event `participants`, entities, and facts model
+business relationships; they do not grant access.
 
 ## Documents, Events, And Threads
 
@@ -228,13 +230,9 @@ await tg.document.ingest(
   {
     context: {
       userId: UserId('dana'),
-      access: [
-        entityRef('group', 'sales'),
-        entityRef('group', 'success'),
-      ],
+      groupId: GroupId('success'),
     },
     bucketId: 'gong',
-    graphExtraction: true,
     idempotencyKey: 'gong:transcript:123',
   },
 )
@@ -242,8 +240,7 @@ await tg.document.ingest(
 
 Events model business activity. This event is a product signal from the Acme
 call. The `participants` create the business shape for graph extraction and
-exploration; `context.access` makes the signal searchable by internal product
-and success teams across customers.
+exploration; the `gong` bucket routes the write into the internal graph.
 
 ```ts
 await tg.event.ingest(
@@ -263,13 +260,9 @@ await tg.event.ingest(
   {
     context: {
       userId: UserId('dana'),
-      access: [
-        entityRef('group', 'product'),
-        entityRef('group', 'success'),
-      ],
+      groupId: GroupId('success'),
     },
     bucketId: 'gong',
-    graphExtraction: true,
   },
 )
 ```
@@ -278,6 +271,7 @@ That supports cross-customer questions:
 
 ```ts
 const response = await tg.search('Which customers are experiencing SSO redirect loops?', {
+  graph: 'internal',
   context: { groupId: GroupId('product') },
   resources: ['events', 'facts', 'entities'],
   weights: { semantic: 1, bm25: 0.5, graph: 0.9, recency: 0.4 },
@@ -285,10 +279,9 @@ const response = await tg.search('Which customers are experiencing SSO redirect 
 })
 ```
 
-If a customer portal user should see their own records, include
-`entityRef('organization', 'org_acme')` in `context.access`. If a record is
-internal-only, do not include the customer organization in `context.access`;
-keep the customer organization in `participants` instead.
+If a customer portal user should see only public knowledge, search graph
+`public`. Internal teams can search graph `internal`, which includes public
+knowledge plus internal customer activity.
 
 Threads are ordered containers. `thread.addTurn()` stores the turn as an event
 and links the event back to the thread. A turn has only role, content,
@@ -307,12 +300,9 @@ await tg.thread.addTurn(
     context: {
       userId: UserId('dana'),
       threadId: ThreadId('thread_support_123'),
-      access: [
-        entityRef('group', 'support'),
-        entityRef('group', 'success'),
-      ],
+      groupId: GroupId('support'),
     },
-    graphExtraction: true,
+    bucketId: 'gong',
   },
 )
 ```
@@ -333,7 +323,6 @@ type SearchResource =
   | 'threads'
   | 'entities'
   | 'facts'
-  | 'memories'
 ```
 
 `weights` controls how candidates are scored and fused:
@@ -413,7 +402,6 @@ Single-pass vs. multi-pass prompting is private implementation detail.
 
 ```ts
 const config = {
-  tenantId: 'tenant_acme',
   vectorStore,
   embedding,
   searchEmbedding,
@@ -440,10 +428,7 @@ await tg.graph.upsertEntity(
   {
     context: {
       userId: UserId('dana'),
-      access: [
-        entityRef('group', 'product'),
-        entityRef('group', 'success'),
-      ],
+      groupId: GroupId('product'),
     },
   },
 )
@@ -458,10 +443,7 @@ await tg.graph.upsertFact(
   {
     context: {
       userId: UserId('dana'),
-      access: [
-        entityRef('group', 'product'),
-        entityRef('group', 'success'),
-      ],
+      groupId: GroupId('product'),
     },
   },
 )
@@ -481,6 +463,8 @@ Facts use `description` as their assertion and search text.
 | [`@typegraph-ai/adapter-pgvector-rds`](packages/adapters/pgvector-rds) | AWS RDS/Postgres convenience adapter. |
 | [`@typegraph-ai/adapter-pgvector-nile`](packages/adapters/pgvector-nile) | Nile/Postgres convenience adapter. |
 | [`@typegraph-ai/adapter-pgvector-prisma`](packages/adapters/pgvector-prisma) | Prisma convenience adapter. |
+| [`@typegraph-ai/adapter-redis`](packages/adapters/redis) | Redis-backed extraction coreference cache for self-hosted deployments. |
+| [`@typegraph-ai/adapter-redis-upstash`](packages/adapters/redis-upstash) | Upstash Redis coreference cache adapter for self-hosted deployments. |
 | [`@typegraph-ai/vercel-ai-provider`](packages/vercel-ai-provider) | Vercel AI SDK tools and middleware. |
 | [`@typegraph-ai/mcp-server`](packages/mcp-server) | MCP server package. |
 | [`@typegraph-ai/otel`](packages/otel) | OpenTelemetry event sink integration. |

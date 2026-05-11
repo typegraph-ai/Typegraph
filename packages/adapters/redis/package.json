@@ -1,6 +1,6 @@
 {
-  "name": "@typegraph-ai/adapter-pgvector",
-  "version": "0.4.1",
+  "name": "@typegraph-ai/adapter-redis",
+  "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

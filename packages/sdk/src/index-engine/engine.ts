@@ -118,6 +118,7 @@ class ConfiguredExtractorRunner implements GraphExtractionRunner {
     private extractor: Extractor,
     private graph: KnowledgeGraphBridge,
     private logger?: typegraphLogger,
+    private coreferenceCache?: ExtractionCoreferenceCache,
   ) {}
 
   async extractFromChunk(
@@ -145,6 +146,7 @@ class ConfiguredExtractorRunner implements GraphExtractionRunner {
       content,
       metadata,
     }, {
+      coreferenceCache: this.coreferenceCache,
       log: {
         debug: (message, data) => this.logger?.debug?.(message, data),
         warn: (message, data) => this.logger?.warn?.(message, data),
@@ -249,7 +251,7 @@ export class IndexEngine {
     if (!this.knowledgeGraph) {
       throw new ConfigError('Custom extractor requires a configured knowledge graph.')
     }
-    this.tripleExtractor = new ConfiguredExtractorRunner(extractor, this.knowledgeGraph, this.logger)
+    this.tripleExtractor = new ConfiguredExtractorRunner(extractor, this.knowledgeGraph, this.logger, this.extractionCoreferenceCache)
   }
 
   /**
@@ -266,8 +268,8 @@ export class IndexEngine {
     const cleanDocument = sanitizeDocument(document)
     const cleanChunks = chunks.map(sanitizeChunk)
     const { tenantId, groupId, userId, agentId, threadId, dryRun = false } = opts
+    const graphId = opts.graphId ?? 'public'
     if (!tenantId) throw new ConfigError('ingest requires identity.tenantId.')
-    const accessScope = opts.accessScope
     const shouldExtract = !!this.tripleExtractor && !dryRun && !!opts.graphExtraction
 
     const modelId = embeddingModelKey(this.embedding)
@@ -292,13 +294,13 @@ export class IndexEngine {
         userId,
         agentId,
         threadId,
+        graphId,
         name: cleanDocument.name,
         description: cleanDocument.description,
         url: cleanDocument.url ?? undefined,
         contentHash,
         chunkCount: cleanChunks.length,
         status: 'processing',
-        accessScope,
         metadata: cleanDocument.metadata ?? {},
       })
       documentId = documentRecord.id
@@ -325,13 +327,13 @@ export class IndexEngine {
         userId,
         agentId,
         threadId,
+        graphId,
         documentId,
         content: chunk.content,
         embedding: embeddings[i]!,
         embeddingModel: modelId,
         chunkIndex: chunk.chunkIndex,
         totalChunks: cleanChunks.length,
-        accessScope,
         metadata: { ...propagated, ...chunk.metadata },
         indexedAt: new Date(),
       }))
@@ -349,8 +351,7 @@ export class IndexEngine {
           embeddedChunks,
           propagated,
           documentName,
-          { tenantId, groupId, userId, agentId, threadId },
-          accessScope,
+          { tenantId, groupId, userId, agentId, threadId, graphId },
         )
       }
 
@@ -425,6 +426,7 @@ export class IndexEngine {
       chunks: chunks.map(sanitizeChunk),
     }))
     const { tenantId, groupId, userId, agentId, threadId, dryRun = false, traceId, spanId } = opts
+    const graphId = opts.graphId ?? 'public'
     if (!tenantId) throw new ConfigError('ingest requires identity.tenantId.')
     const shouldExtract = !!this.tripleExtractor && !dryRun && !!opts.graphExtraction
     const modelId = embeddingModelKey(this.embedding)
@@ -469,7 +471,6 @@ export class IndexEngine {
       contentHash: string
       documentId: string
       documentWasCreated: boolean
-      accessScope?: AccessScope | undefined
       textOffset: number
     }> = []
     const allTexts: string[] = []
@@ -518,8 +519,6 @@ export class IndexEngine {
 
       let documentId = document.id ?? generateId('doc')
       let documentWasCreated = true
-      const accessScope = opts.accessScope
-
       if (this.adapter.upsertDocumentRecord && !dryRun) {
         const documentRecord = await this.adapter.upsertDocumentRecord({
           id: documentId,
@@ -529,13 +528,13 @@ export class IndexEngine {
           userId,
           agentId,
           threadId,
+          graphId,
           name: document.name,
           description: document.description,
           url: document.url ?? undefined,
           contentHash,
           chunkCount: chunks.length,
           status: 'processing',
-          accessScope,
           metadata: document.metadata ?? {},
         })
         documentId = documentRecord.id
@@ -546,7 +545,7 @@ export class IndexEngine {
       const texts = chunks.map(c => this.preprocessForEmbedding(c.content, opts))
       allTexts.push(...texts)
 
-      prepared.push({ document, chunks, ikey, contentHash, documentId, documentWasCreated, accessScope, textOffset })
+      prepared.push({ document, chunks, ikey, contentHash, documentId, documentWasCreated, textOffset })
     }
 
     // Phase 2: Single embedBatch call for all chunks across all documents
@@ -560,7 +559,7 @@ export class IndexEngine {
     const effectiveConcurrency = shouldExtract ? 1 : concurrency
 
     const processItem = async (item: typeof prepared[number]) => {
-      const { document, chunks, ikey, contentHash, documentId, documentWasCreated, accessScope, textOffset } = item
+      const { document, chunks, ikey, contentHash, documentId, documentWasCreated, textOffset } = item
       const embeddings = allEmbeddings.slice(textOffset, textOffset + chunks.length)
       const propagated = this.propagateMetadata(document, opts.propagateMetadata)
 
@@ -578,13 +577,13 @@ export class IndexEngine {
         userId,
         agentId,
         threadId,
+        graphId,
         documentId,
         content: chunk.content,
         embedding: embeddings[i]!,
         embeddingModel: modelId,
         chunkIndex: chunk.chunkIndex,
         totalChunks: chunks.length,
-        accessScope,
         metadata: { ...propagated, ...chunk.metadata },
         indexedAt: new Date(),
       }))
@@ -602,8 +601,7 @@ export class IndexEngine {
           embeddedChunks,
           propagated,
           documentName,
-          { tenantId, groupId, userId, agentId, threadId },
-          accessScope,
+          { tenantId, groupId, userId, agentId, threadId, graphId },
         )
 
         if (!result.extraction) result.extraction = { succeeded: 0, failed: 0 }
@@ -753,6 +751,7 @@ export class IndexEngine {
       userId?: string | undefined
       agentId?: string | undefined
       threadId?: string | undefined
+      graphId?: string | undefined
     },
     accessScope?: AccessScope,
     initialEntityContext: EntityContext[] = [],
@@ -764,6 +763,7 @@ export class IndexEngine {
       userId: identity?.userId,
       agentId: identity?.agentId,
       threadId: identity?.threadId,
+      graphId: identity?.graphId,
       bucketId,
       documentId,
       documentName,

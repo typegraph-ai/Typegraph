@@ -132,7 +132,8 @@ describe('typegraphInit', () => {
         entityType: 'person',
         externalIds: [{ id: 'alice@example.com', type: 'email' }],
         tenantId: 'tenant-1',
-        accessScope: undefined,
+        graphId: 'public',
+        graphIds: ['public'],
       })
       expect(result).toEqual(seeded)
     })
@@ -157,7 +158,7 @@ describe('typegraphInit', () => {
 
       const results = await inst.graph.searchEntities('Cole Conway', { context: { userId: 'test-user' }, limit: 5 })
 
-      expect(knowledgeGraph.searchEntities).toHaveBeenCalledWith('Cole Conway', { userId: 'test-user', tenantId: 'tenant-1' }, 5)
+      expect(knowledgeGraph.searchEntities).toHaveBeenCalledWith('Cole Conway', { userId: 'test-user', tenantId: 'tenant-1', graphId: 'public', graphIds: ['public'] }, 5)
       expect(results).toEqual(searchResults)
     })
 
@@ -200,7 +201,7 @@ describe('typegraphInit', () => {
         minConnections: 2,
       })
 
-      expect(knowledgeGraph.searchEntities).toHaveBeenCalledWith('Cole Conway', { userId: 'test-user', tenantId: 'tenant-1' }, 10)
+      expect(knowledgeGraph.searchEntities).toHaveBeenCalledWith('Cole Conway', { userId: 'test-user', tenantId: 'tenant-1', graphId: 'public', graphIds: ['public'] }, 10)
       expect(results).toEqual([
         expect.objectContaining({
           id: 'ent_caesar',
@@ -268,6 +269,8 @@ describe('typegraphInit', () => {
       expect(knowledgeGraph.explore).toHaveBeenCalledWith('plotline employees', {
         userId: 'test-user',
         tenantId: 'tenant-1',
+        graphId: 'public',
+        graphIds: ['public'],
         depth: 1,
         include: { chunks: false },
       })
@@ -398,13 +401,13 @@ describe('typegraphInit', () => {
       expect(response.results.chunks.length).toBeGreaterThan(0)
     })
 
-    it('passes tenantId from config', async () => {
+    it('does not expose tenantId from config in search responses', async () => {
       const inst = await typegraphInit({ vectorStore: adapter, embedding, tenantId: 'config-tenant' })
       const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(1) })
       registerTestBucket(inst, bucket, embedding)
       await inst.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
       const response = await inst.search('test')
-      expect(response.query.tenantId).toBe('config-tenant')
+      expect('tenantId' in response.query).toBe(false)
     })
 
     it('rejects legacy per-query tenantId overrides', async () => {

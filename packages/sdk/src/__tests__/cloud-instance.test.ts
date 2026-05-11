@@ -90,7 +90,7 @@ describe('createCloudInstance', () => {
     ], null)
 
     const [url, init] = fetchMock.mock.calls[0]!
-    expect(url).toBe('https://example.test/api/v1/buckets/bkt_default/documents/ingest')
+    expect(url).toBe('https://example.test/api/v1/buckets/public/documents/ingest')
     const body = JSON.parse((init as RequestInit).body as string)
     expect(body.opts).toEqual({})
   })
@@ -105,17 +105,18 @@ describe('createCloudInstance', () => {
     const fetchMock = mockFetch()
     const instance = createCloudInstance({ apiKey: 'test-key', baseUrl: 'https://example.test/api', tenantId: 'tenant-1' })
 
-    await instance.remember('Prefers SMS', {
+    await instance.memory.remember('Prefers SMS', {
       context: { userId: 'user-1' },
       category: 'semantic',
       importance: 0.8,
       metadata: { source: 'test' },
     })
-    await instance.recall('SMS', null)
-    await instance.healthCheck(null)
-    await instance.addThreadTurn([
-      { role: 'user', content: 'hello' },
-    ], { context: { userId: 'user-1', threadId: 'thread-1' } })
+    await instance.memory.recall('SMS', null)
+    await instance.memory.healthCheck(null)
+    await instance.thread.addTurn('thread-1', {
+      role: 'user',
+      content: 'hello',
+    }, { context: { userId: 'user-1', threadId: 'thread-1' } })
 
     const rememberBody = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string)
     expect(rememberBody).toEqual({
@@ -134,7 +135,7 @@ describe('createCloudInstance', () => {
 
     const turnBody = JSON.parse((fetchMock.mock.calls[3]![1] as RequestInit).body as string)
     expect(turnBody).toEqual({
-      messages: [{ role: 'user', content: 'hello' }],
+      turn: { role: 'user', content: 'hello' },
       identity: { tenantId: 'tenant-1', userId: 'user-1', threadId: 'thread-1' },
     })
   })

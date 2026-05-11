@@ -5,11 +5,12 @@ import type { EventStorageFilter, typegraphEventRecord, UpsertEventInput } from 
 import type { ThreadStorageFilter, typegraphThread, UpsertThreadInput } from '@typegraph-ai/sdk'
 import type { UpsertLinkInput } from '@typegraph-ai/sdk'
 import type { Bucket, BucketStorageFilter } from '@typegraph-ai/sdk'
+import type { TypeGraphGraphRecord } from '@typegraph-ai/sdk'
 import type { Job, JobFilter, UpsertJobInput, JobStatusPatch, PaginationOpts, PaginatedResult } from '@typegraph-ai/sdk'
-import { accessScopeKeys, ConfigError, DEFAULT_BUCKET_ID } from '@typegraph-ai/sdk'
+import { ConfigError, DEFAULT_BUCKET_ID } from '@typegraph-ai/sdk'
 import {
   REGISTRY_SQL, MODEL_TABLE_SQL, HASH_TABLE_SQL, DOCUMENTS_TABLE_SQL,
-  BUCKETS_TABLE_SQL, BUSINESS_EVENTS_TABLE_SQL, LINKS_TABLE_SQL, ONTOLOGY_TABLE_SQL, TELEMETRY_TABLE_SQL, POLICIES_TABLE_SQL, JOBS_TABLE_SQL, THREADS_TABLE_SQL,
+  BUCKETS_TABLE_SQL, GRAPHS_TABLE_SQL, BUSINESS_EVENTS_TABLE_SQL, LINKS_TABLE_SQL, ONTOLOGY_TABLE_SQL, TELEMETRY_TABLE_SQL, POLICIES_TABLE_SQL, JOBS_TABLE_SQL, THREADS_TABLE_SQL,
   sanitizeModelKey,
 } from './migrations.js'
 import { PgHashStore } from './hash-store.js'
@@ -114,6 +115,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
   private documentsTable: string
   private registryTable: string
   private bucketsTable: string
+  private graphsTable: string
   private eventsTable: string
   private threadsTable: string
   private linksTable: string
@@ -136,6 +138,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     this.hashesTable = config.hashesTable ?? `${prefix}typegraph_hashes`
     this.documentsTable = config.documentsTable ?? `${prefix}typegraph_documents`
     this.bucketsTable = config.bucketsTable ?? `${prefix}typegraph_buckets`
+    this.graphsTable = `${prefix}typegraph_graphs`
     this.eventsTable = `${prefix}typegraph_events`
     this.threadsTable = `${prefix}typegraph_threads`
     this.linksTable = `${prefix}typegraph_links`
@@ -168,6 +171,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     await this.execStatements(HASH_TABLE_SQL(this.hashesTable))
     await this.execStatements(DOCUMENTS_TABLE_SQL(this.documentsTable))
     await this.execStatements(BUCKETS_TABLE_SQL(this.bucketsTable))
+    await this.execStatements(GRAPHS_TABLE_SQL(this.graphsTable))
     await this.execStatements(BUSINESS_EVENTS_TABLE_SQL(this.eventsTable))
     await this.execStatements(THREADS_TABLE_SQL(this.threadsTable))
     await this.execStatements(LINKS_TABLE_SQL(this.linksTable))
@@ -329,6 +333,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     const chunkIds: string[] = []
     const bucketIds: string[] = []
     const tenantIds: string[] = []
+    const graphIds: string[] = []
     const groupIds: (string | null)[] = []
     const userIds: (string | null)[] = []
     const agentIds: (string | null)[] = []
@@ -349,6 +354,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
       chunkIds.push(chunk.id)
       bucketIds.push(chunk.bucketId)
       tenantIds.push(chunk.tenantId)
+      graphIds.push(chunk.graphId)
       groupIds.push(chunk.groupId ?? null)
       userIds.push(chunk.userId ?? null)
       agentIds.push(chunk.agentId ?? null)
@@ -360,14 +366,14 @@ export class PgVectorAdapter implements VectorStoreAdapter {
       embeddingModels.push(chunk.embeddingModel)
       chunkIndices.push(chunk.chunkIndex)
       totalChunks.push(chunk.totalChunks)
-      accessScopes.push(JSON.stringify(chunk.accessScope ?? []))
-      accessScopeIds.push((chunk.accessScope ?? []).map(ref => `${ref.type}:${ref.id}`))
+      accessScopes.push('[]')
+      accessScopeIds.push([])
       metadatas.push(JSON.stringify(chunk.metadata))
       indexedAts.push(chunk.indexedAt.toISOString())
     }
 
     return [
-      chunkIds, bucketIds, tenantIds, groupIds, userIds, agentIds, threadIds,
+      chunkIds, bucketIds, tenantIds, graphIds, groupIds, userIds, agentIds, threadIds,
       documentIds, idempotencyKeys, contents, embeddings,
       embeddingModels, chunkIndices, totalChunks, accessScopes, accessScopeIds, metadatas, indexedAts,
     ]
@@ -376,23 +382,22 @@ export class PgVectorAdapter implements VectorStoreAdapter {
   private async executeChunkUpsert(table: string, params: unknown[][]): Promise<void> {
     await this.sql(
       `INSERT INTO ${table}
-        (id, bucket_id, tenant_id, group_id, user_id, agent_id, thread_id,
+        (id, bucket_id, tenant_id, graph_id, group_id, user_id, agent_id, thread_id,
          document_id, idempotency_key, content, embedding,
          embedding_model, chunk_index, total_chunks, access_scope, access_scope_ids, metadata, indexed_at)
        SELECT * FROM unnest(
-        $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[],
-        $8::text[], $9::text[], $10::text[], $11::vector[],
-        $12::text[], $13::int[], $14::int[], $15::jsonb[], $16::text[][], $17::jsonb[], $18::timestamptz[]
+        $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[],
+        $9::text[], $10::text[], $11::text[], $12::vector[],
+        $13::text[], $14::int[], $15::int[], $16::jsonb[], $17::text[][], $18::jsonb[], $19::timestamptz[]
        )
        ON CONFLICT (idempotency_key, chunk_index, bucket_id) DO UPDATE SET
         id              = EXCLUDED.id,
+        graph_id        = EXCLUDED.graph_id,
         document_id     = EXCLUDED.document_id,
         content         = EXCLUDED.content,
         embedding       = EXCLUDED.embedding,
         embedding_model = EXCLUDED.embedding_model,
         total_chunks    = EXCLUDED.total_chunks,
-        access_scope    = EXCLUDED.access_scope,
-        access_scope_ids = EXCLUDED.access_scope_ids,
         metadata        = EXCLUDED.metadata,
         indexed_at      = EXCLUDED.indexed_at`,
       params
@@ -438,7 +443,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
       }
       const paramOffset = params.length
       const rows = await sql(
-        `SELECT id, bucket_id, tenant_id, document_id, idempotency_key, content,
+        `SELECT id, bucket_id, tenant_id, graph_id, document_id, idempotency_key, content,
                 embedding_model, chunk_index, total_chunks, metadata, indexed_at,
                 1 - (embedding <=> $${paramOffset + 1}::vector) AS similarity
          FROM ${table}
@@ -466,8 +471,8 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     const table = await this.getTable(model)
     const vectorStr = `[${embedding.join(',')}]`
     const count = normalizedOpts.count
-    const useSemantic = normalizedOpts.signals?.semantic !== false
-    const useKeyword = normalizedOpts.signals?.keyword ?? true
+    const useSemantic = normalizedOpts.retrieval?.semantic !== false
+    const useKeyword = normalizedOpts.retrieval?.keyword ?? true
     if (!useSemantic && !useKeyword) return []
     const relaxedQuery = buildRelaxedKeywordQuery(query)
     const { where: filterWhere, params: filterParams } = buildWhere(normalizedOpts.filter)
@@ -530,12 +535,12 @@ export class PgVectorAdapter implements VectorStoreAdapter {
           ),` : ''}
           combined AS (
             ${[
-              useSemantic ? `SELECT id, bucket_id, tenant_id, document_id, idempotency_key, content,
+              useSemantic ? `SELECT id, bucket_id, tenant_id, graph_id, document_id, idempotency_key, content,
                    embedding, embedding_model, chunk_index, total_chunks, metadata, indexed_at,
                    similarity, NULL::double precision AS kw_score,
                    vrank, NULL::bigint AS krank
             FROM vector_ranked` : '',
-              useKeyword ? `SELECT id, bucket_id, tenant_id, document_id, idempotency_key, content,
+              useKeyword ? `SELECT id, bucket_id, tenant_id, graph_id, document_id, idempotency_key, content,
                    embedding, embedding_model, chunk_index, total_chunks, metadata, indexed_at,
                    NULL::double precision AS similarity, kw_score,
                    NULL::bigint AS vrank, krank
@@ -543,19 +548,19 @@ export class PgVectorAdapter implements VectorStoreAdapter {
             ].filter(Boolean).join('\n            UNION ALL\n            ')}
           ),
           scored AS (
-            SELECT id, bucket_id, tenant_id, document_id, idempotency_key, content,
+            SELECT id, bucket_id, tenant_id, graph_id, document_id, idempotency_key, content,
                    embedding_model, chunk_index, total_chunks, metadata, indexed_at,
                    similarity, kw_score,
               (COALESCE(1.0::float8 / (60 + vrank), 0) + COALESCE(1.0::float8 / (60 + krank), 0))::double precision AS rrf_score
             FROM combined
           )
-        SELECT id, bucket_id, tenant_id, document_id, idempotency_key, content,
+        SELECT id, bucket_id, tenant_id, graph_id, document_id, idempotency_key, content,
                embedding_model, chunk_index, total_chunks, metadata, indexed_at,
                MAX(similarity) AS similarity,
                MAX(kw_score) AS keyword_score,
                SUM(rrf_score)::double precision AS rrf_score
         FROM scored
-        GROUP BY id, bucket_id, tenant_id, document_id, idempotency_key, content,
+        GROUP BY id, bucket_id, tenant_id, graph_id, document_id, idempotency_key, content,
                  embedding_model, chunk_index, total_chunks, metadata, indexed_at
         ORDER BY SUM(rrf_score)::double precision DESC
         LIMIT $3`,
@@ -631,21 +636,9 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     return count
   }
 
-  async updateDocument(id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'accessScope' | 'metadata'>>): Promise<typegraphDocument> {
+  async updateDocument(id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'metadata'>>): Promise<typegraphDocument> {
     const document = await this.documentStore.update(id, input)
     if (!document) throw new Error(`Document not found: ${id}`)
-    if (input.accessScope !== undefined) {
-      const accessScope = input.accessScope ?? []
-      const accessScopeIds = accessScopeKeys(accessScope)
-      for (const table of this.modelTables.values()) {
-        await this.sql(
-          `UPDATE ${table}
-           SET access_scope = $1::jsonb, access_scope_ids = $2::text[]
-           WHERE document_id = $3`,
-          [JSON.stringify(accessScope), accessScopeIds, id]
-        )
-      }
-    }
     return document
   }
 
@@ -717,8 +710,8 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     const table = await this.getTable(model)
     const vectorStr = `[${embedding.join(',')}]`
     const count = normalizedOpts.count
-    const useSemantic = normalizedOpts.signals?.semantic !== false
-    const useKeyword = normalizedOpts.signals?.keyword ?? true
+    const useSemantic = normalizedOpts.retrieval?.semantic !== false
+    const useKeyword = normalizedOpts.retrieval?.keyword ?? true
     if (!useSemantic && !useKeyword) return []
     const relaxedQuery = buildRelaxedKeywordQuery(query)
     const { where: chunkFilterWhere, params: chunkFilterParams } = buildWhere(normalizedOpts.filter, 'c')
@@ -791,12 +784,12 @@ export class PgVectorAdapter implements VectorStoreAdapter {
           ),` : ''}
           combined AS (
             ${[
-              useSemantic ? `SELECT id, bucket_id, tenant_id, document_id, idempotency_key, content,
+              useSemantic ? `SELECT id, bucket_id, tenant_id, graph_id, document_id, idempotency_key, content,
                    embedding_model, chunk_index, total_chunks, metadata, indexed_at,
                    similarity, NULL::double precision AS kw_score,
                    vrank, NULL::bigint AS krank
             FROM vector_ranked` : '',
-              useKeyword ? `SELECT id, bucket_id, tenant_id, document_id, idempotency_key, content,
+              useKeyword ? `SELECT id, bucket_id, tenant_id, graph_id, document_id, idempotency_key, content,
                    embedding_model, chunk_index, total_chunks, metadata, indexed_at,
                    NULL::double precision AS similarity, kw_score,
                    NULL::bigint AS vrank, krank
@@ -809,13 +802,13 @@ export class PgVectorAdapter implements VectorStoreAdapter {
             FROM combined
           ),
           final_chunks AS (
-            SELECT id, bucket_id, tenant_id, document_id, idempotency_key, content,
+            SELECT id, bucket_id, tenant_id, graph_id, document_id, idempotency_key, content,
                    embedding_model, chunk_index, total_chunks, metadata, indexed_at,
                    MAX(similarity) AS similarity,
                    MAX(kw_score) AS keyword_score,
                    SUM(rrf_score)::double precision AS rrf_score
             FROM scored
-            GROUP BY id, bucket_id, tenant_id, document_id, idempotency_key, content,
+            GROUP BY id, bucket_id, tenant_id, graph_id, document_id, idempotency_key, content,
                      embedding_model, chunk_index, total_chunks, metadata, indexed_at
             ORDER BY SUM(rrf_score)::double precision DESC
             LIMIT $3
@@ -824,7 +817,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
                s.id AS document_record_id, s.name AS document_name, s.description AS document_description, s.url AS document_url,
                s.content_hash AS document_content_hash, s.chunk_count AS document_chunk_count,
                s.status AS document_status, s.access_scope AS document_access_scope,
-               s.bucket_id AS document_bucket_id, s.tenant_id AS document_tenant_id,
+               s.bucket_id AS document_bucket_id, s.tenant_id AS document_tenant_id, s.graph_id AS document_graph_id,
                s.group_id AS document_group_id, s.user_id AS document_user_id,
                s.agent_id AS document_agent_id, s.thread_id AS document_thread_id,
                s.indexed_at AS document_indexed_at, s.created_at AS document_created_at,
@@ -873,15 +866,15 @@ export class PgVectorAdapter implements VectorStoreAdapter {
   // --- Bucket persistence ---
 
   async upsertBucket(bucket: Bucket): Promise<Bucket> {
-    const accessScope = bucket.accessScope ?? []
     const rows = await this.sql(
       `INSERT INTO ${this.bucketsTable}
-        (id, name, description, status, tenant_id, group_id, user_id, agent_id, thread_id,
+        (id, name, description, status, tenant_id, graph_id, group_id, user_id, agent_id, thread_id,
          access_scope, access_scope_ids, embedding_model, search_embedding_model, index_defaults, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::text[], $12, $13, $14::jsonb, NOW())
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::text[], $13, $14, $15::jsonb, NOW())
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name, description = EXCLUDED.description,
          status = EXCLUDED.status, tenant_id = EXCLUDED.tenant_id,
+         graph_id = EXCLUDED.graph_id,
          group_id = EXCLUDED.group_id, user_id = EXCLUDED.user_id,
          agent_id = EXCLUDED.agent_id, thread_id = EXCLUDED.thread_id,
          access_scope = EXCLUDED.access_scope,
@@ -893,11 +886,13 @@ export class PgVectorAdapter implements VectorStoreAdapter {
        RETURNING *`,
       [
         bucket.id, bucket.name, bucket.description ?? null, bucket.status,
-        bucket.tenantId, bucket.groupId ?? null, bucket.userId ?? null,
+        bucket.tenantId, bucket.graph ?? 'public', bucket.groupId ?? null, bucket.userId ?? null,
         bucket.agentId ?? null, bucket.threadId ?? null,
-        JSON.stringify(accessScope), accessScopeKeys(accessScope),
+        JSON.stringify([]), [],
         bucket.embeddingModel ?? null, bucket.searchEmbeddingModel ?? null,
-        bucket.indexDefaults ? JSON.stringify(bucket.indexDefaults) : null,
+        bucket.indexDefaults || bucket.graphExtraction !== undefined
+          ? JSON.stringify({ ...(bucket.indexDefaults ?? {}), ...(bucket.graphExtraction !== undefined ? { graphExtraction: bucket.graphExtraction } : {}) })
+          : null,
       ]
     )
     return mapRowToBucket(rows[0]!)
@@ -956,6 +951,47 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     await this.sql(`DELETE FROM ${this.bucketsTable} WHERE id = $1`, [id])
   }
 
+  async upsertGraphRecord(input: TypeGraphGraphRecord): Promise<TypeGraphGraphRecord> {
+    const rows = await this.sql(
+      `INSERT INTO ${this.graphsTable}
+        (id, tenant_id, name, description, extends, access, metadata, updated_at)
+       VALUES ($1,$2,$3,$4,$5::text[],$6::jsonb,$7::jsonb,NOW())
+       ON CONFLICT (tenant_id, id) DO UPDATE SET
+         name = EXCLUDED.name,
+         description = EXCLUDED.description,
+         extends = EXCLUDED.extends,
+         access = EXCLUDED.access,
+         metadata = EXCLUDED.metadata,
+         updated_at = NOW()
+       RETURNING *`,
+      [
+        input.id,
+        input.tenantId,
+        input.name ?? null,
+        input.description ?? null,
+        input.extends ?? [],
+        input.access == null ? null : JSON.stringify(input.access),
+        JSON.stringify(input.metadata ?? {}),
+      ],
+    )
+    return mapRowToGraph(rows[0]!)
+  }
+
+  async getGraphRecord(tenantId: string, id: string): Promise<TypeGraphGraphRecord | null> {
+    const rows = await this.sql(`SELECT * FROM ${this.graphsTable} WHERE tenant_id = $1 AND id = $2`, [tenantId, id])
+    return rows.length > 0 ? mapRowToGraph(rows[0]!) : null
+  }
+
+  async listGraphRecords(tenantId: string): Promise<TypeGraphGraphRecord[]> {
+    const rows = await this.sql(`SELECT * FROM ${this.graphsTable} WHERE tenant_id = $1 ORDER BY id`, [tenantId])
+    return rows.map(mapRowToGraph)
+  }
+
+  async deleteGraphRecord(tenantId: string, id: string): Promise<void> {
+    if (id === 'public') throw new ConfigError('Cannot delete public graph.')
+    await this.sql(`DELETE FROM ${this.graphsTable} WHERE tenant_id = $1 AND id = $2`, [tenantId, id])
+  }
+
   async destroy(): Promise<void> {
     // No-op - the developer owns the connection lifecycle
   }
@@ -1011,6 +1047,14 @@ function buildWhere(filter?: ChunkFilter | null, alias?: string): { where: strin
     params.push(filter.threadId)
     conditions.push(`${col('thread_id')} = $${params.length}`)
   }
+  if (filter?.graphIds != null) {
+    if (filter.graphIds.length === 0) {
+      conditions.push('FALSE')
+    } else {
+      params.push(filter.graphIds)
+      conditions.push(`${col('graph_id')} = ANY($${params.length}::text[])`)
+    }
+  }
   if (filter?.documentId != null) {
     params.push(filter.documentId)
     conditions.push(`${col('document_id')} = $${params.length}`)
@@ -1019,16 +1063,6 @@ function buildWhere(filter?: ChunkFilter | null, alias?: string): { where: strin
     params.push(filter.idempotencyKey)
     conditions.push(`${col('idempotency_key')} = $${params.length}`)
   }
-  if (filter?.accessScope !== undefined) {
-    const accessScopeIds = accessScopeKeys(filter.accessScope)
-    if (accessScopeIds.length === 0) {
-      conditions.push(`cardinality(${col('access_scope_ids')}) = 0`)
-    } else {
-      params.push(accessScopeIds)
-      conditions.push(`(cardinality(${col('access_scope_ids')}) = 0 OR ${col('access_scope_ids')} && $${params.length}::text[])`)
-    }
-  }
-
   return {
     where: conditions.join(' AND '),
     params,
@@ -1044,6 +1078,7 @@ function mapRowToScoredChunk(
     idempotencyKey: row.idempotency_key as string,
     bucketId: (row.bucket_id ?? row.document_bucket_id) as string,
     tenantId: (row.tenant_id ?? row.document_tenant_id) as string,
+    graphId: (row.graph_id ?? row.document_graph_id ?? 'public') as string,
     groupId: (row.group_id as string) ?? undefined,
     userId: (row.user_id as string) ?? undefined,
     agentId: (row.agent_id as string) ?? undefined,
@@ -1074,6 +1109,8 @@ function mapRowToBucket(row: Record<string, unknown>): Bucket {
     name: row.name as string,
     description: (row.description as string) ?? undefined,
     status: row.status as Bucket['status'],
+    graph: (row.graph_id as string) ?? 'public',
+    graphExtraction: indexDefaults?.graphExtraction,
     embeddingModel: (row.embedding_model as string) ?? undefined,
     searchEmbeddingModel: (row.search_embedding_model as string) ?? undefined,
     indexDefaults,
@@ -1082,7 +1119,20 @@ function mapRowToBucket(row: Record<string, unknown>): Bucket {
     userId: (row.user_id as string) ?? undefined,
     agentId: (row.agent_id as string) ?? undefined,
     threadId: (row.thread_id as string) ?? undefined,
-    accessScope: parseJson(row.access_scope, []),
+  }
+}
+
+function mapRowToGraph(row: Record<string, unknown>): TypeGraphGraphRecord {
+  return {
+    id: row.id as string,
+    tenantId: row.tenant_id as string,
+    name: (row.name as string) ?? undefined,
+    description: (row.description as string) ?? undefined,
+    extends: (row.extends as string[] | undefined) ?? [],
+    access: parseJson(row.access, undefined),
+    metadata: parseJson(row.metadata, {}),
+    createdAt: row.created_at ? new Date(row.created_at as string) : undefined,
+    updatedAt: row.updated_at ? new Date(row.updated_at as string) : undefined,
   }
 }
 
@@ -1091,6 +1141,7 @@ function mapRowToDocument(row: Record<string, unknown>): typegraphDocument {
     id: (row.document_record_id ?? row.id) as string,
     bucketId: (row.document_bucket_id ?? row.bucket_id) as string,
     tenantId: (row.document_tenant_id ?? row.tenant_id) as string,
+    graphId: (row.document_graph_id ?? row.graph_id ?? 'public') as string,
     groupId: (row.document_group_id as string) ?? undefined,
     userId: (row.document_user_id as string) ?? undefined,
     agentId: (row.document_agent_id as string) ?? undefined,
@@ -1101,7 +1152,6 @@ function mapRowToDocument(row: Record<string, unknown>): typegraphDocument {
     contentHash: row.document_content_hash as string,
     chunkCount: row.document_chunk_count as number,
     status: row.document_status as typegraphDocument['status'],
-    accessScope: parseJson(row.document_access_scope, []),
     indexedAt: new Date(row.document_indexed_at as string),
     createdAt: new Date(row.document_created_at as string),
     updatedAt: new Date(row.document_updated_at as string),

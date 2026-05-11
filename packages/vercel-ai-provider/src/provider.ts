@@ -7,7 +7,7 @@ import type {
   DocumentInput,
   JobFilter,
   PaginationOpts,
-  QueryOpts,
+  SearchOptions,
   RememberOpts,
   TypeGraphContext,
   typegraphInstance,
@@ -25,18 +25,16 @@ export type TypegraphToolName =
   | 'typegraph_jobs_get'
 
 export type TypegraphToolDefinition = Tool<any, unknown>
-/** @deprecated Use TypegraphToolDefinition instead. */
-export type ToolDefinition = TypegraphToolDefinition
 
 export type TypegraphToolsTarget = Pick<
   typegraphInstance,
-  'bucket' | 'document' | 'search' | 'remember' | 'correct' | 'job'
+  'bucket' | 'document' | 'search' | 'memory' | 'job'
 >
 
-export interface TypegraphMemoryToolsTarget {
-  remember: (content: string, opts?: any) => Promise<unknown>
-  correct: (correction: string, opts?: any) => Promise<unknown>
-}
+export type TypegraphScopedMemoryTarget = Pick<
+  typegraphInstance['memory'],
+  'remember' | 'correct'
+>
 
 export interface TypegraphToolsOptions {
   /**
@@ -67,7 +65,7 @@ interface DocumentIngestInput {
 
 interface QueryInput {
   text: string
-  options?: Omit<QueryOpts, 'context'>
+  options?: Omit<SearchOptions, 'context'>
 }
 
 interface MemoryRememberInput extends Omit<RememberOpts, 'context'> {
@@ -87,6 +85,7 @@ interface JobsGetInput {
 }
 
 const IDENTITY_KEYS = [
+  'organizationId',
   'groupId',
   'userId',
   'agentId',
@@ -110,8 +109,6 @@ function compactContext(context?: TypeGraphContext): TypeGraphContext | undefine
       ;(out as JsonObject)[key] = value as unknown
     }
   }
-  if (context.principals?.length) out.principals = context.principals
-  if (context.access?.length) out.access = context.access
   if (context.traceId) out.traceId = context.traceId
   if (context.spanId) out.spanId = context.spanId
   if (context.agentName) out.agentName = context.agentName
@@ -128,8 +125,8 @@ function scopedOptions<T extends JsonObject>(value: T | undefined, opts: Typegra
   }) as T & { context?: TypeGraphContext | undefined }
 }
 
-function scopedQueryOptions(value: QueryInput['options'] | undefined, opts: TypegraphToolsOptions): QueryOpts {
-  return scopedOptions((value ?? {}) as JsonObject, opts) as QueryOpts
+function scopedQueryOptions(value: QueryInput['options'] | undefined, opts: TypegraphToolsOptions): SearchOptions {
+  return scopedOptions((value ?? {}) as JsonObject, opts) as SearchOptions
 }
 
 function normalizeDocument(document: DocumentInput): DocumentInput {
@@ -231,7 +228,7 @@ const indexDefaultsSchema = {
   },
 }
 
-function memoryRememberTool(target: TypegraphMemoryToolsTarget, opts: TypegraphToolsOptions): Tool<MemoryRememberInput, unknown> {
+function memoryRememberTool(target: TypegraphScopedMemoryTarget, opts: TypegraphToolsOptions): Tool<MemoryRememberInput, unknown> {
   return {
     description: 'Store a scoped TypeGraph memory for future recall.',
     inputSchema: schema<MemoryRememberInput>({
@@ -254,7 +251,7 @@ function memoryRememberTool(target: TypegraphMemoryToolsTarget, opts: TypegraphT
   }
 }
 
-function memoryCorrectTool(target: TypegraphMemoryToolsTarget, opts: TypegraphToolsOptions): Tool<MemoryCorrectInput, unknown> {
+function memoryCorrectTool(target: TypegraphScopedMemoryTarget, opts: TypegraphToolsOptions): Tool<MemoryCorrectInput, unknown> {
   return {
     description: 'Correct scoped TypeGraph memory with a natural language correction.',
     inputSchema: schema<MemoryCorrectInput>({
@@ -275,7 +272,7 @@ function memoryCorrectTool(target: TypegraphMemoryToolsTarget, opts: TypegraphTo
 }
 
 export function typegraphMemoryTools(
-  memory: TypegraphMemoryToolsTarget,
+  memory: TypegraphScopedMemoryTarget,
   opts: TypegraphToolsOptions = {},
 ): Pick<Record<TypegraphToolName, TypegraphToolDefinition>, 'typegraph_remember' | 'typegraph_correct'> {
   return {
@@ -404,7 +401,7 @@ export function typegraphTools(
                 type: 'array',
                 items: {
                   type: 'string',
-                  enum: ['documents', 'events', 'threads', 'entities', 'facts', 'memories'],
+                  enum: ['documents', 'events', 'threads', 'entities', 'facts'],
                 },
               },
               weights: {
@@ -444,7 +441,7 @@ export function typegraphTools(
                       format: { type: 'string', enum: ['xml', 'markdown', 'plain'] },
                       sections: {
                         type: 'array',
-                        items: { type: 'string', enum: ['facts', 'entities', 'chunks', 'memories'] },
+                        items: { type: 'string', enum: ['facts', 'entities', 'chunks'] },
                       },
                       maxTotalTokens: { type: 'number' },
                     },
@@ -463,8 +460,8 @@ export function typegraphTools(
       },
     },
 
-    typegraph_remember: memoryRememberTool(typegraph, opts),
-    typegraph_correct: memoryCorrectTool(typegraph, opts),
+    typegraph_remember: memoryRememberTool(typegraph.memory, opts),
+    typegraph_correct: memoryCorrectTool(typegraph.memory, opts),
 
     typegraph_jobs_list: {
       description: 'List TypeGraph jobs in the configured context.',

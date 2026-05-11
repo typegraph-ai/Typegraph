@@ -5,7 +5,7 @@ Postgres + pgvector storage for TypeGraph self-hosted deployments.
 This adapter is the default self-hosted storage target for the SDK. It stores
 documents, chunks, buckets, business events, threads, links, jobs, policies,
 ontology config, telemetry, and the memory/graph backing store used by
-`graphExtraction`, `graph.*`, `remember`, `recall`, and `correct`.
+`graphExtraction`, `graph.*`, and `memory.*`.
 
 ## Install
 
@@ -32,13 +32,12 @@ deployment.
 import { gateway } from '@ai-sdk/gateway'
 import { neon } from '@neondatabase/serverless'
 import { PgVectorAdapter } from '@typegraph-ai/adapter-pgvector'
-import { TenantId, typegraphDeploy, typegraphInit } from '@typegraph-ai/sdk'
+import { typegraphDeploy, typegraphInit } from '@typegraph-ai/sdk'
 
 const sql = neon(process.env.DATABASE_URL!)
 const vectorStore = new PgVectorAdapter({ sql })
 
 const config = {
-  tenantId: TenantId('tenant_acme'),
   vectorStore,
   embedding: {
     model: gateway.embeddingModel('openai/text-embedding-3-small'),
@@ -111,8 +110,9 @@ Core storage created by `PgVectorAdapter.deploy()`:
 
 | Table | Purpose |
 | --- | --- |
-| `typegraph_buckets` | Named document/event containers and embedding settings |
-| `typegraph_documents` | Durable long-form records with `name`, `description`, metadata, and access scope |
+| `typegraph_graphs` | Graph overlay definitions and access config |
+| `typegraph_buckets` | Named document/event containers, embedding settings, and write-graph routing |
+| `typegraph_documents` | Durable long-form records with `name`, `description`, metadata, and graph id |
 | `typegraph_document_chunks_*` | Per-embedding-model chunk tables with pgvector HNSW indexes and Postgres full-text indexes |
 | `typegraph_document_chunks_registry` | Registry mapping embedding model keys to dynamic chunk tables |
 | `typegraph_hashes` | Content hash and deduplication state |
@@ -129,7 +129,7 @@ When graph/memory are enabled, TypeGraph also initializes the memory graph backi
 store through `PgMemoryStoreAdapter`. Those internal tables include memories,
 semantic entities, entity external IDs, graph edges, chunk mentions, and fact
 records. Public SDK calls expose these as entities, facts, graph results, and
-memories.
+private memory APIs.
 
 ## Embeddings
 
@@ -137,7 +137,6 @@ The SDK uses separate ingest and search embedders when configured:
 
 ```ts
 await typegraphInit({
-  tenantId: 'tenant_acme',
   vectorStore: adapter,
   embedding: documentEmbedder,
   searchEmbedding,
@@ -149,12 +148,12 @@ Each embedding model/dimension pair gets a separate chunk table. Buckets store
 `embeddingModel` and optional `searchEmbeddingModel`; both must point at
 registered embedders in the same vector space.
 
-## Documents, Events, And Access
+## Documents, Events, And Graph Routing
 
 The adapter persists the SDK's public document/event/thread model:
 
 ```ts
-import { UserId, entityRef } from '@typegraph-ai/sdk'
+import { GroupId, UserId, entityRef } from '@typegraph-ai/sdk'
 
 await tg.event.ingest(
   {
@@ -182,15 +181,14 @@ await tg.event.ingest(
     bucketId: 'zendesk',
     context: {
       userId: UserId('dana'),
-      access: [entityRef('group', 'support'), entityRef('group', 'product')],
+      groupId: GroupId('support'),
     },
-    graphExtraction: true,
   },
 )
 ```
 
-`context.access` is stored as `access_scope_ids` and enforced during search.
-Omitted or empty access means tenant-wide visibility. Participants are stored for
+The selected bucket decides the write graph. If no bucket is supplied, TypeGraph
+uses bucket `public`, which writes to graph `public`. Participants are stored for
 business graph/provenance and do not grant access automatically.
 
 ## Search Support
@@ -200,7 +198,7 @@ The adapter supports:
 - Semantic vector search over chunk embeddings.
 - Postgres full-text keyword search over chunk content.
 - Hybrid search used by SDK `weights.semantic` and `weights.bm25`.
-- Metadata, bucket, document, tenant, identity, and access-scope filtering.
+- Metadata, bucket, document, tenant, identity, and graph filtering.
 - Recency fields used by SDK recency scoring.
 - Graph/memory backing store when configured through TypeGraph.
 
@@ -208,9 +206,10 @@ Use SDK search options to select resources and weights:
 
 ```ts
 const response = await tg.search('Which customers are blocked by SSO issues?', {
+  graph: 'internal',
   context: {
     userId: UserId('dana'),
-    principals: [entityRef('group', 'product')],
+    groupId: GroupId('product'),
   },
   resources: ['events', 'documents', 'facts', 'entities'],
   weights: { semantic: 1, bm25: 0.7, graph: 0.8, recency: 0.3 },

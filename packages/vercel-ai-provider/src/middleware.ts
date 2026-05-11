@@ -1,10 +1,14 @@
-import type { TypegraphMemory } from '@typegraph-ai/sdk'
+import type { TypeGraphContext, typegraphInstance } from '@typegraph-ai/sdk'
 
 // ── Middleware ──
 // Structural type matching Vercel AI SDK's middleware pattern.
 // No imports from `ai` or `@ai-sdk/*`.
 
 export interface MemoryMiddlewareOpts {
+  /** Trusted request context merged into recall and turn capture calls. */
+  context?: TypeGraphContext | undefined
+  /** Run graph extraction when captured turns are stored. Default: false */
+  graphExtraction?: boolean | undefined
   /** Include semantic facts. Default: true */
   includeFacts?: boolean | undefined
   /** Include episodic memories. Default: false */
@@ -37,7 +41,7 @@ function typesFor(opts: MemoryMiddlewareOpts): ('semantic' | 'episodic' | 'proce
  * const enrichedPrompt = await middleware.enrichPrompt('What should Alice have for dinner?')
  * ```
  */
-export function typegraphMemoryMiddleware(memory: TypegraphMemory, opts: MemoryMiddlewareOpts = {}) {
+export function typegraphMemoryMiddleware(typegraph: Pick<typegraphInstance, 'memory' | 'thread'>, opts: MemoryMiddlewareOpts = {}) {
   const types = typesFor(opts)
   const format = opts.format ?? 'xml'
   const limit = opts.limit ?? 10
@@ -45,14 +49,14 @@ export function typegraphMemoryMiddleware(memory: TypegraphMemory, opts: MemoryM
   return {
     async enrichPrompt(prompt: string): Promise<string> {
       if (types.length === 0) return prompt
-      const context = await memory.recall(prompt, { types, limit, format })
+      const context = await typegraph.memory.recall(prompt, { context: opts.context, types, limit, format })
       if (!context) return prompt
       return `${context}\n\n${prompt}`
     },
 
     async enrichSystem(systemPrompt: string, userQuery: string): Promise<string> {
       if (types.length === 0) return systemPrompt
-      const context = await memory.recall(userQuery, { types, limit, format })
+      const context = await typegraph.memory.recall(userQuery, { context: opts.context, types, limit, format })
       if (!context) return systemPrompt
       return `${systemPrompt}\n\n${context}`
     },
@@ -64,7 +68,19 @@ export function typegraphMemoryMiddleware(memory: TypegraphMemory, opts: MemoryM
       messages: { role: 'user' | 'assistant'; content: string }[],
       threadId?: string,
     ): Promise<void> {
-      await memory.addThreadTurn(messages, { threadId })
+      const resolvedThreadId = threadId ?? opts.context?.threadId
+      if (!resolvedThreadId) {
+        throw new Error('typegraphMemoryMiddleware.afterResponse requires a threadId argument or opts.context.threadId.')
+      }
+      for (const message of messages) {
+        await typegraph.thread.addTurn(String(resolvedThreadId), {
+          role: message.role,
+          content: message.content,
+        }, {
+          context: opts.context,
+          graphExtraction: opts.graphExtraction,
+        })
+      }
     },
   }
 }

@@ -1,5 +1,4 @@
 import type { DocumentInput } from './document.js'
-import type { AccessScope } from './identity.js'
 import type { Embedder } from '../embedding/provider.js'
 import type { AISDKEmbeddingInput } from '../embedding/ai-sdk-adapter.js'
 
@@ -26,7 +25,10 @@ export interface Bucket {
   userId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
-  accessScope?: AccessScope | undefined
+  /** Write graph for documents/events/threads routed through this bucket. Defaults to "public". */
+  graph?: string | undefined
+  /** Bucket default for graph extraction. Can also be set under indexDefaults.graphExtraction. */
+  graphExtraction?: boolean | undefined
 }
 
 /**
@@ -61,6 +63,10 @@ export interface CreateBucketInput {
   /** Search embedding model for this bucket. Must embed into same vector space as embeddingModel.
    *  Defaults to the instance's searchEmbedding, or the ingest embeddingModel if not set. */
   searchEmbeddingModel?: string | undefined
+  /** Write graph for this bucket. Defaults to "public". */
+  graph?: string | undefined
+  /** Bucket default for graph extraction. Equivalent to indexDefaults.graphExtraction. */
+  graphExtraction?: boolean | undefined
   indexDefaults?: IndexDefaults | undefined
 }
 

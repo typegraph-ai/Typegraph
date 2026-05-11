@@ -52,6 +52,8 @@ export interface ExternalId {
 
 export interface MemoryRecord extends TemporalRecord {
   id: string
+  /** Logical graph that owns this memory record. */
+  graphId?: string | undefined
   category: MemoryCategory
   /** Lifecycle status - drives query filtering and allowed operations */
   status: MemoryStatus
@@ -95,6 +97,8 @@ export interface EpisodicMemory extends MemoryRecord {
 
 export interface SemanticEntity {
   id: string
+  /** Logical graph that owns this entity profile. */
+  graphId?: string | undefined
   /** Canonical name */
   name: string
   /** Type classification: 'person', 'organization', 'concept', 'tool', etc. */
@@ -140,6 +144,8 @@ export type SemanticGraphNodeType = 'entity' | 'chunk' | 'memory'
 
 export interface SemanticGraphEdge {
   id: string
+  /** Logical graph that owns this graph edge. */
+  graphId?: string | undefined
   sourceType: SemanticGraphNodeType
   sourceId: string
   targetType: SemanticGraphNodeType
@@ -157,6 +163,8 @@ export interface SemanticGraphEdge {
 
 export interface SemanticEntityChunkEdge {
   id: string
+  /** Logical graph that owns this entity/chunk link. */
+  graphId?: string | undefined
   entityId: string
   chunkRef: ChunkRef
   weight: number
@@ -172,6 +180,7 @@ export interface SemanticEntityChunkEdge {
 
 export interface SemanticChunkRecord extends ChunkRef {
   content: string
+  graphId?: string | undefined
   totalChunks: number
   metadata: Record<string, unknown>
   similarity?: number | undefined
@@ -184,6 +193,8 @@ export interface SemanticChunkRecord extends ChunkRef {
 
 export interface SemanticFactRecord {
   id: string
+  /** Logical graph that owns this fact record. */
+  graphId?: string | undefined
   edgeId: string
   sourceEntityId: string
   targetEntityId: string
@@ -206,6 +217,8 @@ export interface SemanticFactRecord {
 
 export interface SemanticEdge {
   id: string
+  /** Logical graph that owns this semantic edge. */
+  graphId?: string | undefined
   sourceType?: 'entity' | undefined
   sourceId?: string | undefined
   targetType?: 'entity' | undefined

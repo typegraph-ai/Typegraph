@@ -1,7 +1,7 @@
 import type { PromptFormat, PromptSection, PromptBuilderOptions, PromptStats, QueryResults } from '../types/query.js'
 import { formatFactEvidence } from '../graph/retrieval-primitives.js'
 
-const DEFAULT_CONTEXT_SECTIONS: PromptSection[] = ['chunks', 'facts', 'entities', 'memories']
+const DEFAULT_CONTEXT_SECTIONS: PromptSection[] = ['chunks', 'facts', 'entities']
 const DEFAULT_MAX_TOTAL_TOKENS = 30_000
 const DEFAULT_MAX_FACT_TOKENS = 1_500
 const DEFAULT_MAX_ENTITY_TOKENS = 1_500
@@ -30,7 +30,6 @@ interface ResolvedContextOptions {
   maxChunkTokens?: number | undefined
   maxFactTokens: number
   maxEntityTokens: number
-  maxMemoryTokens?: number | undefined
 }
 
 export interface BuildPromptResult {
@@ -50,7 +49,6 @@ export function buildPrompt(
     chunks: selectSection(entries.chunks, opts.maxChunkTokens, countTokens, opts),
     facts: selectSection(entries.facts, opts.maxFactTokens, countTokens, opts),
     entities: selectSection(entries.entities, opts.maxEntityTokens, countTokens, opts),
-    memories: selectSection(entries.memories, opts.maxMemoryTokens, countTokens, opts),
   }
 
   trimToTotalBudget(selected, opts.sections, opts.maxTotalTokens, countTokens, opts)
@@ -70,7 +68,6 @@ function normalizeContextOptions(context: true | PromptBuilderOptions): Resolved
     maxChunkTokens: opts.maxChunkTokens,
     maxFactTokens: opts.maxFactTokens ?? DEFAULT_MAX_FACT_TOKENS,
     maxEntityTokens: opts.maxEntityTokens ?? DEFAULT_MAX_ENTITY_TOKENS,
-    maxMemoryTokens: opts.maxMemoryTokens,
   }
 }
 
@@ -130,20 +127,6 @@ function entriesBySection(results: QueryResults): Record<PromptSection, ContextE
         similarity: entity.similarity != null ? formatScore(entity.similarity) : undefined,
       },
       metadata: nonEmptyRecord(entity.metadata),
-    })),
-    memories: results.memories.map((memory, index) => ({
-      section: 'memories',
-      index: index + 1,
-      content: memory.content,
-      attributes: {
-        id: memory.id,
-        category: memory.category,
-        status: memory.status,
-        score: formatScore(memory.score),
-        importance: formatScore(memory.importance),
-        accessCount: memory.accessCount,
-      },
-      metadata: nonEmptyRecord(memory.metadata),
     })),
   }
 }
@@ -332,7 +315,6 @@ function emptySelectedSections(): Record<PromptSection, SelectedSection> {
     chunks: { entries: [], available: 0, truncated: false },
     facts: { entries: [], available: 0, truncated: false },
     entities: { entries: [], available: 0, truncated: false },
-    memories: { entries: [], available: 0, truncated: false },
   }
 }
 
@@ -357,7 +339,6 @@ function singular(section: PromptSection): string {
     case 'chunks': return 'chunk'
     case 'facts': return 'fact'
     case 'entities': return 'entity'
-    case 'memories': return 'memory'
   }
 }
 

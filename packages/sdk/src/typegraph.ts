@@ -1,6 +1,6 @@
 import type { VectorStoreAdapter, UndeployResult } from './types/adapter.js'
 import type { Bucket, CreateBucketInput, BucketListFilter, BucketStorageFilter, EmbeddingConfig } from './types/bucket.js'
-import type { QueryOpts, QueryResponse } from './types/query.js'
+import type { SearchOptions, QueryResponse } from './types/query.js'
 import type { IngestOptions, IndexResult } from './types/index-types.js'
 import type { Embedder } from './embedding/provider.js'
 import { embeddingModelKey } from './embedding/provider.js'
@@ -11,24 +11,24 @@ import type { UpsertLinkInput } from './types/link.js'
 import type { typegraphHooks } from './types/hooks.js'
 import type { LLMProvider, LLMConfig } from './types/llm-provider.js'
 import type {
-  MemoryBridge, KnowledgeGraphBridge,
+  KnowledgeGraphBridge,
   EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchTrace, ChunkResult,
   SubgraphOpts, SubgraphResult, GraphStats, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput,
   MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult,
-  RememberOpts, ForgetOpts, CorrectOpts, AddThreadTurnOpts,
+  RememberOpts, ForgetOpts, CorrectOpts,
   RecallOpts, HealthCheckOpts,
 } from './types/graph-bridge.js'
-import type { ExtractionCoreferenceCache, Extractor, Reranker } from './types/extractor.js'
-import type { AccessScope, TypeGraphOptions, TypeGraphWriteOptions, typegraphIdentity } from './types/identity.js'
-import { identityAccessScope } from './types/identity.js'
+import type { ExtractionCoreferenceCache, ExtractedEntity, Extractor, ExtractorInput, Reranker } from './types/extractor.js'
+import type { TypeGraphOptions, TypeGraphWriteOptions, typegraphIdentity } from './types/identity.js'
 import type { typegraphEventSink, typegraphEventType, TelemetryOpts } from './types/events.js'
 import type { PolicyStoreAdapter, CreatePolicyInput, UpdatePolicyInput, Policy, PolicyType, PolicyAction } from './types/policy.js'
-import type { ThreadTurnResult, MemoryHealthReport } from './types/memory.js'
+import type { MemoryHealthReport } from './types/memory.js'
 import type { ExternalId, MemoryRecord } from './memory/types/memory.js'
 import type { typegraphLogger } from './types/logger.js'
 import type { Job, JobFilter, UpsertJobInput, JobStatusPatch } from './types/job.js'
 import type { PaginationOpts, PaginatedResult } from './types/pagination.js'
 import type { OntologyConfig } from './types/ontology.js'
+import type { GraphAccessPrincipals, GraphConfig, TypeGraphGraphRecord } from './types/graph.js'
 import { PolicyEngine, PolicyViolationError } from './governance/policy-engine.js'
 import type { AISDKLLMInput } from './llm/ai-sdk-adapter.js'
 import { aiSdkEmbedder, isAISDKEmbeddingInput } from './embedding/ai-sdk-adapter.js'
@@ -39,17 +39,19 @@ import { defaultChunker } from './index-engine/chunker.js'
 import { QueryPlanner } from './query/planner.js'
 import { buildPrompt } from './query/assemble.js'
 import { createCloudInstance } from './cloud/cloud-instance.js'
-import { createMemoryBridge } from './memory/memory-bridge.js'
+import { MemoryService } from './memory/service.js'
 import { createKnowledgeGraphBridge } from './graph/graph-bridge.js'
 import { NotFoundError, NotInitializedError, ConfigError } from './types/errors.js'
 import { generateId } from './utils/id.js'
-import { assertHasMeaningfulFilter, assertNoLegacyPublicContextKeys, compactTypeGraphContext, contextAccess, contextTelemetry, contextToIdentity, hasMeaningfulFilter, optionalCompactObject } from './utils/input.js'
+import { assertHasMeaningfulFilter, assertNoLegacyPublicContextKeys, compactTypeGraphContext, contextTelemetry, contextToIdentity, hasMeaningfulFilter, optionalCompactObject } from './utils/input.js'
 
 // ── Default Bucket ──
 
-export const DEFAULT_BUCKET_ID = 'bkt_default'
-export const DEFAULT_BUCKET_NAME = 'Default'
-export const DEFAULT_BUCKET_DESCRIPTION = 'System default bucket. All ingested documents without an explicit bucket assignment are stored here. Cannot be deleted.'
+export const DEFAULT_GRAPH_ID = 'public'
+export const DEFAULT_BUCKET_ID = 'public'
+export const DEFAULT_TENANT_ID = 'public'
+export const DEFAULT_BUCKET_NAME = 'Public'
+export const DEFAULT_BUCKET_DESCRIPTION = 'Default public bucket. Documents and events ingested without an explicit bucket are written to the public graph.'
 
 // Fills in defaults for optional fields the engine relies on.
 export function normalizeDocumentInput<TMeta extends Record<string, unknown>>(document: DocumentInput<TMeta>): DocumentInput<TMeta> {
@@ -61,8 +63,55 @@ export function normalizeDocumentInput<TMeta extends Record<string, unknown>>(do
   }
 }
 
-/** @deprecated Use LLMConfig instead. */
-export type LLMInput = LLMConfig
+function normalizeGraphConfig(id: string, tenantId: string, input?: GraphConfig): TypeGraphGraphRecord {
+  return {
+    id,
+    tenantId,
+    name: input?.name ?? (id === DEFAULT_GRAPH_ID ? 'Public' : id),
+    description: input?.description,
+    extends: id === DEFAULT_GRAPH_ID ? [] : input?.extends,
+    access: input?.access ?? (id === DEFAULT_GRAPH_ID ? 'public' : undefined),
+    metadata: input?.metadata ?? {},
+  }
+}
+
+type GraphPrincipalKind = 'organization' | 'group' | 'user' | 'agent' | 'thread'
+type InternalGraphPrincipal = `${GraphPrincipalKind}:${string}`
+
+function principalFor(kind: GraphPrincipalKind, id: string | undefined): InternalGraphPrincipal | undefined {
+  if (!id) return undefined
+  return `${kind}:${id}` as InternalGraphPrincipal
+}
+
+function accessPrincipalKeys(access?: GraphAccessPrincipals): InternalGraphPrincipal[] {
+  if (Array.isArray(access)) {
+    throw new ConfigError('Graph access must use typed principal fields, for example { groups: [GroupId("employees")] }, not colon-prefixed strings.')
+  }
+  const keys: InternalGraphPrincipal[] = []
+  for (const id of access?.organizations ?? []) keys.push(`organization:${id}`)
+  for (const id of access?.groups ?? []) keys.push(`group:${id}`)
+  for (const id of access?.users ?? []) keys.push(`user:${id}`)
+  for (const id of access?.agents ?? []) keys.push(`agent:${id}`)
+  for (const id of access?.threads ?? []) keys.push(`thread:${id}`)
+  return keys
+}
+
+function accessConfigForPrincipal(kind: GraphPrincipalKind, id: string): GraphAccessPrincipals {
+  switch (kind) {
+    case 'organization': return { organizations: [id] }
+    case 'group': return { groups: [id] }
+    case 'user': return { users: [id] }
+    case 'agent': return { agents: [id] }
+    case 'thread': return { threads: [id] }
+  }
+}
+
+function normalizeRuntimeConfig(config: typegraphConfig): typegraphConfig & { tenantId: string } {
+  return {
+    ...config,
+    tenantId: config.tenantId?.trim() || DEFAULT_TENANT_ID,
+  }
+}
 
 export interface typegraphConfig {
   // ── Cloud mode (mutually exclusive with vectorStore/embedding) ──
@@ -83,13 +132,17 @@ export interface typegraphConfig {
   /** Register additional embedders for per-bucket overrides.
    *  Each provider is keyed by its `.model` string. Buckets reference these by model name. */
   additionalEmbeddings?: EmbeddingConfig[] | undefined
-  tenantId: string
+  tenantId?: string | undefined
   tokenizer?: ((text: string) => number) | undefined
   hooks?: typegraphHooks | undefined
   /** Optional LLM provider for triple extraction, query classification, and memory operations. */
   llm?: LLMConfig | undefined
   /** Optional custom extractor. When omitted, TypeGraph uses its internal default extractor. */
   extractor?: Extractor | undefined
+  /** Named graph overlays. The public graph is created automatically when omitted. */
+  graphs?: Record<string, GraphConfig> | undefined
+  /** Optional bucket definitions loaded during deploy/init. Buckets route writes to graphs. */
+  buckets?: Record<string, Omit<CreateBucketInput, 'id'> & { id?: string | undefined }> | undefined
   /** Optional short-lived cache for cross-source entity coreference context. */
   extractionCoreferenceCache?: ExtractionCoreferenceCache | undefined
   /** Optional reranker for search result post-processing. */
@@ -133,9 +186,6 @@ export function resolveLLMProvider(config: LLMConfig): LLMProvider {
 
 /** Validate typegraph configuration. Throws ConfigError for invalid configs. */
 function validateConfig(config: typegraphConfig): void {
-  if (!config.tenantId?.trim()) {
-    throw new ConfigError('tenantId is required. TypeGraph stores every record inside exactly one tenant boundary.')
-  }
   if (config.apiKey && (config.vectorStore || config.embedding)) {
     throw new ConfigError('Both apiKey (cloud mode) and vectorStore/embedding (self-hosted mode) provided. Choose one.')
   }
@@ -156,13 +206,19 @@ function validateConfig(config: typegraphConfig): void {
 
 export interface BucketsApi {
   create(input: CreateBucketInput, opts?: TypeGraphOptions | null): Promise<Bucket>
+  upsert(input: CreateBucketInput & { id: string }, opts?: TypeGraphOptions | null): Promise<Bucket>
   get(bucketId: string, opts?: TypeGraphOptions | null): Promise<Bucket | undefined>
   list(filter?: BucketListFilter | null, opts?: TypeGraphOptions | null, pagination?: PaginationOpts | null): Promise<Bucket[] | PaginatedResult<Bucket>>
-  update(bucketId: string, input: Partial<Pick<Bucket, 'name' | 'description' | 'status' | 'indexDefaults'>>, opts?: TypeGraphOptions | null): Promise<Bucket>
+  update(bucketId: string, input: Partial<Pick<Bucket, 'name' | 'description' | 'status' | 'indexDefaults' | 'graph' | 'graphExtraction'>>, opts?: TypeGraphOptions | null): Promise<Bucket>
   delete(bucketId: string, opts?: TypeGraphOptions | null): Promise<void>
 }
 
 export interface RequestOptions extends TypeGraphOptions {}
+export interface TypeGraphGraphOptions extends TypeGraphOptions {
+  /** Graph perspective for graph API operations. Defaults to the public graph. */
+  graph?: string | undefined
+}
+export type GraphSubgraphOptions = Omit<SubgraphOpts, 'identity'> & TypeGraphGraphOptions
 
 export type DocumentIngestOptions = Omit<IngestOptions, 'tenantId' | 'groupId' | 'userId' | 'agentId' | 'threadId' | 'accessScope' | 'traceId' | 'spanId' | 'bucketId' | 'graphExtraction'> & TypeGraphWriteOptions
 
@@ -192,10 +248,10 @@ export interface EventsApi {
 }
 
 export interface ThreadsApi {
-  upsert(input: ThreadInput, opts?: TypeGraphOptions | null): Promise<typegraphThread>
+  upsert(input: ThreadInput, opts?: TypeGraphWriteOptions | null): Promise<typegraphThread>
   get(id: string, opts?: TypeGraphOptions | null): Promise<typegraphThread | null>
   list(filter?: ThreadFilter | null, opts?: TypeGraphOptions | null): Promise<typegraphThread[]>
-  addTurn(threadId: string, turn: ThreadTurnInput, opts?: (TypeGraphOptions & { graphExtraction?: boolean | undefined }) | null): Promise<GraphThreadTurnResult>
+  addTurn(threadId: string, turn: ThreadTurnInput, opts?: TypeGraphWriteOptions | null): Promise<GraphThreadTurnResult>
 }
 
 export interface JobsApi {
@@ -209,40 +265,54 @@ export interface JobsApi {
   incrementProgress(id: string, processedDelta: number): Promise<void>
 }
 
+export interface MemoryApi {
+  /** Store an explicit private memory. Set graphExtraction to run configured extraction in the derived private memory graph. */
+  remember(content: string, opts?: RememberOpts | null): Promise<MemoryRecord>
+  /** Invalidate a memory and its associated graph edges. Identity must match the memory owner. */
+  forget(id: string, opts?: ForgetOpts | null): Promise<void>
+  /** Apply a natural language correction. */
+  correct(correction: string, opts?: CorrectOpts | null): Promise<{ invalidated: number; created: number; summary: string }>
+  /** Search memories by semantic similarity. When `opts.format` is set, returns a formatted string ready for an LLM prompt. */
+  recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
+  recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
+  /** Check memory system health — returns stats about stored memories, entities, and edges. */
+  healthCheck(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport>
+}
+
 export interface GraphApi {
-  upsertEntity(input: UpsertGraphEntityInput, opts?: TypeGraphOptions | null): Promise<EntityDetail>
-  upsertEntities(inputs: UpsertGraphEntityInput[], opts?: TypeGraphOptions | null): Promise<EntityDetail[]>
-  resolveEntity(ref: GraphEntityRef | string, opts?: TypeGraphOptions | null): Promise<EntityDetail | null>
-  linkExternalIds(entityId: string, externalIds: ExternalId[], opts?: TypeGraphOptions | null): Promise<EntityDetail>
-  mergeEntities(input: MergeGraphEntitiesInput, opts?: TypeGraphOptions | null): Promise<MergeGraphEntitiesResult>
-  deleteEntity(entityId: string, opts?: (DeleteGraphEntityOpts & TypeGraphOptions) | null): Promise<DeleteGraphEntityResult>
-  upsertEdge(input: UpsertGraphEdgeInput, opts?: TypeGraphOptions | null): Promise<EdgeResult>
-  upsertEdges(inputs: UpsertGraphEdgeInput[], opts?: TypeGraphOptions | null): Promise<EdgeResult[]>
-  upsertFact(input: UpsertGraphFactInput, opts?: TypeGraphOptions | null): Promise<FactResult>
-  upsertFacts(inputs: UpsertGraphFactInput[], opts?: TypeGraphOptions | null): Promise<FactResult[]>
+  upsertEntity(input: UpsertGraphEntityInput, opts?: TypeGraphGraphOptions | null): Promise<EntityDetail>
+  upsertEntities(inputs: UpsertGraphEntityInput[], opts?: TypeGraphGraphOptions | null): Promise<EntityDetail[]>
+  resolveEntity(ref: GraphEntityRef | string, opts?: TypeGraphGraphOptions | null): Promise<EntityDetail | null>
+  linkExternalIds(entityId: string, externalIds: ExternalId[], opts?: TypeGraphGraphOptions | null): Promise<EntityDetail>
+  mergeEntities(input: MergeGraphEntitiesInput, opts?: TypeGraphGraphOptions | null): Promise<MergeGraphEntitiesResult>
+  deleteEntity(entityId: string, opts?: (DeleteGraphEntityOpts & TypeGraphGraphOptions) | null): Promise<DeleteGraphEntityResult>
+  upsertEdge(input: UpsertGraphEdgeInput, opts?: TypeGraphGraphOptions | null): Promise<EdgeResult>
+  upsertEdges(inputs: UpsertGraphEdgeInput[], opts?: TypeGraphGraphOptions | null): Promise<EdgeResult[]>
+  upsertFact(input: UpsertGraphFactInput, opts?: TypeGraphGraphOptions | null): Promise<FactResult>
+  upsertFacts(inputs: UpsertGraphFactInput[], opts?: TypeGraphGraphOptions | null): Promise<FactResult[]>
   searchEntities(query: string, opts?: ({
     limit?: number
     entityType?: string
     minConnections?: number
-  } & TypeGraphOptions) | null): Promise<EntityResult[]>
-  getEntity(id: string, opts?: TypeGraphOptions | null): Promise<EntityDetail | null>
+  } & TypeGraphGraphOptions) | null): Promise<EntityResult[]>
+  getEntity(id: string, opts?: TypeGraphGraphOptions | null): Promise<EntityDetail | null>
   getEdges(entityId: string, opts?: ({
     direction?: 'in' | 'out' | 'both'
     relation?: string
     limit?: number
-  } & TypeGraphOptions) | null): Promise<EdgeResult[]>
-  searchFacts(query: string, opts?: (FactSearchOpts & TypeGraphOptions) | null): Promise<FactResult[]>
-  explore(query: string, opts?: (GraphExploreOpts & TypeGraphOptions) | null): Promise<GraphExploreResult>
+  } & TypeGraphGraphOptions) | null): Promise<EdgeResult[]>
+  searchFacts(query: string, opts?: (FactSearchOpts & TypeGraphGraphOptions) | null): Promise<FactResult[]>
+  explore(query: string, opts?: (GraphExploreOpts & TypeGraphGraphOptions) | null): Promise<GraphExploreResult>
   getChunksForEntity(entityId: string, opts?: ({
     bucketIds?: string[] | undefined
     limit?: number | undefined
-  } & TypeGraphOptions) | null): Promise<ChunkResult[]>
-  explainQuery(query: string, opts?: (GraphExplainOpts & TypeGraphOptions) | null): Promise<GraphSearchTrace>
-  backfill(opts?: (GraphBackfillOpts & TypeGraphOptions) | null): Promise<GraphBackfillResult>
-  getSubgraph(opts: SubgraphOpts): Promise<SubgraphResult>
-  stats(opts?: TypeGraphOptions | null): Promise<GraphStats>
-  getRelationTypes(opts?: TypeGraphOptions | null): Promise<Array<{ relation: string; count: number }>>
-  getEntityTypes(opts?: TypeGraphOptions | null): Promise<Array<{ entityType: string; count: number }>>
+  } & TypeGraphGraphOptions) | null): Promise<ChunkResult[]>
+  explainQuery(query: string, opts?: (GraphExplainOpts & TypeGraphGraphOptions) | null): Promise<GraphSearchTrace>
+  backfill(opts?: (GraphBackfillOpts & TypeGraphGraphOptions) | null): Promise<GraphBackfillResult>
+  getSubgraph(opts: GraphSubgraphOptions): Promise<SubgraphResult>
+  stats(opts?: TypeGraphGraphOptions | null): Promise<GraphStats>
+  getRelationTypes(opts?: TypeGraphGraphOptions | null): Promise<Array<{ relation: string; count: number }>>
+  getEntityTypes(opts?: TypeGraphGraphOptions | null): Promise<Array<{ entityType: string; count: number }>>
 }
 
 /** The typegraph instance interface — all public methods. */
@@ -261,8 +331,9 @@ export interface typegraphInstance {
   event: EventsApi
   thread: ThreadsApi
   job: JobsApi
+  memory: MemoryApi
 
-  /** Graph exploration API. Requires graph bridge. */
+  /** Graph exploration API. Requires graph storage. */
   graph: GraphApi
 
   getEmbeddingForBucket(bucketId: string): Embedder
@@ -271,26 +342,7 @@ export interface typegraphInstance {
   groupBucketsByModel(bucketIds?: string[]): Map<string, string[]>
 
   /** Search across buckets. Optionally build an LLM-ready context via opts.context. */
-  search(text: string, opts?: QueryOpts | null): Promise<QueryResponse>
-
-  // ── Memory operations (require graph bridge) ──
-
-  /** Store a memory. LLM extracts triples → entity graph + memory record. */
-  remember(content: string, opts?: RememberOpts | null): Promise<MemoryRecord>
-  /** Invalidate a memory and its associated graph edges. Identity must match the memory owner. */
-  forget(id: string, opts?: ForgetOpts | null): Promise<void>
-  /** Apply a natural language correction. */
-  correct(correction: string, opts?: CorrectOpts | null): Promise<{ invalidated: number; created: number; summary: string }>
-  /** Search memories by semantic similarity. When `opts.format` is set, returns a formatted string ready for an LLM prompt. */
-  recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
-  recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
-  /** Check memory system health — returns stats about stored memories, entities, and edges. */
-  healthCheck(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport>
-  /** Ingest a conversation turn with extraction. */
-  addThreadTurn(
-    messages: Array<{ role: string; content: string; timestamp?: Date }>,
-    opts?: AddThreadTurnOpts | null,
-  ): Promise<ThreadTurnResult>
+  search(text: string, opts?: SearchOptions | null): Promise<QueryResponse>
 
   // ── Policy operations (require policyStore) ──
 
@@ -314,15 +366,16 @@ export interface typegraphInstance {
 
 class TypegraphImpl implements typegraphInstance {
   private _buckets = new Map<string, Bucket>()
+  private graphConfigs = new Map<string, TypeGraphGraphRecord>()
   private bucketEmbeddings = new Map<string, Embedder>()
   private bucketSearchEmbeddings = new Map<string, Embedder>()
   private embeddingRegistry = new Map<string, Embedder>()
   private adapter!: VectorStoreAdapter
   private defaultEmbedding!: Embedder
   private defaultSearchEmbedding?: Embedder
-  private memoryBridgeInstance: MemoryBridge | undefined
+  private memoryServiceInstance: MemoryService | undefined
   private graphBridgeInstance: KnowledgeGraphBridge | undefined
-  private config!: typegraphConfig
+  private config!: typegraphConfig & { tenantId: string }
   private configured = false
   private initialized = false
   private bucketsLoaded = false
@@ -354,9 +407,11 @@ class TypegraphImpl implements typegraphInstance {
   bucket: BucketsApi = {
     create: async (input: CreateBucketInput, opts?: TypeGraphOptions | null): Promise<Bucket> => {
       this.assertConfigured()
-      const { identity, access, telemetry } = this.resolvePublicOptions(opts, 'bucket.create')
+      const { identity, telemetry } = this.resolvePublicOptions(opts, 'bucket.create')
       const embeddingModel = input.embeddingModel ?? embeddingModelKey(this.defaultEmbedding)
       const searchEmbeddingModel = input.searchEmbeddingModel ?? (this.defaultSearchEmbedding ? embeddingModelKey(this.defaultSearchEmbedding) : undefined)
+      const graph = input.graph ?? DEFAULT_GRAPH_ID
+      this.requireWritableGraph(graph, identity)
 
       // Validate model keys exist in registry
       if (!this.embeddingRegistry.has(embeddingModel)) {
@@ -366,20 +421,25 @@ class TypegraphImpl implements typegraphInstance {
         throw new ConfigError(`Search embedding model "${searchEmbeddingModel}" is not registered. Register it via embedding, searchEmbedding, or additionalEmbeddings in typegraphConfig.`)
       }
 
+      const graphExtraction = input.graphExtraction ?? input.indexDefaults?.graphExtraction
+      const indexDefaults = graphExtraction === undefined
+        ? input.indexDefaults
+        : { ...(input.indexDefaults ?? {}), graphExtraction }
       const bucket: Bucket = {
-        id: generateId('bkt'),
+        id: input.id ?? generateId('bkt'),
         name: input.name,
         description: input.description,
         status: 'active',
+        graph,
+        graphExtraction,
         embeddingModel,
         searchEmbeddingModel,
-        indexDefaults: input.indexDefaults,
+        indexDefaults,
         tenantId: identity.tenantId,
         groupId: identity.groupId,
         userId: identity.userId,
         agentId: identity.agentId,
         threadId: identity.threadId,
-        accessScope: access,
       }
       if (this.adapter.upsertBucket) {
         const persisted = await this.adapter.upsertBucket(bucket)
@@ -394,12 +454,16 @@ class TypegraphImpl implements typegraphInstance {
       return bucket
     },
 
+    upsert: async (input: CreateBucketInput & { id: string }, opts?: TypeGraphOptions | null): Promise<Bucket> => {
+      return this.bucket.create(input, opts)
+    },
+
     get: async (bucketId: string, opts?: TypeGraphOptions | null): Promise<Bucket | undefined> => {
       const { identity } = this.resolvePublicOptions(opts, 'bucket.get')
       if (this.adapter.getBucket) {
         const bucket = await this.adapter.getBucket(bucketId)
         if (bucket && bucket.tenantId !== identity.tenantId) return undefined
-        if (bucket && !this.canRead(bucket.accessScope, identity)) return undefined
+        if (bucket && !this.canAccessGraph(this.bucketGraph(bucket), identity, 'read')) return undefined
         if (bucket) {
           this._buckets.set(bucket.id, bucket)
           if (!this.bucketEmbeddings.has(bucket.id)) {
@@ -420,7 +484,7 @@ class TypegraphImpl implements typegraphInstance {
       if (this.adapter.listBuckets) {
         const result = await this.adapter.listBuckets({ ...normalizedFilter, tenantId: identity.tenantId } as BucketStorageFilter, normalizedPagination)
         const buckets = Array.isArray(result) ? result : result.items
-        const visibleBuckets = buckets.filter(bucket => this.canRead(bucket.accessScope, identity))
+        const visibleBuckets = buckets.filter(bucket => this.canAccessGraph(this.bucketGraph(bucket), identity, 'read'))
         for (const b of buckets) {
           this._buckets.set(b.id, b)
           if (!this.bucketEmbeddings.has(b.id)) {
@@ -429,7 +493,7 @@ class TypegraphImpl implements typegraphInstance {
         }
         return Array.isArray(result) ? visibleBuckets : { ...result, items: visibleBuckets }
       }
-      let all = [...this._buckets.values()].filter(bucket => bucket.tenantId === identity.tenantId && this.canRead(bucket.accessScope, identity))
+      let all = [...this._buckets.values()].filter(bucket => bucket.tenantId === identity.tenantId && this.canAccessGraph(this.bucketGraph(bucket), identity, 'read'))
       if (hasMeaningfulFilter(normalizedFilter)) {
         if (normalizedFilter.name) all = all.filter(s => s.name === normalizedFilter.name)
       }
@@ -441,15 +505,20 @@ class TypegraphImpl implements typegraphInstance {
       return all
     },
 
-    update: async (bucketId: string, input: Partial<Pick<Bucket, 'name' | 'description' | 'status' | 'indexDefaults'>>, opts?: TypeGraphOptions | null): Promise<Bucket> => {
-      const { access, telemetry } = this.resolvePublicOptions(opts, 'bucket.update')
+    update: async (bucketId: string, input: Partial<Pick<Bucket, 'name' | 'description' | 'status' | 'indexDefaults' | 'graph' | 'graphExtraction'>>, opts?: TypeGraphOptions | null): Promise<Bucket> => {
+      const { identity, telemetry } = this.resolvePublicOptions(opts, 'bucket.update')
       const bucket = await this.bucket.get(bucketId, opts)
       if (!bucket) throw new NotFoundError('Bucket', bucketId)
+      if (input.graph !== undefined) this.requireWritableGraph(input.graph, identity)
       if (input.name !== undefined) bucket.name = input.name
       if (input.description !== undefined) bucket.description = input.description
       if (input.status !== undefined) bucket.status = input.status
       if (input.indexDefaults !== undefined) bucket.indexDefaults = input.indexDefaults
-      if (access !== undefined) bucket.accessScope = access
+      if (input.graph !== undefined) bucket.graph = input.graph
+      if (input.graphExtraction !== undefined) {
+        bucket.graphExtraction = input.graphExtraction
+        bucket.indexDefaults = { ...(bucket.indexDefaults ?? {}), graphExtraction: input.graphExtraction }
+      }
       let result: Bucket
       if (this.adapter.upsertBucket) {
         result = await this.adapter.upsertBucket(bucket)
@@ -498,12 +567,12 @@ class TypegraphImpl implements typegraphInstance {
       const document = await this.adapter.getDocument(id)
       if (!document) return null
       if (document.tenantId !== identity.tenantId) return null
-      return this.canRead(document.accessScope, identity) ? document : null
+      return this.canAccessGraph(document.graphId, identity, 'read') ? document : null
     },
 
     list: async (filter?: DocumentFilter | null, opts?: TypeGraphOptions | null, pagination?: PaginationOpts | null): Promise<typegraphDocument[] | PaginatedResult<typegraphDocument>> => {
       this.assertConfigured()
-      const { identity, readAccess } = this.resolvePublicOptions(opts, 'document.list')
+      const { identity } = this.resolvePublicOptions(opts, 'document.list')
       if (!this.adapter.listDocuments) {
         throw new ConfigError('Adapter does not support document operations.')
       }
@@ -511,30 +580,32 @@ class TypegraphImpl implements typegraphInstance {
       const normalizedPagination = pagination == null
         ? undefined
         : optionalCompactObject<PaginationOpts>(pagination, 'document.list', 'pagination') as PaginationOpts
-      return this.adapter.listDocuments({ ...normalizedFilter, tenantId: identity.tenantId, accessScope: readAccess } as DocumentStorageFilter, normalizedPagination)
+      const graphIds = this.requireReadableGraph(DEFAULT_GRAPH_ID, identity)
+      return this.adapter.listDocuments({ ...normalizedFilter, tenantId: identity.tenantId, graphIds } as DocumentStorageFilter, normalizedPagination)
     },
 
     update: async (id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'metadata'>>, opts?: TypeGraphOptions | null): Promise<typegraphDocument> => {
       this.assertConfigured()
-      const { access, telemetry } = this.resolvePublicOptions(opts, 'document.update')
+      const { telemetry } = this.resolvePublicOptions(opts, 'document.update')
       if (!this.adapter.updateDocument) {
         throw new ConfigError('Adapter does not support document update operations.')
       }
-      const updated = await this.adapter.updateDocument(id, access === undefined ? input : { ...input, accessScope: access })
+      const updated = await this.adapter.updateDocument(id, input)
       this.emitEvent('document.update', id, { fields: Object.keys(input) }, telemetry)
       return updated
     },
 
     delete: async (filter: DocumentFilter | null, opts?: TypeGraphOptions | null): Promise<number> => {
       this.assertConfigured()
-      const { identity, readAccess, telemetry } = this.resolvePublicOptions(opts, 'document.delete')
+      const { identity, telemetry } = this.resolvePublicOptions(opts, 'document.delete')
       if (!this.adapter.deleteDocuments) {
         throw new ConfigError('Adapter does not support document operations.')
       }
       const normalizedFilter = optionalCompactObject<DocumentFilter>(filter, 'document.delete', 'filter') as DocumentFilter
       assertHasMeaningfulFilter(normalizedFilter, 'document.delete')
       await this.enforcePolicy('document.delete', identity)
-      const count = await this.adapter.deleteDocuments({ ...normalizedFilter, tenantId: identity.tenantId, accessScope: readAccess } as DocumentStorageFilter)
+      const graphIds = this.requireReadableGraph(DEFAULT_GRAPH_ID, identity)
+      const count = await this.adapter.deleteDocuments({ ...normalizedFilter, tenantId: identity.tenantId, graphIds } as DocumentStorageFilter)
       if (count > 0) {
         this.emitEvent('document.delete', undefined, { count, filter: normalizedFilter }, telemetry)
       }
@@ -568,36 +639,47 @@ class TypegraphImpl implements typegraphInstance {
       const { identity } = this.resolvePublicOptions(opts, 'event.get')
       if (!this.adapter.getEvent) throw new ConfigError('Adapter does not support event operations.')
       const event = await this.adapter.getEvent(identity.tenantId, id)
-      return event && this.canRead(event.accessScope, identity) ? event : null
+      return event && this.canAccessGraph(event.graphId, identity, 'read') ? event : null
     },
 
     list: async (filter?: EventFilter | null, opts?: TypeGraphOptions | null): Promise<typegraphEventRecord[]> => {
       this.assertConfigured()
-      const { identity, readAccess } = this.resolvePublicOptions(opts, 'event.list')
+      const { identity } = this.resolvePublicOptions(opts, 'event.list')
       if (!this.adapter.listEvents) throw new ConfigError('Adapter does not support event operations.')
+      const graphIds = this.requireReadableGraph(DEFAULT_GRAPH_ID, identity)
       return this.adapter.listEvents({
         ...(optionalCompactObject<EventFilter>(filter, 'event.list', 'filter') as EventFilter),
         tenantId: identity.tenantId,
-        accessScope: readAccess,
+        graphIds,
       } as EventStorageFilter)
     },
   }
 
   thread: ThreadsApi = {
-    upsert: async (input: ThreadInput, opts?: RequestOptions | null): Promise<typegraphThread> => {
+    upsert: async (input: ThreadInput, opts?: TypeGraphWriteOptions | null): Promise<typegraphThread> => {
       this.assertConfigured()
       if (!this.adapter.upsertThread) throw new ConfigError('Adapter does not support thread operations.')
-      const { identity, access, telemetry } = this.resolvePublicOptions(opts, 'thread.upsert')
+      const normalizedOpts = optionalCompactObject<TypeGraphWriteOptions>(opts, 'thread.upsert') as TypeGraphWriteOptions
+      if ((normalizedOpts as Record<string, unknown>).graph !== undefined) {
+        throw new ConfigError('thread.upsert does not accept graph. Set the graph on the target bucket.')
+      }
+      await this.ensureBucketsLoaded()
+      const bucketId = normalizedOpts.bucketId ?? DEFAULT_BUCKET_ID
+      const bucket = await this.bucket.get(bucketId, normalizedOpts)
+      if (!bucket) throw new NotFoundError('Bucket', bucketId)
+      const graphId = this.bucketGraph(bucket)
+      const { identity, telemetry } = this.resolvePublicOptions(normalizedOpts, 'thread.upsert')
+      this.requireWritableGraph(graphId, identity)
       const thread = await this.adapter.upsertThread({
         id: input.id ?? generateId('thr'),
         tenantId: identity.tenantId,
+        graphId,
         groupId: identity.groupId,
         userId: identity.userId,
         agentId: identity.agentId,
         name: input.name,
         description: input.description,
         metadata: input.metadata ?? {},
-        accessScope: access,
       })
       this.emitEvent('thread.upsert', thread.id, { name: thread.name }, telemetry)
       return thread
@@ -608,21 +690,22 @@ class TypegraphImpl implements typegraphInstance {
       const { identity } = this.resolvePublicOptions(opts, 'thread.get')
       if (!this.adapter.getThread) throw new ConfigError('Adapter does not support thread operations.')
       const thread = await this.adapter.getThread(identity.tenantId, id)
-      return thread && this.canRead(thread.accessScope, identity) ? thread : null
+      return thread && this.canAccessGraph(thread.graphId, identity, 'read') ? thread : null
     },
 
     list: async (filter?: ThreadFilter | null, opts?: TypeGraphOptions | null): Promise<typegraphThread[]> => {
       this.assertConfigured()
-      const { identity, readAccess } = this.resolvePublicOptions(opts, 'thread.list')
+      const { identity } = this.resolvePublicOptions(opts, 'thread.list')
       if (!this.adapter.listThreads) throw new ConfigError('Adapter does not support thread operations.')
+      const graphIds = this.requireReadableGraph(DEFAULT_GRAPH_ID, identity)
       return this.adapter.listThreads({
         ...(optionalCompactObject<ThreadFilter>(filter, 'thread.list', 'filter') as ThreadFilter),
         tenantId: identity.tenantId,
-        accessScope: readAccess,
+        graphIds,
       } as ThreadStorageFilter)
     },
 
-    addTurn: async (threadId: string, turn: ThreadTurnInput, opts?: (TypeGraphOptions & { graphExtraction?: boolean | undefined }) | null): Promise<GraphThreadTurnResult> => {
+    addTurn: async (threadId: string, turn: ThreadTurnInput, opts?: TypeGraphWriteOptions | null): Promise<GraphThreadTurnResult> => {
       const { identity } = this.resolvePublicOptions(opts, 'thread.addTurn')
       const existingThread = this.adapter.getThread
         ? await this.adapter.getThread(identity.tenantId, threadId)
@@ -642,6 +725,7 @@ class TypegraphImpl implements typegraphInstance {
       if (this.adapter.upsertLink) {
         await this.adapter.upsertLink({
           tenantId: identity.tenantId,
+          graphId: event.event.graphId,
           fromKind: 'thread',
           fromId: threadId,
           toKind: 'event',
@@ -694,51 +778,51 @@ class TypegraphImpl implements typegraphInstance {
   // ── Graph Exploration ──
 
   graph: GraphApi = {
-    upsertEntity: async (input: UpsertGraphEntityInput, opts?: TypeGraphOptions | null): Promise<EntityDetail> => {
+    upsertEntity: async (input: UpsertGraphEntityInput, opts?: TypeGraphGraphOptions | null): Promise<EntityDetail> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.upsertEntity) throw new ConfigError('Knowledge graph bridge does not support entity seeding.')
-      const { identity, access, telemetry } = this.resolvePublicOptions(opts, 'graph.upsertEntity')
-      const result = await kg.upsertEntity({ ...input, ...identity, accessScope: access } as UpsertGraphEntityInput)
+      if (!kg.upsertEntity) throw new ConfigError('Graph storage does not support entity seeding.')
+      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.upsertEntity', 'write')
+      const result = await kg.upsertEntity({ ...input, ...identity } as UpsertGraphEntityInput)
       this.emitEvent('graph.entity.upsert' as typegraphEventType, result.id, { name: result.name }, telemetry)
       return result
     },
 
-    upsertEntities: async (inputs: UpsertGraphEntityInput[], opts?: TypeGraphOptions | null): Promise<EntityDetail[]> => {
+    upsertEntities: async (inputs: UpsertGraphEntityInput[], opts?: TypeGraphGraphOptions | null): Promise<EntityDetail[]> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.upsertEntities) throw new ConfigError('Knowledge graph bridge does not support entity seeding.')
-      const { identity, access, telemetry } = this.resolvePublicOptions(opts, 'graph.upsertEntities')
-      const results = await kg.upsertEntities(inputs.map(input => ({ ...input, ...identity, accessScope: access } as UpsertGraphEntityInput)))
+      if (!kg.upsertEntities) throw new ConfigError('Graph storage does not support entity seeding.')
+      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.upsertEntities', 'write')
+      const results = await kg.upsertEntities(inputs.map(input => ({ ...input, ...identity } as UpsertGraphEntityInput)))
       this.emitEvent('graph.entity.upsert' as typegraphEventType, undefined, { count: results.length }, telemetry)
       return results
     },
 
     resolveEntity: async (
       ref: GraphEntityRef | string,
-      opts?: TypeGraphOptions | null,
+      opts?: TypeGraphGraphOptions | null,
     ): Promise<EntityDetail | null> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.resolveEntity) throw new ConfigError('Knowledge graph bridge does not support entity resolution.')
-      const { identity } = this.resolvePublicOptions(opts, 'graph.resolveEntity')
+      if (!kg.resolveEntity) throw new ConfigError('Graph storage does not support entity resolution.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.resolveEntity', 'read')
       return kg.resolveEntity(ref, identity)
     },
 
     linkExternalIds: async (
       entityId: string,
       externalIds: ExternalId[],
-      opts?: TypeGraphOptions | null,
+      opts?: TypeGraphGraphOptions | null,
     ): Promise<EntityDetail> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.linkExternalIds) throw new ConfigError('Knowledge graph bridge does not support deterministic entity external IDs.')
-      const { identity, telemetry } = this.resolvePublicOptions(opts, 'graph.linkExternalIds')
+      if (!kg.linkExternalIds) throw new ConfigError('Graph storage does not support deterministic entity external IDs.')
+      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.linkExternalIds', 'write')
       const result = await kg.linkExternalIds(entityId, externalIds, identity)
       this.emitEvent('graph.entity.external_ids.link' as typegraphEventType, entityId, { count: externalIds.length }, telemetry)
       return result
     },
 
-    mergeEntities: async (input: MergeGraphEntitiesInput, opts?: TypeGraphOptions | null): Promise<MergeGraphEntitiesResult> => {
+    mergeEntities: async (input: MergeGraphEntitiesInput, opts?: TypeGraphGraphOptions | null): Promise<MergeGraphEntitiesResult> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.mergeEntities) throw new ConfigError('Knowledge graph bridge does not support entity merge operations.')
-      const { telemetry } = this.resolvePublicOptions(opts, 'graph.mergeEntities')
+      if (!kg.mergeEntities) throw new ConfigError('Graph storage does not support entity merge operations.')
+      const { telemetry } = this.resolveGraphOptions(opts, 'graph.mergeEntities', 'write')
       const result = await kg.mergeEntities(input)
       this.emitEvent('graph.entity.merge' as typegraphEventType, input.targetEntityId, {
         sourceEntityId: input.sourceEntityId,
@@ -748,10 +832,10 @@ class TypegraphImpl implements typegraphInstance {
       return result
     },
 
-    deleteEntity: async (entityId: string, opts?: (DeleteGraphEntityOpts & TypeGraphOptions) | null): Promise<DeleteGraphEntityResult> => {
+    deleteEntity: async (entityId: string, opts?: (DeleteGraphEntityOpts & TypeGraphGraphOptions) | null): Promise<DeleteGraphEntityResult> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.deleteEntity) throw new ConfigError('Knowledge graph bridge does not support entity delete operations.')
-      const { telemetry } = this.resolvePublicOptions(opts, 'graph.deleteEntity')
+      if (!kg.deleteEntity) throw new ConfigError('Graph storage does not support entity delete operations.')
+      const { telemetry } = this.resolveGraphOptions(opts, 'graph.deleteEntity', 'write')
       const normalizedOpts = optionalCompactObject<DeleteGraphEntityOpts>(opts, 'graph.deleteEntity') as DeleteGraphEntityOpts
       const result = await kg.deleteEntity(entityId, normalizedOpts)
       this.emitEvent('graph.entity.delete' as typegraphEventType, entityId, {
@@ -762,38 +846,38 @@ class TypegraphImpl implements typegraphInstance {
       return result
     },
 
-    upsertEdge: async (input: UpsertGraphEdgeInput, opts?: TypeGraphOptions | null): Promise<EdgeResult> => {
+    upsertEdge: async (input: UpsertGraphEdgeInput, opts?: TypeGraphGraphOptions | null): Promise<EdgeResult> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.upsertEdge) throw new ConfigError('Knowledge graph bridge does not support edge seeding.')
-      const { identity, access, telemetry } = this.resolvePublicOptions(opts, 'graph.upsertEdge')
-      const result = await kg.upsertEdge({ ...input, ...identity, accessScope: access } as UpsertGraphEdgeInput)
+      if (!kg.upsertEdge) throw new ConfigError('Graph storage does not support edge seeding.')
+      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.upsertEdge', 'write')
+      const result = await kg.upsertEdge({ ...input, ...identity } as UpsertGraphEdgeInput)
       this.emitEvent('graph.edge.upsert' as typegraphEventType, result.id, { relation: result.relation }, telemetry)
       return result
     },
 
-    upsertEdges: async (inputs: UpsertGraphEdgeInput[], opts?: TypeGraphOptions | null): Promise<EdgeResult[]> => {
+    upsertEdges: async (inputs: UpsertGraphEdgeInput[], opts?: TypeGraphGraphOptions | null): Promise<EdgeResult[]> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.upsertEdges) throw new ConfigError('Knowledge graph bridge does not support edge seeding.')
-      const { identity, access, telemetry } = this.resolvePublicOptions(opts, 'graph.upsertEdges')
-      const results = await kg.upsertEdges(inputs.map(input => ({ ...input, ...identity, accessScope: access } as UpsertGraphEdgeInput)))
+      if (!kg.upsertEdges) throw new ConfigError('Graph storage does not support edge seeding.')
+      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.upsertEdges', 'write')
+      const results = await kg.upsertEdges(inputs.map(input => ({ ...input, ...identity } as UpsertGraphEdgeInput)))
       this.emitEvent('graph.edge.upsert' as typegraphEventType, undefined, { count: results.length }, telemetry)
       return results
     },
 
-    upsertFact: async (input: UpsertGraphFactInput, opts?: TypeGraphOptions | null): Promise<FactResult> => {
+    upsertFact: async (input: UpsertGraphFactInput, opts?: TypeGraphGraphOptions | null): Promise<FactResult> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.upsertFact) throw new ConfigError('Knowledge graph bridge does not support fact seeding.')
-      const { identity, access, telemetry } = this.resolvePublicOptions(opts, 'graph.upsertFact')
-      const result = await kg.upsertFact({ ...input, ...identity, accessScope: access } as UpsertGraphFactInput)
+      if (!kg.upsertFact) throw new ConfigError('Graph storage does not support fact seeding.')
+      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.upsertFact', 'write')
+      const result = await kg.upsertFact({ ...input, ...identity } as UpsertGraphFactInput)
       this.emitEvent('graph.fact.upsert' as typegraphEventType, result.id, { relation: result.relation }, telemetry)
       return result
     },
 
-    upsertFacts: async (inputs: UpsertGraphFactInput[], opts?: TypeGraphOptions | null): Promise<FactResult[]> => {
+    upsertFacts: async (inputs: UpsertGraphFactInput[], opts?: TypeGraphGraphOptions | null): Promise<FactResult[]> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.upsertFacts) throw new ConfigError('Knowledge graph bridge does not support fact seeding.')
-      const { identity, access, telemetry } = this.resolvePublicOptions(opts, 'graph.upsertFacts')
-      const results = await kg.upsertFacts(inputs.map(input => ({ ...input, ...identity, accessScope: access } as UpsertGraphFactInput)))
+      if (!kg.upsertFacts) throw new ConfigError('Graph storage does not support fact seeding.')
+      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.upsertFacts', 'write')
+      const results = await kg.upsertFacts(inputs.map(input => ({ ...input, ...identity } as UpsertGraphFactInput)))
       this.emitEvent('graph.fact.upsert' as typegraphEventType, undefined, { count: results.length }, telemetry)
       return results
     },
@@ -802,19 +886,19 @@ class TypegraphImpl implements typegraphInstance {
       limit?: number
       entityType?: string
       minConnections?: number
-    } & TypeGraphOptions) | null): Promise<EntityResult[]> => {
+    } & TypeGraphGraphOptions) | null): Promise<EntityResult[]> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.searchEntities) throw new ConfigError('Knowledge graph bridge does not support entity search.')
-      const { identity } = this.resolvePublicOptions(opts, 'graph.searchEntities')
+      if (!kg.searchEntities) throw new ConfigError('Graph storage does not support entity search.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.searchEntities', 'read')
       const normalizedOpts = optionalCompactObject<{
         limit?: number
         entityType?: string
         minConnections?: number
-      } & TypeGraphOptions>(opts, 'graph.searchEntities') as {
+      } & TypeGraphGraphOptions>(opts, 'graph.searchEntities') as {
         limit?: number
         entityType?: string
         minConnections?: number
-      } & TypeGraphOptions
+      } & TypeGraphGraphOptions
       let results = await kg.searchEntities(query, identity, normalizedOpts.limit)
       if (normalizedOpts.entityType) {
         results = results.filter(r => r.entityType === normalizedOpts.entityType)
@@ -826,10 +910,10 @@ class TypegraphImpl implements typegraphInstance {
       return results
     },
 
-    getEntity: async (id: string, opts?: TypeGraphOptions | null): Promise<EntityDetail | null> => {
+    getEntity: async (id: string, opts?: TypeGraphGraphOptions | null): Promise<EntityDetail | null> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.getEntity) throw new ConfigError('Knowledge graph bridge does not support entity lookup.')
-      const { identity } = this.resolvePublicOptions(opts, 'graph.getEntity')
+      if (!kg.getEntity) throw new ConfigError('Graph storage does not support entity lookup.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.getEntity', 'read')
       return kg.getEntity(id, identity)
     },
 
@@ -837,15 +921,15 @@ class TypegraphImpl implements typegraphInstance {
       direction?: 'in' | 'out' | 'both'
       relation?: string
       limit?: number
-    } & TypeGraphOptions) | null): Promise<EdgeResult[]> => {
+    } & TypeGraphGraphOptions) | null): Promise<EdgeResult[]> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.getEdges) throw new ConfigError('Knowledge graph bridge does not support edge queries.')
-      const { identity } = this.resolvePublicOptions(opts, 'graph.getEdges')
+      if (!kg.getEdges) throw new ConfigError('Graph storage does not support edge queries.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.getEdges', 'read')
       const normalizedOpts = optionalCompactObject<{
         direction?: 'in' | 'out' | 'both'
         relation?: string
         limit?: number
-      } & TypeGraphOptions>(opts, 'graph.getEdges') as {
+      } & TypeGraphGraphOptions>(opts, 'graph.getEdges') as {
         direction?: 'in' | 'out' | 'both'
         relation?: string
         limit?: number
@@ -853,104 +937,208 @@ class TypegraphImpl implements typegraphInstance {
       return kg.getEdges(entityId, { ...normalizedOpts, ...identity })
     },
 
-    searchFacts: async (query: string, opts?: (FactSearchOpts & TypeGraphOptions) | null): Promise<FactResult[]> => {
+    searchFacts: async (query: string, opts?: (FactSearchOpts & TypeGraphGraphOptions) | null): Promise<FactResult[]> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.searchFacts) throw new ConfigError('Knowledge graph bridge does not support fact search.')
-      const { identity, telemetry } = this.resolvePublicOptions(opts, 'graph.searchFacts')
-      const { context: _context, abortSignal: _abortSignal, ...normalizedOpts } = optionalCompactObject<FactSearchOpts & TypeGraphOptions>(
+      if (!kg.searchFacts) throw new ConfigError('Graph storage does not support fact search.')
+      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.searchFacts', 'read')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<FactSearchOpts & TypeGraphGraphOptions>(
         opts,
         'graph.searchFacts',
-      ) as FactSearchOpts & TypeGraphOptions
+      ) as FactSearchOpts & TypeGraphGraphOptions
       return kg.searchFacts(query, { ...normalizedOpts, ...identity, ...telemetry })
     },
 
-    explore: async (query: string, opts?: (GraphExploreOpts & TypeGraphOptions) | null): Promise<GraphExploreResult> => {
+    explore: async (query: string, opts?: (GraphExploreOpts & TypeGraphGraphOptions) | null): Promise<GraphExploreResult> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.explore) throw new ConfigError('Knowledge graph bridge does not support graph exploration.')
-      const { identity } = this.resolvePublicOptions(opts as TypeGraphOptions | null | undefined, 'graph.explore')
-      const { context: _context, abortSignal: _abortSignal, ...normalizedOpts } = optionalCompactObject<GraphExploreOpts & TypeGraphOptions>(
+      if (!kg.explore) throw new ConfigError('Graph storage does not support graph exploration.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.explore', 'read')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<GraphExploreOpts & TypeGraphGraphOptions>(
         opts,
         'graph.explore',
-      ) as GraphExploreOpts & TypeGraphOptions
-      return kg.explore(query, { ...normalizedOpts, ...identity } as GraphExploreOpts)
+      ) as GraphExploreOpts & TypeGraphGraphOptions
+      return kg.explore(query, { ...normalizedOpts, ...identity })
     },
 
     getChunksForEntity: async (entityId: string, opts?: ({
       bucketIds?: string[] | undefined
       limit?: number | undefined
-    } & TypeGraphOptions) | null): Promise<ChunkResult[]> => {
+    } & TypeGraphGraphOptions) | null): Promise<ChunkResult[]> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.getChunksForEntity) throw new ConfigError('Knowledge graph bridge does not support chunk lookup.')
-      const { identity } = this.resolvePublicOptions(opts, 'graph.getChunksForEntity')
+      if (!kg.getChunksForEntity) throw new ConfigError('Graph storage does not support chunk lookup.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.getChunksForEntity', 'read')
       const normalizedOpts = optionalCompactObject<{
         bucketIds?: string[] | undefined
         limit?: number | undefined
-      } & TypeGraphOptions>(opts, 'graph.getChunksForEntity') as {
+      } & TypeGraphGraphOptions>(opts, 'graph.getChunksForEntity') as {
         bucketIds?: string[] | undefined
         limit?: number | undefined
       }
       return kg.getChunksForEntity(entityId, { ...normalizedOpts, ...identity })
     },
 
-    explainQuery: async (query: string, opts?: (GraphExplainOpts & TypeGraphOptions) | null): Promise<GraphSearchTrace> => {
+    explainQuery: async (query: string, opts?: (GraphExplainOpts & TypeGraphGraphOptions) | null): Promise<GraphSearchTrace> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.explainQuery) throw new ConfigError('Knowledge graph bridge does not support graph query explanations.')
-      const { identity, telemetry } = this.resolvePublicOptions(opts, 'graph.explainQuery')
-      const { context: _context, abortSignal: _abortSignal, ...normalizedOpts } = optionalCompactObject<GraphExplainOpts & TypeGraphOptions>(
+      if (!kg.explainQuery) throw new ConfigError('Graph storage does not support graph query explanations.')
+      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.explainQuery', 'read')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<GraphExplainOpts & TypeGraphGraphOptions>(
         opts,
         'graph.explainQuery',
-      ) as GraphExplainOpts & TypeGraphOptions
+      ) as GraphExplainOpts & TypeGraphGraphOptions
       return kg.explainQuery(query, { ...normalizedOpts, ...identity, ...telemetry })
     },
 
-    backfill: async (opts?: (GraphBackfillOpts & TypeGraphOptions) | null): Promise<GraphBackfillResult> => {
+    backfill: async (opts?: (GraphBackfillOpts & TypeGraphGraphOptions) | null): Promise<GraphBackfillResult> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.backfill) throw new ConfigError('Knowledge graph bridge does not support graph backfill.')
-      const { identity } = this.resolvePublicOptions(opts, 'graph.backfill')
-      const { context: _context, abortSignal: _abortSignal, ...normalizedOpts } = optionalCompactObject<GraphBackfillOpts & TypeGraphOptions>(
+      if (!kg.backfill) throw new ConfigError('Graph storage does not support graph backfill.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.backfill', 'read')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<GraphBackfillOpts & TypeGraphGraphOptions>(
         opts,
         'graph.backfill',
-      ) as GraphBackfillOpts & TypeGraphOptions
+      ) as GraphBackfillOpts & TypeGraphGraphOptions
       return kg.backfill(
         identity,
         normalizedOpts,
       )
     },
 
-    getSubgraph: async (opts: SubgraphOpts): Promise<SubgraphResult> => {
+    getSubgraph: async (opts: GraphSubgraphOptions): Promise<SubgraphResult> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.getSubgraph) throw new ConfigError('Knowledge graph bridge does not support subgraph extraction.')
-      return kg.getSubgraph(opts)
+      if (!kg.getSubgraph) throw new ConfigError('Graph storage does not support subgraph extraction.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.getSubgraph', 'read')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<GraphSubgraphOptions>(
+        opts,
+        'graph.getSubgraph',
+      ) as GraphSubgraphOptions
+      return kg.getSubgraph({ ...normalizedOpts, identity })
     },
 
-    stats: async (opts?: TypeGraphOptions | null): Promise<GraphStats> => {
+    stats: async (opts?: TypeGraphGraphOptions | null): Promise<GraphStats> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.getGraphStats) throw new ConfigError('Knowledge graph bridge does not support stats.')
-      const { identity } = this.resolvePublicOptions(opts, 'graph.stats')
+      if (!kg.getGraphStats) throw new ConfigError('Graph storage does not support stats.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.stats', 'read')
       return kg.getGraphStats(identity)
     },
 
-    getRelationTypes: async (opts?: TypeGraphOptions | null): Promise<Array<{ relation: string; count: number }>> => {
+    getRelationTypes: async (opts?: TypeGraphGraphOptions | null): Promise<Array<{ relation: string; count: number }>> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.getRelationTypes) throw new ConfigError('Knowledge graph bridge does not support relation type queries.')
-      const { identity } = this.resolvePublicOptions(opts, 'graph.getRelationTypes')
+      if (!kg.getRelationTypes) throw new ConfigError('Graph storage does not support relation type queries.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.getRelationTypes', 'read')
       return kg.getRelationTypes(identity)
     },
 
-    getEntityTypes: async (opts?: TypeGraphOptions | null): Promise<Array<{ entityType: string; count: number }>> => {
+    getEntityTypes: async (opts?: TypeGraphGraphOptions | null): Promise<Array<{ entityType: string; count: number }>> => {
       const kg = this.requireKnowledgeGraph()
-      if (!kg.getEntityTypes) throw new ConfigError('Knowledge graph bridge does not support entity type queries.')
-      const { identity } = this.resolvePublicOptions(opts, 'graph.getEntityTypes')
+      if (!kg.getEntityTypes) throw new ConfigError('Graph storage does not support entity type queries.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.getEntityTypes', 'read')
       return kg.getEntityTypes(identity)
     },
   }
 
   // ── Core Methods ──
 
+  private actorPrincipals(identity: typegraphIdentity): Set<InternalGraphPrincipal> {
+    const principals = new Set<InternalGraphPrincipal>()
+    const values = [
+      principalFor('organization', identity.organizationId),
+      principalFor('group', identity.groupId),
+      principalFor('user', identity.userId),
+      principalFor('agent', identity.agentId),
+      principalFor('thread', identity.threadId),
+    ]
+    for (const value of values) {
+      if (value) principals.add(value)
+    }
+    return principals
+  }
+
+  private canAccessGraph(graphId: string, identity: typegraphIdentity, mode: 'read' | 'write'): boolean {
+    const graph = this.graphConfigs.get(graphId)
+    if (!graph) return false
+    if (graph.access === 'public' || graph.access === undefined) return true
+    const allowed = accessPrincipalKeys(graph.access[mode])
+    if (!allowed || allowed.length === 0) return true
+    const principals = this.actorPrincipals(identity)
+    return allowed.some(principal => principals.has(principal))
+  }
+
+  private resolveGraphClosure(graphId: string): string[] {
+    const closure: string[] = []
+    const visiting = new Set<string>()
+    const visit = (id: string) => {
+      if (visiting.has(id)) throw new ConfigError(`Graph inheritance cycle includes "${id}".`)
+      if (closure.includes(id)) return
+      const graph = this.graphConfigs.get(id)
+      if (!graph) throw new NotFoundError('Graph', id)
+      visiting.add(id)
+      closure.push(id)
+      for (const parent of graph.extends ?? []) visit(parent)
+      visiting.delete(id)
+    }
+    visit(graphId)
+    return closure
+  }
+
+  private requireReadableGraph(graphId: string, identity: typegraphIdentity): string[] {
+    const closure = this.resolveGraphClosure(graphId)
+    const denied = closure.filter(id => !this.canAccessGraph(id, identity, 'read'))
+    if (denied.length > 0) {
+      throw new ConfigError(`Context is not allowed to read graph(s): ${denied.join(', ')}.`)
+    }
+    return closure
+  }
+
+  private requireWritableGraph(graphId: string, identity: typegraphIdentity): void {
+    if (!this.canAccessGraph(graphId, identity, 'write')) {
+      throw new ConfigError(`Context is not allowed to write graph "${graphId}".`)
+    }
+  }
+
+  private bucketGraph(bucket: Bucket | undefined): string {
+    return bucket?.graph ?? DEFAULT_GRAPH_ID
+  }
+
+  private memoryGraphForIdentity(identity: typegraphIdentity): { graphId: string; identity: typegraphIdentity } {
+    const principal =
+      identity.userId ? { kind: 'user' as const, id: identity.userId }
+        : identity.agentId ? { kind: 'agent' as const, id: identity.agentId }
+          : identity.groupId ? { kind: 'group' as const, id: identity.groupId }
+            : identity.organizationId ? { kind: 'organization' as const, id: identity.organizationId }
+              : identity.threadId ? { kind: 'thread' as const, id: identity.threadId }
+                : undefined
+
+    const graphId = principal
+      ? `memory:${principal.kind}:${principal.id}`
+      : 'memory:tenant'
+    if (!this.graphConfigs.has(graphId)) {
+      this.graphConfigs.set(graphId, {
+        id: graphId,
+        tenantId: identity.tenantId ?? this.config.tenantId,
+        name: graphId,
+        extends: [DEFAULT_GRAPH_ID],
+        access: principal
+          ? { read: accessConfigForPrincipal(principal.kind, principal.id), write: accessConfigForPrincipal(principal.kind, principal.id) }
+          : 'public',
+        metadata: { type: 'memory' },
+      })
+    }
+
+    const scopedIdentity: typegraphIdentity = {
+      tenantId: identity.tenantId,
+      graphId,
+      ...(principal?.kind === 'organization' ? { organizationId: principal.id } : {}),
+      ...(principal?.kind === 'group' ? { groupId: principal.id } : {}),
+      ...(principal?.kind === 'user' ? { userId: principal.id } : {}),
+      ...(principal?.kind === 'agent' ? { agentId: principal.id } : {}),
+      ...(principal?.kind === 'thread' ? { threadId: principal.id } : {}),
+      ...(identity.agentName ? { agentName: identity.agentName } : {}),
+      ...(identity.agentDescription ? { agentDescription: identity.agentDescription } : {}),
+      ...(identity.agentVersion ? { agentVersion: identity.agentVersion } : {}),
+    }
+    return { graphId, identity: scopedIdentity }
+  }
+
   private resolvePublicOptions(opts: TypeGraphOptions | null | undefined, method: string): {
     identity: typegraphIdentity & { tenantId: string }
-    readAccess: AccessScope
-    access?: AccessScope | undefined
     telemetry: TelemetryOpts
   } {
     const optionBag = optionalCompactObject<TypeGraphOptions>(opts, method) as TypeGraphOptions
@@ -960,31 +1148,46 @@ class TypegraphImpl implements typegraphInstance {
     const telemetry = contextTelemetry(context)
     return {
       identity,
-      readAccess: identityAccessScope(identity),
-      access: contextAccess(context),
       telemetry,
     }
   }
 
-  private canRead(accessScope: AccessScope | null | undefined, identity: typegraphIdentity): boolean {
-    const allowed = accessScope ?? []
-    if (allowed.length === 0) return true
-    const principals = new Set(identityAccessScope(identity).map(ref => `${ref.type}:${ref.id}`))
-    return allowed.some(ref => principals.has(`${ref.type}:${ref.id}`))
+  private resolveGraphOptions(opts: TypeGraphGraphOptions | null | undefined, method: string, mode: 'read' | 'write'): {
+    identity: typegraphIdentity & { tenantId: string }
+    telemetry: TelemetryOpts
+    graphId: string
+    graphIds: string[]
+  } {
+    const optionBag = optionalCompactObject<TypeGraphGraphOptions>(opts, method) as TypeGraphGraphOptions
+    const { identity, telemetry } = this.resolvePublicOptions(optionBag, method)
+    const graphId = optionBag.graph ?? DEFAULT_GRAPH_ID
+    if (mode === 'write') {
+      this.requireWritableGraph(graphId, identity)
+      identity.graphId = graphId
+      identity.graphIds = [graphId]
+      return { identity, telemetry, graphId, graphIds: [graphId] }
+    }
+    const graphIds = this.requireReadableGraph(graphId, identity)
+    identity.graphId = graphId
+    identity.graphIds = graphIds
+    return { identity, telemetry, graphId, graphIds }
   }
 
   private resolveDocumentIngestOptions(opts: DocumentIngestOptions | null | undefined, method: string): IngestOptions {
     const normalized = optionalCompactObject<DocumentIngestOptions>(opts, method) as DocumentIngestOptions
-    const { identity, access, telemetry } = this.resolvePublicOptions(normalized, method)
+    if ((normalized as Record<string, unknown>).graph !== undefined) {
+      throw new ConfigError(`${method} does not accept graph. Set the graph on the target bucket.`)
+    }
+    const { identity, telemetry } = this.resolvePublicOptions(normalized, method)
     const { context: _context, abortSignal: _abortSignal, idempotencyKey: _idempotencyKey, ...ingestOpts } = normalized
     return {
       ...ingestOpts,
       tenantId: identity.tenantId,
+      organizationId: identity.organizationId,
       groupId: identity.groupId,
       userId: identity.userId,
       agentId: identity.agentId,
       threadId: identity.threadId,
-      accessScope: access,
       traceId: telemetry.traceId,
       spanId: telemetry.spanId,
     }
@@ -993,10 +1196,21 @@ class TypegraphImpl implements typegraphInstance {
   private async ingestSingleEvent(input: EventInput, opts: EventIngestOptions): Promise<{ event: typegraphEventRecord; documents: IndexResult[] }> {
     this.assertConfigured()
     if (!this.adapter.upsertEvent) throw new ConfigError('Adapter does not support event operations.')
-    const { identity, access, telemetry } = this.resolvePublicOptions(opts, 'event.ingest')
+    const normalizedOpts = optionalCompactObject<EventIngestOptions>(opts, 'event.ingest') as EventIngestOptions
+    if ((normalizedOpts as Record<string, unknown>).graph !== undefined) {
+      throw new ConfigError('event.ingest does not accept graph. Set the graph on the target bucket.')
+    }
+    await this.ensureBucketsLoaded()
+    const bucketId = normalizedOpts.bucketId ?? DEFAULT_BUCKET_ID
+    const bucket = await this.bucket.get(bucketId, normalizedOpts)
+    if (!bucket) throw new NotFoundError('Bucket', bucketId)
+    const graphId = this.bucketGraph(bucket)
+    const { identity, telemetry } = this.resolvePublicOptions(normalizedOpts, 'event.ingest')
+    this.requireWritableGraph(graphId, identity)
     const record = await this.adapter.upsertEvent({
       id: input.id ?? generateId('evt'),
       tenantId: identity.tenantId,
+      graphId,
       groupId: identity.groupId,
       userId: identity.userId,
       agentId: identity.agentId,
@@ -1007,7 +1221,6 @@ class TypegraphImpl implements typegraphInstance {
       participants: input.participants ?? [],
       content: input.content,
       metadata: input.metadata ?? {},
-      accessScope: access,
     })
 
     const linkedDocuments: DocumentInput[] = input.documents?.map(document => ({
@@ -1030,15 +1243,15 @@ class TypegraphImpl implements typegraphInstance {
 
     const documentResults: IndexResult[] = []
     if (linkedDocuments.length > 0) {
-      const bucketId = opts.bucketId ?? DEFAULT_BUCKET_ID
       documentResults.push(await this.document.ingest(linkedDocuments, {
-        ...(opts ?? {}),
+        ...(normalizedOpts ?? {}),
         bucketId,
       }))
       if (this.adapter.upsertLink) {
         for (const document of linkedDocuments) {
           await this.adapter.upsertLink({
             tenantId: identity.tenantId,
+            graphId,
             fromKind: 'event',
             fromId: record.id,
             toKind: 'document',
@@ -1053,6 +1266,7 @@ class TypegraphImpl implements typegraphInstance {
       for (const participant of input.participants ?? []) {
         await this.adapter.upsertLink({
           tenantId: identity.tenantId,
+          graphId,
           fromKind: 'event',
           fromId: record.id,
           toKind: 'entity',
@@ -1066,11 +1280,19 @@ class TypegraphImpl implements typegraphInstance {
     return { event: record, documents: documentResults }
   }
 
-  private applyConfig(config: typegraphConfig): void {
+  private applyConfig(config: typegraphConfig & { tenantId: string }): void {
     this.config = config
     this.adapter = config.vectorStore!
-    this.memoryBridgeInstance = undefined
+    this.memoryServiceInstance = undefined
     this.graphBridgeInstance = undefined
+    this.graphConfigs.clear()
+    const graphInputs = {
+      [DEFAULT_GRAPH_ID]: { access: 'public' as const, ...(config.graphs?.[DEFAULT_GRAPH_ID] ?? {}) },
+      ...(config.graphs ?? {}),
+    }
+    for (const [id, graphConfig] of Object.entries(graphInputs)) {
+      this.graphConfigs.set(id, normalizeGraphConfig(id, config.tenantId, graphConfig))
+    }
 
     // Resolve default providers
     this.defaultEmbedding = resolveEmbedder(config.embedding!)
@@ -1098,26 +1320,24 @@ class TypegraphImpl implements typegraphInstance {
       }
     }
 
-    if (config.llm && this.adapter.createMemoryStore) {
+    if (this.adapter.createMemoryStore) {
       const memoryStore = this.adapter.createMemoryStore({ embeddingDimensions: this.defaultEmbedding.dimensions })
+      const memoryLlm = config.llm ? resolveLLMProvider(config.llm) : undefined
       const graphConfig = {
         memoryStore,
         embedding: this.defaultEmbedding,
         scope: { tenantId: config.tenantId },
-        explorationLlm: config.llm,
+        ...(config.llm ? { explorationLlm: config.llm } : {}),
       }
       this.graphBridgeInstance = createKnowledgeGraphBridge(this.adapter.getTable
         ? { ...graphConfig, resolveChunksTable: this.adapter.getTable.bind(this.adapter) }
         : graphConfig)
-      const memoryConfig = {
+      this.memoryServiceInstance = new MemoryService({
         memoryStore,
         embedding: this.defaultEmbedding,
-        llm: config.llm,
-        scope: { tenantId: config.tenantId },
-      }
-      this.memoryBridgeInstance = createMemoryBridge(config.eventSink
-        ? { ...memoryConfig, eventSink: config.eventSink }
-        : memoryConfig)
+        ...(memoryLlm ? { llm: memoryLlm } : {}),
+        ...(config.eventSink ? { eventSink: config.eventSink } : {}),
+      })
     }
   }
 
@@ -1166,46 +1386,81 @@ class TypegraphImpl implements typegraphInstance {
     this.bucketsLoaded = true
   }
 
-  async deploy(config: typegraphConfig): Promise<this> {
-    validateConfig(config)
-    this.applyConfig(config)
-    await this.adapter.deploy()
-    if (this.memoryBridge?.deploy) {
-      await this.memoryBridge.deploy()
-    }
-    if (this.graphBridge?.deploy) {
-      await this.graphBridge.deploy()
-    }
-    if (config.policyStore) {
-      this.policyEngine = new PolicyEngine(config.policyStore, config.eventSink)
-    }
-    this.configured = true
-
-    // Create the default protected bucket (idempotent via upsert)
-    const defaultBucket: Bucket = {
+  private defaultBucketRecord(config: typegraphConfig & { tenantId: string }): Bucket {
+    return {
       id: DEFAULT_BUCKET_ID,
       name: DEFAULT_BUCKET_NAME,
       description: DEFAULT_BUCKET_DESCRIPTION,
       status: 'active',
+      graph: DEFAULT_GRAPH_ID,
       embeddingModel: embeddingModelKey(this.defaultEmbedding),
       searchEmbeddingModel: this.defaultSearchEmbedding ? embeddingModelKey(this.defaultSearchEmbedding) : undefined,
       tenantId: config.tenantId,
     }
-    if (this.adapter.upsertBucket) {
-      const persisted = await this.adapter.upsertBucket(defaultBucket)
-      this._buckets.set(persisted.id, persisted)
-    } else {
-      this._buckets.set(defaultBucket.id, defaultBucket)
+  }
+
+  private async ensureConfiguredGraphs(): Promise<void> {
+    if (!this.adapter.upsertGraphRecord) return
+    for (const graph of this.graphConfigs.values()) {
+      await this.adapter.upsertGraphRecord(graph)
     }
-    this.resolveBucketEmbeddings(defaultBucket)
+  }
+
+  private async ensureConfiguredBuckets(config: typegraphConfig & { tenantId: string }): Promise<void> {
+    const buckets = new Map<string, Bucket>()
+    buckets.set(DEFAULT_BUCKET_ID, this.defaultBucketRecord(config))
+    for (const [id, input] of Object.entries(config.buckets ?? {})) {
+      const embeddingModel = input.embeddingModel ?? embeddingModelKey(this.defaultEmbedding)
+      const searchEmbeddingModel = input.searchEmbeddingModel ?? (this.defaultSearchEmbedding ? embeddingModelKey(this.defaultSearchEmbedding) : undefined)
+      buckets.set(id, {
+        id,
+        name: input.name,
+        description: input.description,
+        status: 'active',
+        graph: input.graph ?? DEFAULT_GRAPH_ID,
+        embeddingModel,
+        searchEmbeddingModel,
+        indexDefaults: input.indexDefaults,
+        tenantId: config.tenantId,
+      })
+    }
+    for (const bucket of buckets.values()) {
+      let persisted = bucket
+      if (this.adapter.upsertBucket) {
+        persisted = await this.adapter.upsertBucket(bucket)
+      }
+      this._buckets.set(persisted.id, persisted)
+      this.resolveBucketEmbeddings(persisted)
+    }
     this.bucketsLoaded = true
+  }
+
+  async deploy(config: typegraphConfig): Promise<this> {
+    validateConfig(config)
+    const runtimeConfig = normalizeRuntimeConfig(config)
+    this.applyConfig(runtimeConfig)
+    await this.adapter.deploy()
+    if (this.memoryService) {
+      await this.memoryService.deploy()
+    }
+    if (this.graphBridge?.deploy) {
+      await this.graphBridge.deploy()
+    }
+    await this.ensureConfiguredGraphs()
+    if (runtimeConfig.policyStore) {
+      this.policyEngine = new PolicyEngine(runtimeConfig.policyStore, runtimeConfig.eventSink)
+    }
+    this.configured = true
+
+    await this.ensureConfiguredBuckets(runtimeConfig)
 
     return this
   }
 
   async initialize(config: typegraphConfig): Promise<this> {
     validateConfig(config)
-    this.applyConfig(config)
+    const runtimeConfig = normalizeRuntimeConfig(config)
+    this.applyConfig(runtimeConfig)
 
     await this.adapter.connect()
 
@@ -1221,12 +1476,14 @@ class TypegraphImpl implements typegraphInstance {
       }
     }
 
-    if (config.policyStore) {
-      this.policyEngine = new PolicyEngine(config.policyStore, config.eventSink)
+    if (runtimeConfig.policyStore) {
+      this.policyEngine = new PolicyEngine(runtimeConfig.policyStore, runtimeConfig.eventSink)
     }
     this.configured = true
     this.initialized = true
-    this.logger?.info('typegraph initialized', { tenantId: config.tenantId })
+    await this.ensureConfiguredGraphs()
+    await this.ensureConfiguredBuckets(runtimeConfig)
+    this.logger?.info('typegraph initialized', { tenantId: runtimeConfig.tenantId })
     return this
   }
 
@@ -1329,7 +1586,10 @@ class TypegraphImpl implements typegraphInstance {
     await this.enforcePolicy('index', { tenantId: this.config.tenantId }, resolvedBucketId)
     const bucket = await this.bucket.get(resolvedBucketId)
     if (!bucket) throw new NotFoundError('Bucket', resolvedBucketId)
+    const graphId = this.bucketGraph(bucket)
+    this.requireWritableGraph(graphId, { tenantId: this.config.tenantId, organizationId: normalizedOpts.organizationId, groupId: normalizedOpts.groupId, userId: normalizedOpts.userId, agentId: normalizedOpts.agentId, threadId: normalizedOpts.threadId })
     const resolvedOpts = this.resolveIngestOptions(normalizedOpts, bucket)
+    resolvedOpts.graphId = graphId
     const chunkSize = resolvedOpts.chunkSize ?? 512
     const chunkOverlap = resolvedOpts.chunkOverlap ?? 64
     const normalizedDocuments = documents.map(document => normalizeDocumentInput(document))
@@ -1359,7 +1619,10 @@ class TypegraphImpl implements typegraphInstance {
     await this.enforcePolicy('index', { tenantId: this.config.tenantId }, resolvedBucketId)
     const bucket = await this.bucket.get(resolvedBucketId)
     if (!bucket) throw new NotFoundError('Bucket', resolvedBucketId)
+    const graphId = this.bucketGraph(bucket)
+    this.requireWritableGraph(graphId, { tenantId: this.config.tenantId, organizationId: normalizedOpts.organizationId, groupId: normalizedOpts.groupId, userId: normalizedOpts.userId, agentId: normalizedOpts.agentId, threadId: normalizedOpts.threadId })
     const resolvedOpts = this.resolveIngestOptions(normalizedOpts, bucket)
+    resolvedOpts.graphId = graphId
     const embedding = await this.resolveEmbeddingForBucket(resolvedBucketId)
     const engine = this.createIndexEngine(embedding)
 
@@ -1370,11 +1633,14 @@ class TypegraphImpl implements typegraphInstance {
     return result
   }
 
-  async search(text: string, opts?: QueryOpts | null): Promise<QueryResponse> {
+  async search(text: string, opts?: SearchOptions | null): Promise<QueryResponse> {
     await this.ensureInitialized()
     await this.ensureBucketsLoaded()
-    const normalizedOpts = optionalCompactObject<QueryOpts>(opts, 'search') as QueryOpts
+    const normalizedOpts = optionalCompactObject<SearchOptions>(opts, 'search') as SearchOptions
     const { identity } = this.resolvePublicOptions(normalizedOpts, 'search')
+    const requestedGraph = normalizedOpts.graph ?? DEFAULT_GRAPH_ID
+    normalizedOpts.graph = requestedGraph
+    normalizedOpts.graphIds = this.requireReadableGraph(requestedGraph, identity)
     await this.enforcePolicy('query', identity)
 
     if (normalizedOpts.buckets?.length) {
@@ -1402,7 +1668,6 @@ class TypegraphImpl implements typegraphInstance {
       [...this._buckets.keys()],
       this.bucketEmbeddings,
       this.bucketSearchEmbeddings,
-      this.memoryBridge,
       this.graphBridge,
       this.config.eventSink,
       this.logger,
@@ -1423,101 +1688,245 @@ class TypegraphImpl implements typegraphInstance {
 
   // ── Memory operations ──
 
-  private get memoryBridge(): MemoryBridge | undefined {
-    return this.memoryBridgeInstance
+  memory: MemoryApi = {
+    remember: (content, opts) => this.rememberMemory(content, opts),
+    forget: (id, opts) => this.forgetMemory(id, opts),
+    correct: (correction, opts) => this.correctMemory(correction, opts),
+    recall: ((query: string, opts?: RecallOpts | null) => this.recallMemory(query, opts as RecallOpts | null)) as MemoryApi['recall'],
+    healthCheck: (opts) => this.memoryHealthCheck(opts),
+  }
+
+  private get memoryService(): MemoryService | undefined {
+    return this.memoryServiceInstance
   }
 
   private get graphBridge(): KnowledgeGraphBridge | undefined {
     return this.graphBridgeInstance
   }
 
-  private requireMemory(): MemoryBridge {
-    const bridge = this.memoryBridge
-    if (!bridge) {
-      throw new ConfigError('Memory not configured. Pass vectorStore + embedding + llm using an adapter that supports memory stores.')
+  private requireMemory(): MemoryService {
+    const runtime = this.memoryService
+    if (!runtime) {
+      throw new ConfigError('Memory storage not configured. Pass vectorStore + embedding using an adapter that supports memory stores.')
     }
-    return bridge
+    return runtime
   }
 
   private requireKnowledgeGraph(): KnowledgeGraphBridge {
     const bridge = this.graphBridge
     if (!bridge) {
-      throw new ConfigError('Knowledge graph not configured. Pass vectorStore + embedding + llm using an adapter that supports graph storage.')
+      throw new ConfigError('Graph storage not configured. Pass vectorStore + embedding using an adapter that supports graph storage.')
     }
     return bridge
   }
 
-  async remember(content: string, opts?: RememberOpts | null): Promise<MemoryRecord> {
-    const { identity } = this.resolvePublicOptions(opts, 'remember')
-    await this.enforcePolicy('memory.write', identity)
-    return this.requireMemory().remember(content, opts)
+  private extractedEntityByRef(ref: { type: string; id: string }, entityByRef: Map<string, ExtractedEntity>): ExtractedEntity {
+    return entityByRef.get(ref.id)
+      ?? entityByRef.get(`${ref.type}:${ref.id}`)
+      ?? {
+        id: ref.id,
+        name: ref.id,
+        type: ref.type,
+        aliases: [],
+      }
   }
 
-  async forget(id: string, opts?: ForgetOpts | null): Promise<void> {
-    const { identity } = this.resolvePublicOptions(opts, 'forget')
-    await this.enforcePolicy('memory.delete', identity, id)
-    return this.requireMemory().forget(id, opts)
-  }
+  private async extractWithConfiguredExtractor(
+    input: ExtractorInput,
+    identity: typegraphIdentity,
+    bucketId = DEFAULT_BUCKET_ID,
+  ): Promise<{ entities: number; relations: number }> {
+    const extractor = this.config.extractor
+    if (!extractor) throw new ConfigError('Configured extraction requires `extractor` or `llm`.')
+    const graph = this.requireKnowledgeGraph()
+    const ontology = input.ontology ?? this.config.ontology
+    const result = await extractor.extract({
+      ...input,
+      ...(ontology ? { ontology } : {}),
+    }, {
+      log: {
+        debug: (message, data) => this.logger?.debug?.(message, data),
+        warn: (message, data) => this.logger?.warn?.(message, data),
+        error: (message, data) => this.logger?.error?.(message, data),
+      },
+      coreferenceCache: this.config.extractionCoreferenceCache,
+    })
 
-  async correct(correction: string, opts?: CorrectOpts | null): Promise<{ invalidated: number; created: number; summary: string }> {
-    return this.requireMemory().correct(correction, opts)
-  }
-
-  async recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
-  async recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
-  async recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[] | string> {
-    const { identity } = this.resolvePublicOptions(opts, 'recall')
-    await this.enforcePolicy('memory.read', identity)
-    if (opts?.format) {
-      return this.requireMemory().recall(query, opts as RecallOpts & { format: 'xml' | 'markdown' | 'plain' })
+    if (graph.addEntityMentions && result.entities.length > 0) {
+      await graph.addEntityMentions(result.entities.map(entity => ({
+        name: entity.name,
+        type: entity.type,
+        typeCandidates: entity.typeCandidates,
+        aliases: entity.aliases ?? [],
+        description: entity.description,
+        content: input.content,
+        bucketId,
+        documentId: input.id,
+        chunkIndex: 0,
+        ...(identity.tenantId ? { tenantId: identity.tenantId } : {}),
+        ...(identity.groupId ? { groupId: identity.groupId } : {}),
+        ...(identity.userId ? { userId: identity.userId } : {}),
+        ...(identity.agentId ? { agentId: identity.agentId } : {}),
+        ...(identity.threadId ? { threadId: identity.threadId } : {}),
+        ...(identity.graphId ? { graphId: identity.graphId } : {}),
+        ...(input.metadata ? { metadata: input.metadata } : {}),
+      })))
     }
-    return this.requireMemory().recall(query, opts)
-  }
 
-  async healthCheck(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport> {
-    const mem = this.requireMemory()
-    if (!mem.healthCheck) throw new ConfigError('healthCheck not supported by this memory bridge.')
-    return mem.healthCheck(opts)
-  }
-
-  async addThreadTurn(
-    messages: Array<{ role: string; content: string; timestamp?: Date }>,
-    opts?: AddThreadTurnOpts | null,
-  ): Promise<ThreadTurnResult> {
-    const { identity } = this.resolvePublicOptions(opts, 'addThreadTurn')
-    await this.enforcePolicy('memory.write', identity)
-    const result = await this.requireMemory().addThreadTurn(messages, opts)
-
-    // The bridge returns the underlying ExtractionResult cast to ThreadTurnResult;
-    // read the real shape here for hook dispatch (Fix 10).
-    const internal = result as unknown as {
-      episodic?: unknown[]
-      facts?: unknown[]
-      operations?: unknown[]
-      _contradictions?: Array<{ existingId: string; newId: string; conflictType: string; reasoning: string }>
-    }
-
-    const hooks = this.config?.hooks
-    if (hooks?.onMemoryExtracted) {
-      try {
-        await hooks.onMemoryExtracted({
-          episodicCount: internal.episodic?.length ?? 0,
-          factsExtracted: internal.facts?.length ?? 0,
-          operationsCount: internal.operations?.length ?? 0,
+    if (graph.addTriple && result.relations.length > 0) {
+      const entityByRef = new Map<string, ExtractedEntity>()
+      for (const entity of result.entities) {
+        entityByRef.set(entity.name, entity)
+        if (entity.id) {
+          entityByRef.set(entity.id, entity)
+          entityByRef.set(`${entity.type}:${entity.id}`, entity)
+        }
+      }
+      for (const relation of result.relations) {
+        const source = this.extractedEntityByRef(relation.source, entityByRef)
+        const target = this.extractedEntityByRef(relation.target, entityByRef)
+        await graph.addTriple({
+          subject: source.name,
+          subjectType: source.type,
+          subjectTypeCandidates: source.typeCandidates,
+          subjectAliases: source.aliases ?? [],
+          subjectDescription: source.description,
+          predicate: relation.relation,
+          object: target.name,
+          objectType: target.type,
+          objectTypeCandidates: target.typeCandidates,
+          objectAliases: target.aliases ?? [],
+          objectDescription: target.description,
+          relationshipDescription: relation.description,
+          evidenceText: relation.evidenceText,
+          confidence: relation.confidence,
+          content: input.content,
+          bucketId,
+          documentId: input.id,
+          chunkIndex: 0,
+          ...(identity.tenantId ? { tenantId: identity.tenantId } : {}),
+          ...(identity.groupId ? { groupId: identity.groupId } : {}),
+          ...(identity.userId ? { userId: identity.userId } : {}),
+          ...(identity.agentId ? { agentId: identity.agentId } : {}),
+          ...(identity.threadId ? { threadId: identity.threadId } : {}),
+          ...(identity.graphId ? { graphId: identity.graphId } : {}),
+          ...(input.metadata ? { metadata: input.metadata } : {}),
         })
-      } catch (err) {
-        this.logger?.error?.('[typegraph] onMemoryExtracted hook failed', { error: err instanceof Error ? err.message : String(err) })
-      }
-    }
-    if (hooks?.onContradictionDetected && internal._contradictions && internal._contradictions.length > 0) {
-      try {
-        await hooks.onContradictionDetected(internal._contradictions)
-      } catch (err) {
-        this.logger?.error?.('[typegraph] onContradictionDetected hook failed', { error: err instanceof Error ? err.message : String(err) })
       }
     }
 
-    return result
+    return { entities: result.entities.length, relations: result.relations.length }
+  }
+
+  private async rememberMemory(content: string, opts?: RememberOpts | null): Promise<MemoryRecord> {
+    const { identity, telemetry } = this.resolvePublicOptions(opts, 'memory.remember')
+    const memoryScope = this.memoryGraphForIdentity(identity)
+    await this.enforcePolicy('memory.write', memoryScope.identity)
+    const useConfiguredExtractor = opts?.graphExtraction === true && !!this.config.extractor
+    const record = await this.requireMemory().remember(content, {
+      identity: memoryScope.identity,
+      category: opts?.category as 'episodic' | 'semantic' | 'procedural' | undefined,
+      importance: opts?.importance,
+      metadata: opts?.metadata,
+      subject: opts?.subject,
+      relatedEntities: opts?.relatedEntities,
+      graphExtraction: opts?.graphExtraction === true && !useConfiguredExtractor,
+      traceId: telemetry.traceId,
+      spanId: telemetry.spanId,
+    })
+    if (useConfiguredExtractor) {
+      await this.extractWithConfiguredExtractor({
+        id: record.id,
+        kind: 'memory',
+        content,
+        ...(opts?.metadata ? { metadata: opts.metadata } : {}),
+        ...(this.config.ontology ? { ontology: this.config.ontology } : {}),
+      }, memoryScope.identity)
+    }
+    return record
+  }
+
+  private async forgetMemory(id: string, opts?: ForgetOpts | null): Promise<void> {
+    const { identity, telemetry } = this.resolvePublicOptions(opts, 'memory.forget')
+    const memoryScope = this.memoryGraphForIdentity(identity)
+    await this.enforcePolicy('memory.delete', memoryScope.identity, id)
+    return this.requireMemory().forget(id, {
+      identity: memoryScope.identity,
+      traceId: telemetry.traceId,
+      spanId: telemetry.spanId,
+    })
+  }
+
+  private async correctMemory(correction: string, opts?: CorrectOpts | null): Promise<{ invalidated: number; created: number; summary: string }> {
+    const { identity, telemetry } = this.resolvePublicOptions(opts, 'memory.correct')
+    const memoryScope = this.memoryGraphForIdentity(identity)
+    await this.enforcePolicy('memory.write', memoryScope.identity)
+    if (opts?.graphExtraction !== false && this.config.extractor) {
+      await this.requireMemory().remember(correction, {
+        identity: memoryScope.identity,
+        category: 'semantic',
+        metadata: { correction: true },
+        subject: opts?.subject,
+        relatedEntities: opts?.relatedEntities,
+        graphExtraction: false,
+        traceId: telemetry.traceId,
+        spanId: telemetry.spanId,
+      })
+      const extracted = await this.extractWithConfiguredExtractor({
+        id: generateId('mem'),
+        kind: 'correction',
+        content: correction,
+        metadata: { correction: true },
+        ...(this.config.ontology ? { ontology: this.config.ontology } : {}),
+      }, memoryScope.identity)
+      return {
+        invalidated: 0,
+        created: extracted.relations,
+        summary: `Applied correction with configured extractor (${extracted.relations} relation(s))`,
+      }
+    }
+    return this.requireMemory().correct(correction, {
+      identity: memoryScope.identity,
+      subject: opts?.subject,
+      relatedEntities: opts?.relatedEntities,
+      graphExtraction: opts?.graphExtraction,
+      traceId: telemetry.traceId,
+      spanId: telemetry.spanId,
+    })
+  }
+
+  private async recallMemory(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
+  private async recallMemory(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
+  private async recallMemory(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[] | string> {
+    const { identity, telemetry } = this.resolvePublicOptions(opts, 'memory.recall')
+    const memoryScope = this.memoryGraphForIdentity(identity)
+    await this.enforcePolicy('memory.read', memoryScope.identity)
+    const runtimeOpts = {
+      identity: memoryScope.identity,
+      graphIds: this.resolveGraphClosure(memoryScope.graphId),
+      limit: opts?.limit,
+      types: opts?.types as ('episodic' | 'semantic' | 'procedural')[] | undefined,
+      asOf: opts?.temporalAt,
+      includeInvalidated: opts?.includeInvalidated,
+      entityScope: opts?.entityScope,
+      format: opts?.format,
+      traceId: telemetry.traceId,
+      spanId: telemetry.spanId,
+    }
+    if (opts?.format) {
+      return this.requireMemory().recall(query, runtimeOpts as typeof runtimeOpts & { format: 'xml' | 'markdown' | 'plain' })
+    }
+    return this.requireMemory().recall(query, runtimeOpts)
+  }
+
+  private async memoryHealthCheck(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport> {
+    const { identity, telemetry } = this.resolvePublicOptions(opts, 'memory.healthCheck')
+    const memoryScope = this.memoryGraphForIdentity(identity)
+    return this.requireMemory().healthCheck({
+      identity: memoryScope.identity,
+      traceId: telemetry.traceId,
+      spanId: telemetry.spanId,
+    })
   }
 
   // ── Policy operations ──

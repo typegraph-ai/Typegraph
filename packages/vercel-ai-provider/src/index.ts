@@ -1,11 +1,10 @@
 export { typegraphTools, typegraphMemoryTools } from './provider.js'
 export type {
-  ToolDefinition,
   TypegraphToolDefinition,
   TypegraphToolName,
   TypegraphToolsOptions,
   TypegraphToolsTarget,
-  TypegraphMemoryToolsTarget,
+  TypegraphScopedMemoryTarget,
 } from './provider.js'
 
 export { typegraphMemoryMiddleware } from './middleware.js'

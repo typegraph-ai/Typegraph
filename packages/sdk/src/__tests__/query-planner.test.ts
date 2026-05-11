@@ -7,9 +7,8 @@ import { createTestDocuments } from './helpers/mock-connector.js'
 import { IndexEngine } from '../index-engine/engine.js'
 import { defaultChunker } from '../index-engine/chunker.js'
 import type { Embedder } from '../embedding/provider.js'
-import type { KnowledgeGraphBridge, MemoryBridge } from '../types/graph-bridge.js'
+import type { KnowledgeGraphBridge } from '../types/graph-bridge.js'
 import type { typegraphEvent, typegraphEventSink } from '../types/events.js'
-import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
 
 describe('QueryPlanner', () => {
   let adapter: ReturnType<typeof createMockAdapter>
@@ -42,7 +41,6 @@ describe('QueryPlanner', () => {
     expect(response.results.chunks[0]!.content).toBeDefined()
     expect(response.results.facts).toEqual([])
     expect(response.results.entities).toEqual([])
-    expect(response.results.memories).toEqual([])
   })
 
   it('treats null execute opts as omitted', async () => {
@@ -68,12 +66,12 @@ describe('QueryPlanner', () => {
       limit: 2,
     })
 
-    const hybridCall = adapter.calls.find(call => call.method === 'hybridSearch')
-    expect(hybridCall).toBeDefined()
-    expect((hybridCall!.args[3] as { signals?: unknown }).signals).toEqual({ semantic: false, keyword: true })
+    const searchCall = adapter.calls.find(call => call.method === 'searchWithDocuments')
+    expect(searchCall).toBeDefined()
+    expect((searchCall!.args[3] as { retrieval?: unknown }).retrieval).toEqual({ semantic: false, keyword: true })
     expect(response.results.chunks.length).toBeGreaterThan(0)
-    expect(response.results.chunks[0]!.sources).toContain('bm25')
-    expect(response.results.chunks[0]!.sources).not.toContain('semantic')
+    expect(response.results.chunks[0]!.matchedBy).toContain('bm25')
+    expect(response.results.chunks[0]!.matchedBy).not.toContain('semantic')
     expect(response.results.chunks[0]!.scores.normalized.semantic).toBeUndefined()
     expect(response.results.chunks[0]!.scores.normalized.keyword).toBeGreaterThan(0)
   })
@@ -108,13 +106,12 @@ describe('QueryPlanner', () => {
     expect(response.results.chunks).toHaveLength(0)
     expect(response.results.facts).toHaveLength(0)
     expect(response.results.entities).toHaveLength(0)
-    expect(response.results.memories).toHaveLength(0)
   })
 
-  it('passes tenantId through', async () => {
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, undefined, undefined, 'tenant-1')
+  it('does not expose tenantId in the public search response', async () => {
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, undefined, 'tenant-1')
     const response = await planner.execute('test')
-    expect(response.query.tenantId).toBe('tenant-1')
+    expect('tenantId' in response.query).toBe(false)
   })
 
   it('emits query.execute with structured snake_case result counters', async () => {
@@ -124,7 +121,7 @@ describe('QueryPlanner', () => {
         events.push(event)
       },
     }
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, eventSink)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, eventSink)
 
     const response = await planner.execute('Documents 1', { limit: 2 })
     const queryEvents = events.filter(event => event.eventType === 'query.execute')
@@ -133,11 +130,10 @@ describe('QueryPlanner', () => {
     expect(queryEvents[0]!.payload).toMatchObject({
       query: 'Documents 1',
       requested_count: 2,
-      result_count: response.results.chunks.length + response.results.memories.length,
+      result_count: response.results.chunks.length,
       chunk_count: response.results.chunks.length,
       fact_count: 0,
       entity_count: 0,
-      memory_count: 0,
       bucket_count: bucketIds.length,
     })
     expect(queryEvents[0]!.payload).not.toHaveProperty('resultCount')
@@ -150,7 +146,6 @@ describe('QueryPlanner', () => {
     expect(response.results).toHaveProperty('chunks')
     expect(response.results).toHaveProperty('facts')
     expect(response.results).toHaveProperty('entities')
-    expect(response.results).toHaveProperty('memories')
     const result = response.results.chunks[0]!
     expect(result).toHaveProperty('content')
     expect(result).toHaveProperty('score')
@@ -172,7 +167,7 @@ describe('QueryPlanner', () => {
     const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings)
     const response = await planner.execute('Documents 1')
     const result = response.results.chunks[0]!
-    expect(result.sources).toContain('semantic')
+    expect(result.matchedBy).toContain('semantic')
   })
 
   it('returns direct facts and entities for semantic search without graph traversal', async () => {
@@ -199,7 +194,7 @@ describe('QueryPlanner', () => {
       searchKnowledge: vi.fn().mockResolvedValue({ facts: [fact], entities: [entity] }),
       searchGraphChunks: vi.fn(),
     }
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, knowledgeGraph)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, knowledgeGraph)
 
     const response = await planner.execute('sms', {
       resources: ['documents', 'facts', 'entities'],
@@ -209,7 +204,7 @@ describe('QueryPlanner', () => {
 
     expect(knowledgeGraph.searchKnowledge).toHaveBeenCalledWith('sms', expect.anything(), expect.objectContaining({
       count: 2,
-      signals: expect.objectContaining({ semantic: true, keyword: false, graph: false }),
+      retrieval: expect.objectContaining({ semantic: true, keyword: false }),
     }))
     expect(knowledgeGraph.searchGraphChunks).not.toHaveBeenCalled()
     expect(response.results.chunks.length).toBeGreaterThan(0)
@@ -219,7 +214,7 @@ describe('QueryPlanner', () => {
 
   it('prefilters indexed chunks with OR entity-scope chunk refs', async () => {
     const [firstChunk, secondChunk] = [...adapter._chunks.values()][0]!
-    const externalId: ExternalId = { id: 'pat@example.com', type: 'email' }
+    const externalId = { id: 'pat@example.com', type: 'email' }
     const knowledgeGraph: KnowledgeGraphBridge = {
       resolveEntityScope: vi.fn().mockResolvedValue({
         entityIds: ['ent-1', 'ent-2'],
@@ -240,13 +235,13 @@ describe('QueryPlanner', () => {
       }),
       searchKnowledge: vi.fn().mockResolvedValue({ facts: [], entities: [] }),
     }
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, knowledgeGraph)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, knowledgeGraph)
 
     const response = await planner.execute('Documents', {
       entityScope: { entityIds: ['ent-1', 'ent-2'], externalIds: [externalId] },
       limit: 10,
     })
-    const searchCall = adapter.calls.find(call => call.method === 'hybridSearch')
+    const searchCall = adapter.calls.find(call => call.method === 'searchWithDocuments')
 
     expect(knowledgeGraph.resolveEntityScope).toHaveBeenCalledWith(
       { entityIds: ['ent-1', 'ent-2'], externalIds: [externalId] },
@@ -286,50 +281,6 @@ describe('QueryPlanner', () => {
     })).rejects.toThrow('entityScope requires a knowledge graph bridge with entity scope resolution.')
   })
 
-  it('allows memory-only entity scope without a knowledge graph bridge', async () => {
-    const email: ExternalId = { id: 'pat@example.com', type: 'email' }
-    const memory: MemoryRecord = {
-      id: 'mem-1',
-      category: 'semantic',
-      status: 'active',
-      content: 'Pat prefers SMS for urgent notices',
-      importance: 0.8,
-      accessCount: 0,
-      lastAccessedAt: new Date(),
-      metadata: { _similarity: 0.9 },
-      scope: { tenantId: 'tenant-1' },
-      validAt: new Date(),
-      createdAt: new Date(),
-    }
-    const memoryBridge: MemoryBridge = {
-      remember: vi.fn(),
-      forget: vi.fn(),
-      correct: vi.fn(),
-      addThreadTurn: vi.fn(),
-      recall: vi.fn().mockResolvedValue([memory]),
-      hasMemories: vi.fn().mockResolvedValue(true),
-    }
-    const planner = new QueryPlanner(adapter, [], new Map(), new Map(), memoryBridge, undefined, undefined, undefined, 'tenant-1')
-
-    const response = await planner.execute('urgent notices', {
-      context: {},
-      resources: ['memories'],
-      weights: { semantic: false, bm25: false, graph: false, recency: false },
-      entityScope: { externalIds: [email] },
-      limit: 3,
-    })
-
-    expect(memoryBridge.recall).toHaveBeenCalledWith('urgent notices', expect.objectContaining({
-      tenantId: 'tenant-1',
-      limit: 3,
-      entityScope: { externalIds: [email] },
-    }))
-    expect(response.results.memories).toEqual([expect.objectContaining({
-      id: 'mem-1',
-      content: 'Pat prefers SMS for urgent notices',
-    })])
-  })
-
   it('autoWeights adjusts scoring without enabling graph search', async () => {
     const knowledgeGraph: KnowledgeGraphBridge = {
       searchGraphChunks: vi.fn().mockResolvedValue({
@@ -339,7 +290,7 @@ describe('QueryPlanner', () => {
         trace: {},
       }),
     }
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, knowledgeGraph)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, knowledgeGraph)
 
     const response = await planner.execute('how does Tennyson relate to Maud?', {
       autoWeights: true,
@@ -401,7 +352,7 @@ describe('QueryPlanner', () => {
         },
       }),
     }
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, knowledgeGraph)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, knowledgeGraph)
 
     const response = await planner.execute('Documents 1', {
       resources: ['entities', 'facts'],
@@ -410,7 +361,7 @@ describe('QueryPlanner', () => {
     })
 
     expect(response.results.chunks).toHaveLength(1)
-    expect(response.results.chunks[0]!.sources).toContain('graph')
+    expect(response.results.chunks[0]!.matchedBy).toContain('graph')
     expect(response.results.chunks[0]!.scores.raw.ppr).toBe(0.25)
     expect(response.results.chunks[0]!.scores.normalized.graph).toBeCloseTo(Math.sqrt(Math.sqrt(0.25)))
     expect(response.results.facts).toEqual([expect.objectContaining({ id: 'fact-1', description: 'Tennyson wrote Maud' })])
@@ -481,7 +432,7 @@ describe('QueryPlanner', () => {
         },
       }),
     }
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, knowledgeGraph)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, knowledgeGraph)
 
     const response = await planner.execute('Documents 1', {
       resources: ['documents', 'entities', 'facts'],
@@ -493,7 +444,7 @@ describe('QueryPlanner', () => {
       result.document.id === firstChunk.documentId && result.chunk.index === firstChunk.chunkIndex
     )
     expect(merged).toBeDefined()
-    expect(merged!.sources).toContain('graph')
+    expect(merged!.matchedBy).toContain('graph')
     expect(merged!.scores.raw.ppr).toBe(0.36)
     expect(merged!.scores.normalized.graph).toBeGreaterThan(0)
     expect(response.results.facts).toEqual([expect.objectContaining({ id: 'fact-1', description: 'Tennyson wrote Maud' })])
@@ -502,7 +453,7 @@ describe('QueryPlanner', () => {
 
   it('surfaces a misconfigured graph bridge when searchGraphChunks is missing', async () => {
     const knowledgeGraph: KnowledgeGraphBridge = {}
-    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, knowledgeGraph)
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, knowledgeGraph)
 
     const response = await planner.execute('Documents 1', {
       resources: ['entities', 'facts'],

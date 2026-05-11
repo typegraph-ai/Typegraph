@@ -1,4 +1,3 @@
-import type { AccessScope } from './identity.js'
 import type { EventInput, typegraphEventRecord } from './event.js'
 
 export interface ThreadInput<TMeta extends Record<string, unknown> = Record<string, unknown>> {
@@ -14,10 +13,10 @@ export interface typegraphThread {
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
+  graphId: string
   name: string
   description?: string | undefined
   metadata: Record<string, unknown>
-  accessScope?: AccessScope | undefined
   createdAt: Date
   updatedAt: Date
 }
@@ -39,7 +38,7 @@ export interface ThreadStorageFilter extends ThreadFilter {
   userId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
-  accessScope?: AccessScope | undefined
+  graphIds?: string[] | undefined
 }
 
 export interface UpsertThreadInput extends Omit<typegraphThread, 'createdAt' | 'updatedAt'> {}

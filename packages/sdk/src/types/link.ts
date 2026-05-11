@@ -3,6 +3,7 @@ export type LinkKind = 'bucket' | 'document' | 'chunk' | 'event' | 'thread' | 'e
 export interface typegraphLink {
   id: string
   tenantId: string
+  graphId: string
   fromKind: LinkKind
   fromId: string
   toKind: LinkKind
@@ -16,6 +17,7 @@ export interface typegraphLink {
 export interface UpsertLinkInput {
   id?: string | undefined
   tenantId: string
+  graphId?: string | undefined
   fromKind: LinkKind
   fromId: string
   toKind: LinkKind

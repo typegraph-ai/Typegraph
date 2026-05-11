@@ -49,7 +49,7 @@ function createTarget(): TypegraphToolsTarget {
       delete: vi.fn(),
     },
     search: vi.fn(async (text, opts) => ({
-      results: { chunks: [], facts: [], entities: [], memories: [] },
+      results: { chunks: [], facts: [], entities: [] },
       buckets: {},
       query: {
         text,
@@ -57,20 +57,25 @@ function createTarget(): TypegraphToolsTarget {
         mergeStrategy: 'test',
       },
     })),
-    remember: vi.fn(async (content, opts) => ({
-      id: 'mem_1',
-      category: opts?.category ?? 'semantic',
-      status: 'active',
-      content,
-      importance: opts?.importance ?? 0.5,
-      accessCount: 0,
-      lastAccessedAt: new Date(),
-      metadata: opts?.metadata ?? {},
-      scope: { tenantId: 'tenant-1', userId: opts?.context?.userId },
-      validAt: new Date(),
-      createdAt: new Date(),
-    })),
-    correct: vi.fn(async () => ({ invalidated: 1, created: 1, summary: 'ok' })),
+    memory: {
+      remember: vi.fn(async (content, opts) => ({
+        id: 'mem_1',
+        category: opts?.category ?? 'semantic',
+        status: 'active',
+        content,
+        importance: opts?.importance ?? 0.5,
+        accessCount: 0,
+        lastAccessedAt: new Date(),
+        metadata: opts?.metadata ?? {},
+        scope: { tenantId: 'tenant-1', userId: opts?.context?.userId },
+        validAt: new Date(),
+        createdAt: new Date(),
+      })),
+      correct: vi.fn(async () => ({ invalidated: 1, created: 1, summary: 'ok' })),
+      recall: vi.fn(),
+      forget: vi.fn(),
+      healthCheck: vi.fn(),
+    },
     job: {
       get: vi.fn(async id => ({
         id,
@@ -184,7 +189,7 @@ describe('typegraphTools', () => {
       content: 'Alice prefers vegetarian meals.',
       subject: { externalIds: [{ type: 'email', id: 'alice@example.com' }], name: 'Alice' },
     })
-    expect(target.remember).toHaveBeenCalledWith('Alice prefers vegetarian meals.', {
+    expect(target.memory.remember).toHaveBeenCalledWith('Alice prefers vegetarian meals.', {
       subject: { externalIds: [{ type: 'email', id: 'alice@example.com' }], name: 'Alice' },
       context: { userId: 'user-1', threadId: 'thread-1' },
     })
@@ -216,7 +221,7 @@ describe('typegraphTools', () => {
 describe('typegraphMemoryTools', () => {
   it('returns the scoped memory tool subset', () => {
     const target = createTarget()
-    const tools = typegraphMemoryTools(target, { context: { userId: 'user-1' } })
+    const tools = typegraphMemoryTools(target.memory, { context: { userId: 'user-1' } })
 
     expect(Object.keys(tools)).toEqual([
       'typegraph_remember',

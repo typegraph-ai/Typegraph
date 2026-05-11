@@ -1,4 +1,4 @@
-import type { AccessScope, EntityRef } from './identity.js'
+import type { EntityRef } from './identity.js'
 import type { DocumentInput, typegraphDocument } from './document.js'
 
 export interface EventInput<TMeta extends Record<string, unknown> = Record<string, unknown>> {
@@ -19,6 +19,7 @@ export interface typegraphEventRecord {
   userId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
+  graphId: string
   name: string
   description?: string | undefined
   occurredAt: Date
@@ -26,7 +27,6 @@ export interface typegraphEventRecord {
   documents?: typegraphDocument[] | undefined
   content?: string | undefined
   metadata: Record<string, unknown>
-  accessScope?: AccessScope | undefined
   createdAt: Date
   updatedAt: Date
 }
@@ -41,7 +41,7 @@ export interface EventStorageFilter extends EventFilter {
   userId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
-  accessScope?: AccessScope | undefined
+  graphIds?: string[] | undefined
 }
 
 export interface UpsertEventInput extends Omit<typegraphEventRecord, 'createdAt' | 'updatedAt' | 'documents'> {

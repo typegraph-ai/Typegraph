@@ -24,6 +24,7 @@ export interface ExtractorInput {
 
 export interface ExtractorContext {
   abortSignal?: AbortSignal | undefined
+  coreferenceCache?: ExtractionCoreferenceCache | undefined
   log?: {
     debug?: (message: string, data?: Record<string, unknown>) => void
     warn?: (message: string, data?: Record<string, unknown>) => void

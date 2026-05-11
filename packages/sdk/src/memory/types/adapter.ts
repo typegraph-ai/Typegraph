@@ -31,6 +31,8 @@ export interface MemoryFilter {
   userId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
+  graphId?: string | undefined
+  graphIds?: string[] | undefined
   accessScope?: AccessScope | undefined
   ids?: string[] | undefined
   category?: MemoryCategory | MemoryCategory[] | undefined
@@ -71,6 +73,7 @@ export interface ChunkBackfillRecord {
   content: string
   metadata: Record<string, unknown>
   accessScope?: AccessScope | undefined
+  graphId?: string | undefined
   tenantId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined

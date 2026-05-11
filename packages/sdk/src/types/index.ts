@@ -56,7 +56,33 @@ export type {
   RerankerOptions,
 } from './extractor.js'
 
-export * from './identity.js'
+export {
+  TenantId,
+  OrganizationId,
+  GroupId,
+  UserId,
+  AgentId,
+  ThreadId,
+  EntityId,
+  entityRef,
+} from './identity.js'
+export type {
+  Brand,
+  EntityRef,
+  TypeGraphContext,
+  TypeGraphOptions,
+  TypeGraphWriteOptions,
+} from './identity.js'
+
+export {
+  GraphId,
+} from './graph.js'
+export type {
+  GraphAccessConfig,
+  GraphAccessPrincipals,
+  GraphConfig,
+  TypeGraphGraphRecord,
+} from './graph.js'
 
 export type {
   Bucket,
@@ -92,8 +118,6 @@ export type {
   SearchExplanation,
   OutputScores,
   QueryChunkResult,
-  QueryMemoryRecord,
-  QueryMemoryResult,
   QueryResults,
   PromptFormat,
   PromptSection,
@@ -102,7 +126,6 @@ export type {
   RawScores,
   NormalizedScores,
   QueryEntityScope,
-  QueryOpts,
   QueryResponse,
 } from './query.js'
 
@@ -120,8 +143,6 @@ export type { typegraphHooks } from './hooks.js'
 export type { LLMProvider, LLMGenerateOptions, LLMConfig } from './llm-provider.js'
 
 export type {
-  MemoryBridge,
-  KnowledgeGraphBridge,
   MemorySubject,
   GraphEntityRef,
   UpsertGraphEntityInput,
@@ -132,8 +153,6 @@ export type {
   DeleteGraphEntityOpts,
   DeleteGraphEntityResult,
   EntityScopeResolution,
-  KnowledgeSearchOpts,
-  KnowledgeSearchResult,
   EntityResult,
   EntityDetail,
   EdgeResult,
@@ -161,7 +180,6 @@ export type {
   ForgetOpts,
   CorrectOpts,
   RecallOpts,
-  AddThreadTurnOpts,
   HealthCheckOpts,
 } from './graph-bridge.js'
 

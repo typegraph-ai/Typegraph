@@ -151,8 +151,7 @@ export class MemoryExtractor {
           confidence: candidate.confidence,
           reasoning: result.reasoning,
         })
-      } catch (err) {
-        console.error('[typegraph] Conflict resolution LLM failed, defaulting to ADD:', err instanceof Error ? err.message : err)
+      } catch {
         operations.push({
           type: 'ADD',
           fact: candidate,

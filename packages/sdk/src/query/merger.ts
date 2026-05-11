@@ -1,29 +1,29 @@
 import { createHash } from 'crypto'
-import type { QueryMemoryRecord, QuerySignals, NormalizedScores } from '../types/query.js'
-import type { AccessScope } from '../types/identity.js'
+import type { RetrievalSwitches, NormalizedScores } from '../types/query.js'
 import { computeCompositeScore } from './planner.js'
+
+type ScoreWeightKey = 'rrf' | 'semantic' | 'keyword' | 'graph' | 'recency'
 
 export interface RetrievalCandidate {
   content: string
   bucketId: string
   documentId: string
-  rawScores: { semantic?: number | undefined; keyword?: number | undefined; rrf?: number | undefined; memory?: number | undefined; graph?: number | undefined; recency?: number | undefined; memorySimilarity?: number | undefined; memoryImportance?: number | undefined; memoryRecency?: number | undefined }
+  rawScores: { semantic?: number | undefined; keyword?: number | undefined; rrf?: number | undefined; graph?: number | undefined; recency?: number | undefined }
   normalizedScore: number
-  mode: 'indexed' | 'memory' | 'graph'
+  mode: 'indexed' | 'graph'
   metadata: Record<string, unknown>
   chunk?: { index: number; total: number } | undefined
   url?: string | undefined
   name?: string | undefined
   updatedAt?: Date | undefined
   tenantId?: string | undefined
+  graphId?: string | undefined
   // Document-level fields (populated when searchWithDocuments is used)
   documentStatus?: string | undefined
-  documentAccessScope?: AccessScope | undefined
   userId?: string | undefined
   groupId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
-  memoryRecord?: QueryMemoryRecord | undefined
 }
 
 export function dedupKey(r: RetrievalCandidate): string {
@@ -82,7 +82,6 @@ export function calibrateKeyword(score: number, floor = 0, ceiling = 1): number 
 /** Default RRF weights by internal runner mode. */
 const DEFAULT_RRF_WEIGHTS: Record<string, number> = {
   indexed: 0.5,
-  memory: 0.2,
   graph: 0.15,
 }
 
@@ -92,7 +91,6 @@ function deriveRRFWeights(scoreWeights?: Partial<Record<string, number>>): Recor
   if (!scoreWeights || Object.keys(scoreWeights).length === 0) return DEFAULT_RRF_WEIGHTS
   return {
     indexed: (scoreWeights.semantic ?? 0.5) + (scoreWeights.keyword ?? 0),
-    memory: scoreWeights.memory ?? 0.2,
     graph: scoreWeights.graph ?? 0.15,
   }
 }
@@ -101,8 +99,8 @@ export function mergeAndRank(
   runnerResults: RetrievalCandidate[][],
   count: number,
   weights?: Record<string, number>,
-  signals?: Required<QuerySignals>,
-  scoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory' | 'recency', number>>
+  switches?: Required<RetrievalSwitches>,
+  scoreWeights?: Partial<Record<ScoreWeightKey, number>>
 ): RetrievalCandidate[] {
   const numLists = runnerResults.length
   const rrfWeights = weights ?? deriveRRFWeights(scoreWeights)
@@ -128,8 +126,8 @@ export function mergeAndRank(
     groups.set(key, group)
   }
 
-  // Default signals if not provided (all active — preserves legacy behavior)
-  const resolvedSignals: Required<QuerySignals> = signals ?? { semantic: true, keyword: true, graph: true, memory: true, recency: true }
+  // Default retrieval switches if not provided (all active for direct helper calls).
+  const resolvedSwitches: Required<RetrievalSwitches> = switches ?? { semantic: true, keyword: true, graph: true, recency: true }
 
   // Pass 1: aggregate raw scores per dedup group
   const groupEntries = Array.from(groups.values()).map(group => {
@@ -153,10 +151,9 @@ export function mergeAndRank(
     return { best, rrfScore, aggregatedScores, modes }
   })
 
-  // Pass 2: calibrate all signals and compute composite scores
+  // Pass 2: calibrate all retrieval scores and compute composite scores
   const merged = groupEntries.map(({ best, rrfScore, aggregatedScores, modes }) => {
     const nRRF = theoreticalMaxRRF > 0 ? Math.min(rrfScore / theoreticalMaxRRF, 1) : 0
-    const hasMemory = modes.has('memory')
     const hasIndexed = modes.has('indexed')
 
     // Use undefined for ineligible categories (weight redistributes),
@@ -164,20 +161,16 @@ export function mergeAndRank(
     const normalizedScores: NormalizedScores = {
       rrf: nRRF,
       semantic: aggregatedScores.semantic != null ? calibrateSemantic(aggregatedScores.semantic)
-        : (hasMemory && aggregatedScores.memorySimilarity != null) ? calibrateSemantic(aggregatedScores.memorySimilarity)
         : (hasIndexed ? 0 : undefined),
-      keyword: aggregatedScores.keyword != null ? calibrateKeyword(aggregatedScores.keyword) : (resolvedSignals.keyword ? 0 : undefined),
+      keyword: aggregatedScores.keyword != null ? calibrateKeyword(aggregatedScores.keyword) : (resolvedSwitches.keyword ? 0 : undefined),
       // Graph: fourth-root PPR normalization for stable absolute scores across queries.
-      // When graph signal is active, ALL results get a score (0 if no connection), never undefined.
-      graph: resolvedSignals.graph
+      // When graph retrieval is active, ALL results get a score (0 if no connection), never undefined.
+      graph: resolvedSwitches.graph
         ? normalizeGraphPPR(aggregatedScores.graph ?? 0)
         : undefined,
-      memory: hasMemory
-        ? Math.min(Math.max(aggregatedScores.memory ?? 0, 0), 1)
-        : undefined,
-      recency: resolvedSignals.recency ? aggregatedScores.recency : undefined,
+      recency: resolvedSwitches.recency ? aggregatedScores.recency : undefined,
     }
-    const compositeScore = computeCompositeScore(normalizedScores, resolvedSignals, scoreWeights)
+    const compositeScore = computeCompositeScore(normalizedScores, resolvedSwitches, scoreWeights)
 
     return {
       ...best,

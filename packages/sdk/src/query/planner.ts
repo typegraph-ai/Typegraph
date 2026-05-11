@@ -1,21 +1,22 @@
 import type { Bucket } from '../types/bucket.js'
-import type { QueryChunkResult, QueryMemoryResult, QueryOpts, QueryResponse, QueryResults, QuerySignals, RawScores, NormalizedScores, SearchResource, SearchWeights, SearchFusion, OutputScores } from '../types/query.js'
+import type { QueryChunkResult, QueryResponse, QueryResults, RetrievalSwitches, RawScores, NormalizedScores, SearchOptions, SearchResource, SearchWeights, SearchFusion, OutputScores } from '../types/query.js'
 import type { VectorStoreAdapter } from '../types/adapter.js'
 import type { Embedder } from '../embedding/provider.js'
 import { embeddingModelKey } from '../embedding/provider.js'
-import type { EntityResult, FactResult, GraphSearchTrace, MemoryBridge, KnowledgeGraphBridge } from '../types/graph-bridge.js'
+import type { EntityResult, FactResult, GraphSearchTrace, KnowledgeGraphBridge } from '../types/graph-bridge.js'
 import type { typegraphEvent, typegraphEventSink } from '../types/events.js'
 import type { typegraphLogger } from '../types/logger.js'
 import type { ChunkRef } from '../types/chunk.js'
 import { ConfigError } from '../types/errors.js'
 import { compactTypeGraphContext, contextTelemetry, contextToIdentity, optionalCompactObject } from '../utils/input.js'
 import { IndexedRunner } from './runners/indexed.js'
-import { MemoryRunner } from './runners/memory-runner.js'
 import { GraphRunner, type GraphRunResult } from './runners/graph-runner.js'
 import { mergeAndRank, normalizeRRF, normalizeGraphPPR, calibrateSemantic, calibrateKeyword, type RetrievalCandidate } from './merger.js'
 import { classifyQuery } from './classifier.js'
 
-const DEFAULT_SEARCH_RESOURCES: SearchResource[] = ['documents', 'events', 'threads', 'entities', 'facts', 'memories']
+type ScoreWeightKey = 'rrf' | 'semantic' | 'keyword' | 'graph' | 'recency'
+
+const DEFAULT_SEARCH_RESOURCES: SearchResource[] = ['documents', 'events', 'threads', 'entities', 'facts']
 const DEFAULT_SEARCH_WEIGHTS: Required<Record<keyof SearchWeights, number | false>> = {
   semantic: 1,
   bm25: 0.7,
@@ -24,12 +25,12 @@ const DEFAULT_SEARCH_WEIGHTS: Required<Record<keyof SearchWeights, number | fals
 }
 const DEFAULT_FUSION: Required<SearchFusion> = { method: 'rrf', k: 60 }
 
-function resolveResources(opts?: QueryOpts | null): SearchResource[] {
+function resolveResources(opts?: SearchOptions | null): SearchResource[] {
   const resources = opts?.resources ?? DEFAULT_SEARCH_RESOURCES
   return [...new Set(resources)]
 }
 
-function resolveWeights(opts?: QueryOpts | null): Required<Record<keyof SearchWeights, number | false>> {
+function resolveWeights(opts?: SearchOptions | null): Required<Record<keyof SearchWeights, number | false>> {
   return {
     semantic: opts?.weights?.semantic ?? DEFAULT_SEARCH_WEIGHTS.semantic,
     bm25: opts?.weights?.bm25 ?? DEFAULT_SEARCH_WEIGHTS.bm25,
@@ -38,7 +39,7 @@ function resolveWeights(opts?: QueryOpts | null): Required<Record<keyof SearchWe
   }
 }
 
-function resolveFusion(opts?: QueryOpts | null): Required<SearchFusion> {
+function resolveFusion(opts?: SearchOptions | null): Required<SearchFusion> {
   return {
     method: opts?.fusion?.method ?? DEFAULT_FUSION.method,
     k: opts?.fusion?.k ?? DEFAULT_FUSION.k,
@@ -50,8 +51,8 @@ function hasWeight(value: number | false | undefined): value is number {
 }
 
 /** Resolve public resources/weights into internal retrieval switches. */
-export function resolveSignals(opts?: QueryOpts | null): Required<QuerySignals> {
-  const normalizedOpts = optionalCompactObject<QueryOpts>(opts, 'resolveSignals') as QueryOpts
+function resolveRetrievalSwitches(opts?: SearchOptions | null): Required<RetrievalSwitches> {
+  const normalizedOpts = optionalCompactObject<SearchOptions>(opts, 'resolveRetrievalSwitches') as SearchOptions
   const resources = new Set(resolveResources(normalizedOpts))
   const weights = resolveWeights(normalizedOpts)
   const wantsIndexed = resources.has('documents') || resources.has('events') || resources.has('threads')
@@ -60,28 +61,15 @@ export function resolveSignals(opts?: QueryOpts | null): Required<QuerySignals> 
     semantic: wantsIndexed && hasWeight(weights.semantic),
     keyword: wantsIndexed && hasWeight(weights.bm25),
     graph: wantsGraphRecords && hasWeight(weights.graph),
-    memory: resources.has('memories'),
     recency: hasWeight(weights.recency),
   }
 }
 
-/** Human-readable label from active signals (e.g. "semantic+keyword", "graph+memory"). */
-export function signalLabel(signals: QuerySignals): string {
-  const active: string[] = []
-  if (signals.semantic) active.push('semantic')
-  if (signals.keyword) active.push('bm25')
-  if (signals.graph) active.push('graph')
-  if (signals.recency) active.push('recency')
-  if (signals.memory) active.push('memory')
-  return active.join('+') || 'none'
-}
-
 /** Compute composite score with eligible/ineligible distinction.
- *  - `undefined` value = ineligible (result can't have this score, e.g. bucket document has no memory score).
+ *  - `undefined` value = ineligible (result can't have this score, e.g. a document has no graph score).
  *    Weight is redistributed proportionally to eligible categories.
  *  - `0` value = eligible but scored poorly. Full penalty proportional to category weight.
- *  This ensures bucket documents aren't penalized for lacking a memory score,
- *  while memories that score 0 in keyword search are properly penalized. */
+ *  This prevents one retrieval path from penalizing records that cannot participate in another. */
 function compositeScore(
   components: Array<{ weight: number; value: number | undefined }>
 ): number {
@@ -99,37 +87,35 @@ function compositeScore(
   }, 0)
 }
 
-/** Default weight profiles per signal combination.
+/** Default weight profiles per retrieval combination.
  *  RRF is excluded — it's a rank-fusion technique for merging lists,
- *  not a relevance signal. It's used during merge-time ranking only. */
-function getDefaultWeights(signals: Required<QuerySignals>): Record<string, number> {
+ *  not a relevance weight. It's used during merge-time ranking only. */
+function getDefaultWeights(switches: Required<RetrievalSwitches>): Record<string, number> {
   const weights: Record<string, number> = {}
-  if (signals.semantic) weights.semantic = DEFAULT_SEARCH_WEIGHTS.semantic as number
-  if (signals.keyword) weights.keyword = DEFAULT_SEARCH_WEIGHTS.bm25 as number
-  if (signals.graph) weights.graph = DEFAULT_SEARCH_WEIGHTS.graph as number
-  if (signals.memory) weights.memory = 0.5
-  if (signals.recency) weights.recency = DEFAULT_SEARCH_WEIGHTS.recency as number
+  if (switches.semantic) weights.semantic = DEFAULT_SEARCH_WEIGHTS.semantic as number
+  if (switches.keyword) weights.keyword = DEFAULT_SEARCH_WEIGHTS.bm25 as number
+  if (switches.graph) weights.graph = DEFAULT_SEARCH_WEIGHTS.graph as number
+  if (switches.recency) weights.recency = DEFAULT_SEARCH_WEIGHTS.recency as number
   return Object.keys(weights).length > 0 ? weights : { semantic: 1.0 }
 }
 
-/** Compute composite score from normalized signal scores and weights.
- *  When no explicit weights are provided, derives defaults from which signals are active.
+/** Compute composite score from normalized retrieval scores and weights.
+ *  When no explicit weights are provided, derives defaults from active retrieval paths.
  *  Distinguishes ineligible (undefined → redistribute weight) from scored-0 (penalize). */
 export function computeCompositeScore(
   normalizedScores: NormalizedScores,
-  signals: Required<QuerySignals>,
-  userWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory' | 'recency', number>>
+  switches: Required<RetrievalSwitches>,
+  userWeights?: Partial<Record<ScoreWeightKey, number>>
 ): number {
   const weights = (userWeights && Object.keys(userWeights).length > 0)
     ? userWeights
-    : getDefaultWeights(signals)
+    : getDefaultWeights(switches)
 
   const components: Array<{ weight: number; value: number | undefined }> = []
 
   if (weights.semantic) components.push({ weight: weights.semantic, value: normalizedScores.semantic })
   if (weights.keyword) components.push({ weight: weights.keyword, value: normalizedScores.keyword })
   if (weights.graph) components.push({ weight: weights.graph, value: normalizedScores.graph })
-  if (weights.memory) components.push({ weight: weights.memory, value: normalizedScores.memory })
   if (weights.recency) components.push({ weight: weights.recency, value: normalizedScores.recency })
   // Allow user to include RRF in explicit weights if they want
   if (weights.rrf) components.push({ weight: weights.rrf, value: normalizedScores.rrf })
@@ -169,17 +155,16 @@ function uniqueById<T extends { id: string }>(items: T[]): T[] {
 interface ScoredCandidate {
   score: number
   scores: { raw: RawScores; normalized: NormalizedScores; output: OutputScores }
-  sources: string[]
+  matchedBy: string[]
   modes: string[]
 }
 
 function scoreCandidate(
   r: RetrievalCandidate,
-  signals: Required<QuerySignals>,
+  switches: Required<RetrievalSwitches>,
   runnerArrayCount: number,
   needsGraph: boolean,
-  needsMemory: boolean,
-  effectiveScoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory' | 'recency', number>>,
+  effectiveScoreWeights?: Partial<Record<ScoreWeightKey, number>>,
 ): ScoredCandidate {
   const merged = r as RetrievalCandidate & { modes?: string[]; finalScore?: number; compositeScore?: number }
   const agg = merged.rawScores ?? r.rawScores
@@ -187,15 +172,14 @@ function scoreCandidate(
   const rawScores: RawScores = {}
   const normalizedScores: NormalizedScores = {}
   const modes: string[] = merged.modes ?? [r.mode]
-  const isFromMemory = modes.includes('memory')
 
-  if (signals.semantic) {
-    const semanticScore = agg.semantic ?? (isFromMemory ? agg.memorySimilarity : undefined)
+  if (switches.semantic) {
+    const semanticScore = agg.semantic
     rawScores.cosineSimilarity = semanticScore
     normalizedScores.semantic = calibrateSemantic(semanticScore ?? 0)
   }
 
-  if (signals.keyword) {
+  if (switches.keyword) {
     rawScores.bm25 = agg.keyword
     rawScores.rrf = rawRrf
     normalizedScores.keyword = calibrateKeyword(agg.keyword ?? 0)
@@ -203,33 +187,23 @@ function scoreCandidate(
     const baseRRF = normalizeRRF(rawRrf, numListsForRRF)
     const matchedBothLists = (agg.keyword ?? 0) > 0
     normalizedScores.rrf = matchedBothLists ? baseRRF : baseRRF * 0.5
-  } else if (signals.semantic && (needsGraph || needsMemory) && merged.compositeScore != null) {
+  } else if (switches.semantic && needsGraph && merged.compositeScore != null) {
     rawScores.rrf = rawRrf
     normalizedScores.rrf = normalizeRRF(rawRrf, runnerArrayCount)
   }
 
-  if (signals.graph) {
+  if (switches.graph) {
     rawScores.ppr = agg.graph
     normalizedScores.graph = normalizeGraphPPR(agg.graph ?? 0)
   }
 
-  if (signals.memory) {
-    rawScores.importance = agg.memory
-    rawScores.memorySimilarity = agg.memorySimilarity
-    rawScores.memoryImportance = agg.memoryImportance
-    rawScores.memoryRecency = agg.memoryRecency
-    normalizedScores.memory = isFromMemory
-      ? Math.min(Math.max(agg.memory ?? 0, 0), 1)
-      : undefined
-  }
-
-  if (signals.recency) {
+  if (switches.recency) {
     const recency = agg.recency ?? r.rawScores.recency ?? recencyScore(r.updatedAt)
     rawScores.recency = recency
     normalizedScores.recency = recency
   }
 
-  const score = computeCompositeScore(normalizedScores, signals, effectiveScoreWeights)
+  const score = computeCompositeScore(normalizedScores, switches, effectiveScoreWeights)
   return {
     score,
     scores: {
@@ -243,7 +217,7 @@ function scoreCandidate(
         fused: score,
       },
     },
-    sources: sourcesForResult(modes, rawScores, signals),
+    matchedBy: matchedByForResult(modes, rawScores, switches),
     modes,
   }
 }
@@ -253,91 +227,43 @@ function toChunkResult(r: RetrievalCandidate, scored: ScoredCandidate): QueryChu
     content: r.content,
     score: scored.score,
     scores: scored.scores,
-    sources: scored.sources,
+    matchedBy: scored.matchedBy,
     document: {
       id: r.documentId,
       bucketId: r.bucketId,
+      graph: r.graphId ?? 'public',
       name: r.name ?? '',
       url: r.url,
       updatedAt: r.updatedAt ?? new Date(),
       status: r.documentStatus,
-      accessScope: r.documentAccessScope,
-      tenantId: r.tenantId,
-      userId: r.userId,
-      groupId: r.groupId,
-      agentId: r.agentId,
-      threadId: r.threadId,
     },
     chunk: r.chunk ?? { index: 0, total: 1 },
     metadata: r.metadata,
-    tenantId: r.tenantId,
-  }
-}
-
-function fallbackMemoryRecord(r: RetrievalCandidate): Omit<QueryMemoryResult, 'score' | 'scores'> {
-  const now = new Date()
-  return {
-    id: r.documentId,
-    category: 'semantic',
-    status: 'active',
-    content: r.content,
-    importance: r.rawScores.memoryImportance ?? 0,
-    accessCount: 0,
-    lastAccessedAt: now,
-    metadata: r.metadata,
-    scope: {
-      tenantId: r.tenantId,
-      groupId: r.groupId,
-      userId: r.userId,
-      agentId: r.agentId,
-      threadId: r.threadId,
-    },
-    validAt: now,
-    createdAt: r.updatedAt ?? now,
-    accessScope: undefined,
-  }
-}
-
-function toMemoryResult(r: RetrievalCandidate, scored: ScoredCandidate): QueryMemoryResult {
-  const memory = r.memoryRecord ?? fallbackMemoryRecord(r)
-  return {
-    ...memory,
-    score: scored.score,
-    scores: scored.scores,
   }
 }
 
 function partitionResults(
   candidates: RetrievalCandidate[],
-  signals: Required<QuerySignals>,
+  switches: Required<RetrievalSwitches>,
   runnerArrayCount: number,
   needsGraph: boolean,
-  needsMemory: boolean,
   graphFacts: FactResult[],
   graphEntities: EntityResult[],
   graphTrace?: GraphSearchTrace | undefined,
-  effectiveScoreWeights?: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory' | 'recency', number>>,
+  effectiveScoreWeights?: Partial<Record<ScoreWeightKey, number>>,
 ): QueryResults {
   const chunks: QueryChunkResult[] = []
-  const memories: QueryMemoryResult[] = []
 
   for (const candidate of candidates) {
-    const scored = scoreCandidate(candidate, signals, runnerArrayCount, needsGraph, needsMemory, effectiveScoreWeights)
-    const memoryOnly = scored.modes.includes('memory')
-      && !scored.modes.some(mode => mode === 'indexed' || mode === 'graph')
-    if (memoryOnly) {
-      memories.push(toMemoryResult(candidate, scored))
-    } else {
-      chunks.push(toChunkResult(candidate, scored))
-    }
+    const scored = scoreCandidate(candidate, switches, runnerArrayCount, needsGraph, effectiveScoreWeights)
+    chunks.push(toChunkResult(candidate, scored))
   }
 
   return {
     chunks,
     facts: graphFacts.length > 0 ? uniqueById(graphFacts) : [],
     entities: graphEntities.length > 0 ? uniqueById(graphEntities) : [],
-    memories: signals.memory ? memories : [],
-    ...(signals.graph && graphTrace ? { graphTrace } : {}),
+    ...(switches.graph && graphTrace ? { graphTrace } : {}),
   }
 }
 
@@ -346,21 +272,20 @@ function resultCounts(results: QueryResults): {
   chunkCount: number
   factCount: number
   entityCount: number
-  memoryCount: number
 } {
   const chunkCount = results.chunks.length
-  const memoryCount = results.memories.length
   return {
-    resultCount: chunkCount + memoryCount,
+    resultCount: chunkCount,
     chunkCount,
     factCount: results.facts.length,
     entityCount: results.entities.length,
-    memoryCount,
   }
 }
 
 function buildExplanation(
   opts: {
+    requestedGraph: string
+    graphClosure: string[]
     resources: SearchResource[]
     weights: Required<Record<keyof SearchWeights, number | false>>
     fusion: Required<SearchFusion>
@@ -373,6 +298,8 @@ function buildExplanation(
 ): QueryResponse['explanation'] {
   const counts = resultCounts(opts.results)
   const explanation: NonNullable<QueryResponse['explanation']> = {
+    requestedGraph: opts.requestedGraph,
+    graphClosure: opts.graphClosure,
     activeResources: opts.resources,
     activeWeights: opts.weights,
     fusion: opts.fusion,
@@ -380,7 +307,6 @@ function buildExplanation(
       documents: counts.chunkCount,
       facts: counts.factCount,
       entities: counts.entityCount,
-      memories: counts.memoryCount,
     },
     timings: Object.fromEntries(
       Object.entries(opts.bucketTimings).map(([key, value]) => [key, value.durationMs])
@@ -408,15 +334,14 @@ export class QueryPlanner {
     private bucketIds: string[],
     private bucketEmbeddings: Map<string, Embedder>,
     private bucketSearchEmbeddings: Map<string, Embedder>,
-    private memory?: MemoryBridge,
     private knowledgeGraph?: KnowledgeGraphBridge,
     private eventSink?: typegraphEventSink,
     private logger?: typegraphLogger,
     private tenantId?: string,
   ) {}
 
-  async execute(text: string, opts?: QueryOpts | null): Promise<QueryResponse> {
-    const normalizedOpts = optionalCompactObject<QueryOpts>(opts, 'QueryPlanner.execute') as QueryOpts
+  async execute(text: string, opts?: SearchOptions | null): Promise<QueryResponse> {
+    const normalizedOpts = optionalCompactObject<SearchOptions>(opts, 'QueryPlanner.execute') as SearchOptions
     const startMs = Date.now()
     const count = normalizedOpts.limit ?? 10
     const resources = resolveResources(normalizedOpts)
@@ -425,13 +350,14 @@ export class QueryPlanner {
     const context = compactTypeGraphContext(normalizedOpts.context, 'search')
     const telemetry = contextTelemetry(context)
     const identity = contextToIdentity(context, this.tenantId)
-    const tenantId = identity.tenantId
-    const signals = resolveSignals(normalizedOpts)
+    const switches = resolveRetrievalSwitches(normalizedOpts)
+    const requestedGraph = normalizedOpts.graph ?? 'public'
+    const graphIds = normalizedOpts.graphIds ?? [requestedGraph]
     const onBucketError = normalizedOpts.onBucketError ?? 'throw'
 
     // Auto-weights: classify query type and use optimized weight profile.
     // User-provided weights always override.
-    let effectiveScoreWeights: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory' | 'recency', number>> | undefined = {
+    let effectiveScoreWeights: Partial<Record<ScoreWeightKey, number>> | undefined = {
       ...(publicWeights.semantic !== false ? { semantic: publicWeights.semantic } : {}),
       ...(publicWeights.bm25 !== false ? { keyword: publicWeights.bm25 } : {}),
       ...(publicWeights.graph !== false ? { graph: publicWeights.graph } : {}),
@@ -440,17 +366,16 @@ export class QueryPlanner {
     if (Object.keys(effectiveScoreWeights).length === 0) effectiveScoreWeights = undefined
     if (normalizedOpts.autoWeights && !normalizedOpts.weights) {
       const classification = classifyQuery(text)
-      const classified: Partial<Record<'rrf' | 'semantic' | 'keyword' | 'graph' | 'memory' | 'recency', number>> = {}
+      const classified: Partial<Record<ScoreWeightKey, number>> = {}
       if (classification.weights.semantic !== undefined) classified.semantic = classification.weights.semantic
       if (classification.weights.keyword !== undefined) classified.keyword = classification.weights.keyword
       if (classification.weights.graph !== undefined) classified.graph = classification.weights.graph
-      if (classification.weights.memory !== undefined) classified.memory = classification.weights.memory
       if (publicWeights.recency !== false) classified.recency = publicWeights.recency
       effectiveScoreWeights = classified
       this.logger?.debug('Auto-weights', { queryType: classification.type, confidence: classification.confidence, weights: classification.weights })
     }
 
-    this.logger?.debug('Query start', { text: text.slice(0, 100), signals, count })
+    this.logger?.debug('Search start', { text: text.slice(0, 100), retrieval: switches, count })
 
     // Filter to requested buckets or use all
     const activeBucketIds = normalizedOpts.buckets
@@ -479,13 +404,12 @@ export class QueryPlanner {
       }
     }
 
-    const needsIndexedSearch = signals.semantic || signals.keyword
-    const needsGraph = Boolean(signals.graph && this.knowledgeGraph)
-    const needsMemory = Boolean(signals.memory && this.memory)
+    const needsIndexedSearch = switches.semantic || switches.keyword
+    const needsGraph = Boolean(switches.graph && this.knowledgeGraph)
     const entityScopeMode = normalizedOpts.entityScope?.mode ?? 'filter'
     let scopedEntityIds: string[] = []
     let scopedChunkRefs: ChunkRef[] = []
-    const graphScopedQuery = Boolean(normalizedOpts.entityScope && (needsIndexedSearch || signals.graph))
+    const graphScopedQuery = Boolean(normalizedOpts.entityScope && (needsIndexedSearch || switches.graph))
     if (normalizedOpts.entityScope && graphScopedQuery) {
       if (!this.knowledgeGraph?.resolveEntityScope) {
         throw new ConfigError('entityScope requires a knowledge graph bridge with entity scope resolution.')
@@ -503,32 +427,14 @@ export class QueryPlanner {
     const timeouts = {
       indexed: normalizedOpts.timeouts?.indexed ?? 30_000,
       graph: normalizedOpts.timeouts?.graph ?? 30_000,
-      memory: normalizedOpts.timeouts?.memory ?? 10_000,
     }
 
-    // Memory-only or graph-only (no indexed search)
-    if (!needsIndexedSearch && (needsMemory || needsGraph)) {
+    // Graph-only (no indexed search)
+    if (!needsIndexedSearch && needsGraph) {
       const runnerArrays: RetrievalCandidate[][] = []
       let graphFacts: FactResult[] = []
       let graphEntities: EntityResult[] = []
       let graphTrace: GraphSearchTrace | undefined
-
-      // Memory runner
-      if (needsMemory) {
-        try {
-          const memoryRunner = new MemoryRunner(this.memory!)
-          const memResults = await withTimeout(
-            memoryRunner.run(text, identity, count, { useKeyword: signals.keyword, entityScope: normalizedOpts.entityScope }),
-            timeouts.memory,
-            [] as RetrievalCandidate[]
-          )
-          if (memResults.length > 0) runnerArrays.push(memResults)
-        } catch (err) {
-          const msg = `Memory search failed: ${err instanceof Error ? err.message : String(err)}`
-          warnings.push(msg)
-          this.logger?.warn(msg)
-        }
-      }
 
       // Graph runner
       if (needsGraph) {
@@ -536,7 +442,7 @@ export class QueryPlanner {
           const graphRunner = new GraphRunner(this.knowledgeGraph!)
           const graphRun = await withTimeout(
             graphRunner.run(text, identity, count, activeBucketIds, {
-              ...normalizedOpts.graph,
+              ...normalizedOpts.graphOptions,
               ...(normalizedOpts.entityScope ? { entityScope: normalizedOpts.entityScope, resolvedEntityIds: scopedEntityIds } : {}),
             }),
             timeouts.graph,
@@ -555,14 +461,13 @@ export class QueryPlanner {
       }
 
       const allResults = runnerArrays.length > 1
-        ? mergeAndRank(runnerArrays, count, undefined, signals, effectiveScoreWeights)
+        ? mergeAndRank(runnerArrays, count, undefined, switches, effectiveScoreWeights)
         : (runnerArrays[0] ?? []).slice(0, count)
 
-      const results = partitionResults(allResults, signals, Math.max(1, runnerArrays.length), needsGraph, needsMemory, graphFacts, graphEntities, graphTrace, effectiveScoreWeights)
+      const results = partitionResults(allResults, switches, Math.max(1, runnerArrays.length), needsGraph, graphFacts, graphEntities, graphTrace, effectiveScoreWeights)
 
       const bucketTimings: QueryResponse['buckets'] = {}
-      if (needsMemory) bucketTimings['__memory__'] = { mode: 'memory', resultCount: results.memories.length, durationMs: Date.now() - startMs, status: 'ok' }
-      if (needsGraph) bucketTimings['__graph__'] = { mode: 'graph', resultCount: results.chunks.filter(result => result.sources.includes('graph')).length, durationMs: Date.now() - startMs, status: 'ok' }
+      if (needsGraph) bucketTimings['__graph__'] = { mode: 'graph', resultCount: results.chunks.filter(result => result.matchedBy.includes('graph')).length, durationMs: Date.now() - startMs, status: 'ok' }
 
       const durationMs = Date.now() - startMs
       const counts = resultCounts(results)
@@ -574,13 +479,12 @@ export class QueryPlanner {
           identity,
           payload: {
             query: text,
-            signals,
+            retrieval: switches,
             requested_count: count,
             result_count: counts.resultCount,
             chunk_count: counts.chunkCount,
             fact_count: counts.factCount,
             entity_count: counts.entityCount,
-            memory_count: counts.memoryCount,
             bucket_count: activeBucketIds.length,
           },
           durationMs,
@@ -596,9 +500,9 @@ export class QueryPlanner {
       return {
         results,
         buckets: bucketTimings,
-        query: { text, tenantId, durationMs, mergeStrategy: 'rrf' },
+        query: { text, durationMs, mergeStrategy: 'rrf' },
         explanation: normalizedOpts.explain
-          ? buildExplanation({ resources, weights: publicWeights, fusion, results, bucketTimings, graphTrace, warnings })
+          ? buildExplanation({ requestedGraph, graphClosure: graphIds, resources, weights: publicWeights, fusion, results, bucketTimings, graphTrace, warnings })
           : undefined,
         warnings: warnings.length > 0 ? warnings : undefined,
       }
@@ -619,8 +523,8 @@ export class QueryPlanner {
             modelGroups,
             count,
             identity,
-            normalizedOpts.documentFilter,
-            signals,
+            { ...(normalizedOpts.documentFilter ?? {}), tenantId: identity.tenantId, graphIds },
+            switches,
             telemetry.traceId,
             telemetry.spanId,
             normalizedOpts.asOf === 'now' ? undefined : normalizedOpts.asOf,
@@ -665,7 +569,7 @@ export class QueryPlanner {
       }
     }
 
-    // Run graph + memory runners in parallel if signals request them
+    // Run graph runner if weights/resources request it.
     const runnerArrays: RetrievalCandidate[][] = [allResults]
     let graphFacts: FactResult[] = []
     let graphEntities: EntityResult[] = []
@@ -677,7 +581,7 @@ export class QueryPlanner {
       try {
         const direct = await this.knowledgeGraph.searchKnowledge(text, identity, {
           count,
-          signals,
+          retrieval: switches,
           entityScope: normalizedOpts.entityScope,
           resolvedEntityIds: scopedEntityIds,
         })
@@ -689,50 +593,21 @@ export class QueryPlanner {
         this.logger?.warn(msg)
       }
     }
-    if (needsGraph || needsMemory) {
-      // Skip memory runner if store has no memories (avoids empty table query per query)
-      const skipMemory = !needsMemory || (this.memory?.hasMemories ? !(await this.memory.hasMemories()) : false)
-      const memoryPromise = skipMemory
-        ? Promise.resolve([] as RetrievalCandidate[])
-        : withTimeout(
-            new MemoryRunner(this.memory!).run(text, identity, count, {
-              ...(normalizedOpts.asOf && normalizedOpts.asOf !== 'now' ? { temporalAt: normalizedOpts.asOf } : {}),
-              ...(normalizedOpts.includeInvalidated != null ? { includeInvalidated: normalizedOpts.includeInvalidated } : {}),
-              ...(normalizedOpts.entityScope ? { entityScope: normalizedOpts.entityScope } : {}),
-              useKeyword: signals.keyword,
-            }).catch((err) => { this.logger?.warn(`MemoryRunner failed: ${err instanceof Error ? err.message : err}`); warnings.push(`Memory search failed: ${err instanceof Error ? err.message : String(err)}`); return [] as RetrievalCandidate[] }),
-            timeouts.memory,
-            [] as RetrievalCandidate[]
-          )
-
-      const graphPromise = !needsGraph
-        ? Promise.resolve({ results: [], facts: [], entities: [] } as GraphRunResult)
-        : withTimeout(
-            new GraphRunner(this.knowledgeGraph!).run(text, identity, count, activeBucketIds, {
-              ...normalizedOpts.graph,
-              ...(normalizedOpts.entityScope ? { entityScope: normalizedOpts.entityScope, resolvedEntityIds: scopedEntityIds } : {}),
-            })
-              .catch((err) => { this.logger?.warn(`GraphRunner failed: ${err instanceof Error ? err.message : err}`); warnings.push(`Graph search failed: ${err instanceof Error ? err.message : String(err)}`); return { results: [], facts: [], entities: [] } as GraphRunResult }),
-            timeouts.graph,
-            { results: [], facts: [], entities: [] } as GraphRunResult
-          )
-
-      const [memResults, graphRun] = await Promise.all([
-        memoryPromise,
-        graphPromise,
-      ])
+    if (needsGraph) {
+      const graphRun = await withTimeout(
+        new GraphRunner(this.knowledgeGraph!).run(text, identity, count, activeBucketIds, {
+          ...normalizedOpts.graphOptions,
+          ...(normalizedOpts.entityScope ? { entityScope: normalizedOpts.entityScope, resolvedEntityIds: scopedEntityIds } : {}),
+        })
+          .catch((err) => { this.logger?.warn(`GraphRunner failed: ${err instanceof Error ? err.message : err}`); warnings.push(`Graph search failed: ${err instanceof Error ? err.message : String(err)}`); return { results: [], facts: [], entities: [] } as GraphRunResult }),
+        timeouts.graph,
+        { results: [], facts: [], entities: [] } as GraphRunResult
+      )
       const graphResults = graphRun.results
       graphFacts = [...graphFacts, ...graphRun.facts]
       graphEntities = [...graphEntities, ...graphRun.entities]
       graphTrace = graphRun.trace
 
-      if (memResults.length > 0) {
-        // Memory results already carry semantic similarity scores from the memory
-        // store's embedding search (via metadata._similarity → rawScores.semantic).
-        // No need to re-embed here — the MemoryRunner handles this.
-        runnerArrays.push(memResults)
-        bucketTimings['__memory__'] = { mode: 'memory', resultCount: memResults.length, durationMs: Date.now() - startMs, status: 'ok' }
-      }
       if (graphResults.length > 0) {
         const reinforcement = normalizedOpts.graphReinforcement ?? 'off'
 
@@ -770,10 +645,10 @@ export class QueryPlanner {
     // Merge and rank
     const needsMerge = runnerArrays.length > 1 || modelGroups.size > 1
     const mergedResults = needsMerge
-      ? mergeAndRank(runnerArrays, count, undefined, signals, effectiveScoreWeights)
+      ? mergeAndRank(runnerArrays, count, undefined, switches, effectiveScoreWeights)
       : allResults.slice(0, count)
 
-    const results = partitionResults(mergedResults, signals, Math.max(1, runnerArrays.length), needsGraph, needsMemory, graphFacts, graphEntities, graphTrace, effectiveScoreWeights)
+    const results = partitionResults(mergedResults, switches, Math.max(1, runnerArrays.length), needsGraph, graphFacts, graphEntities, graphTrace, effectiveScoreWeights)
 
     const durationMs = Date.now() - startMs
     const counts = resultCounts(results)
@@ -785,13 +660,12 @@ export class QueryPlanner {
         identity,
         payload: {
           query: text,
-          signals,
+          retrieval: switches,
           requested_count: count,
           result_count: counts.resultCount,
           chunk_count: counts.chunkCount,
           fact_count: counts.factCount,
           entity_count: counts.entityCount,
-          memory_count: counts.memoryCount,
           bucket_count: activeBucketIds.length,
         },
         durationMs,
@@ -802,46 +676,44 @@ export class QueryPlanner {
       void this.eventSink.emit(event)
     }
 
-    this.logger?.debug('Query complete', { durationMs, resultCount: counts.resultCount, signals })
+    this.logger?.debug('Search complete', { durationMs, resultCount: counts.resultCount, retrieval: switches })
 
     return {
       results,
       buckets: bucketTimings,
       query: {
         text,
-        tenantId,
         durationMs,
         mergeStrategy: 'rrf',
       },
       explanation: normalizedOpts.explain
-        ? buildExplanation({ resources, weights: publicWeights, fusion, results, bucketTimings, graphTrace, warnings })
+        ? buildExplanation({ requestedGraph, graphClosure: graphIds, resources, weights: publicWeights, fusion, results, bucketTimings, graphTrace, warnings })
         : undefined,
       warnings: warnings.length > 0 ? warnings : undefined,
     }
   }
 }
 
-/** Map internal runner mode names to user-facing retrieval signal labels. */
-function modeToSource(mode: string): string {
+/** Map internal runner mode names to user-facing retrieval labels. */
+function modeToRetrievalLabel(mode: string): string {
   switch (mode) {
     case 'indexed': return 'semantic'
     case 'graph': return 'graph'
-    case 'memory': return 'memory'
     default: return mode
   }
 }
 
-function sourcesForResult(modes: string[], rawScores: RawScores, signals: Required<QuerySignals>): string[] {
-  const sources = new Set<string>()
+function matchedByForResult(modes: string[], rawScores: RawScores, switches: Required<RetrievalSwitches>): string[] {
+  const matchedBy = new Set<string>()
   for (const mode of modes) {
     if (mode === 'indexed') {
-      if (signals.semantic && rawScores.cosineSimilarity != null) sources.add('semantic')
-      if (signals.keyword && rawScores.bm25 != null) sources.add('bm25')
+      if (switches.semantic && rawScores.cosineSimilarity != null) matchedBy.add('semantic')
+      if (switches.keyword && rawScores.bm25 != null) matchedBy.add('bm25')
       continue
     }
-    sources.add(modeToSource(mode))
+    matchedBy.add(modeToRetrievalLabel(mode))
   }
-  return [...sources]
+  return [...matchedBy]
 }
 
 function resultIdentityKey(result: RetrievalCandidate): string {

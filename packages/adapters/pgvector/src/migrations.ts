@@ -48,7 +48,7 @@ export const REGISTRY_SQL = (registryTable: string) => `
 
 /**
  * DDL for a per-model chunks table. Called lazily via ensureModel().
- * Each embedding model gets its own table with the correct VECTOR(n) column.
+ * Each embedding model gets its own table with the correct HALFVEC(n) column.
  */
 export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
   const idx = (suffix: string) => safeIdx(chunksTable, suffix)
@@ -66,7 +66,7 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
     document_id     TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
     content         TEXT NOT NULL,
-    embedding       VECTOR(${dimensions}),
+    embedding       HALFVEC(${dimensions}),
     embedding_model TEXT NOT NULL,
     chunk_index     INTEGER NOT NULL,
     total_chunks    INTEGER NOT NULL,
@@ -79,7 +79,7 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
   );
 
   CREATE INDEX IF NOT EXISTS ${idx('embedding_idx')}
-    ON ${chunksTable} USING hnsw (embedding vector_cosine_ops);
+    ON ${chunksTable} USING hnsw (embedding halfvec_cosine_ops);
 
   CREATE INDEX IF NOT EXISTS ${idx('bucket_tenant_idx')}
     ON ${chunksTable} (bucket_id, tenant_id);

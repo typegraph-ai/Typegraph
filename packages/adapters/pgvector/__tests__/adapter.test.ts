@@ -109,6 +109,7 @@ describe('PgVectorAdapter graph records', () => {
 
     await adapter.upsertDocumentChunks('mock', [chunk])
 
+    expect(capturedQuery).toContain('$13::halfvec[]')
     expect(capturedQuery).toContain('$17::jsonb[]')
     expect(capturedQuery).toContain('ON CONFLICT (tenant_id, bucket_id, idempotency_key, chunk_index)')
     expect(capturedParams?.[16]).toEqual(['{}'])

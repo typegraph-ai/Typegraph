@@ -381,7 +381,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
         embedding_model, chunk_index, total_chunks, metadata, indexed_at
        FROM unnest(
         $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[],
-        $10::text[], $11::text[], $12::text[], $13::vector[],
+        $10::text[], $11::text[], $12::text[], $13::halfvec[],
         $14::text[], $15::int[], $16::int[], $17::jsonb[], $18::timestamptz[]
        ) AS input(
         id, bucket_id, tenant_id, graph_id, organization_id, group_id, user_id, agent_id, thread_id,
@@ -448,10 +448,10 @@ export class PgVectorAdapter implements VectorStoreAdapter {
       const rows = await sql(
         `SELECT id, bucket_id, tenant_id, graph_id, document_id, idempotency_key, content,
                 embedding_model, chunk_index, total_chunks, metadata, indexed_at,
-                1 - (embedding <=> $${paramOffset + 1}::vector) AS similarity
+                1 - (embedding <=> $${paramOffset + 1}::halfvec) AS similarity
          FROM ${table}
          ${filterClause}
-         ORDER BY embedding <=> $${paramOffset + 1}::vector
+         ORDER BY embedding <=> $${paramOffset + 1}::halfvec
          LIMIT $${paramOffset + 2}`,
         [...params, vectorStr, count]
       )
@@ -502,7 +502,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
       const rows = await sql(
         `WITH
           __tg_base_params AS (
-            SELECT $1::vector AS query_embedding,
+            SELECT $1::halfvec AS query_embedding,
                    $2::text AS strict_query_text,
                    $3::integer AS result_count,
                    $4::text AS relaxed_query_text
@@ -762,7 +762,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
       const rows = await sql(
         `WITH
           __tg_base_params AS (
-            SELECT $1::vector AS query_embedding,
+            SELECT $1::halfvec AS query_embedding,
                    $2::text AS strict_query_text,
                    $3::integer AS result_count,
                    $4::text AS relaxed_query_text

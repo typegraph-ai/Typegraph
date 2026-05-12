@@ -19,6 +19,7 @@ that can expose the adapter's small `SqlExecutor` function.
 ## Requirements
 
 - Postgres with the `vector` extension available.
+- pgvector with `halfvec` support. Use pgvector `0.7.0` or newer.
 - A database role allowed to run `CREATE EXTENSION IF NOT EXISTS vector`.
 - Permission to create tables and indexes in the configured schema.
 
@@ -113,7 +114,7 @@ Core storage created by `PgVectorAdapter.deploy()`:
 | `typegraph_graphs` | Graph overlay definitions and access config |
 | `typegraph_buckets` | Named document/event containers, embedding settings, and write-graph routing |
 | `typegraph_documents` | Durable long-form records with `name`, `description`, metadata, and graph id |
-| `typegraph_document_chunks_*` | Per-embedding-model chunk tables with pgvector HNSW indexes and Postgres full-text indexes |
+| `typegraph_document_chunks_*` | Per-embedding-model chunk tables with `halfvec` embeddings, pgvector HNSW indexes, and Postgres full-text indexes |
 | `typegraph_document_chunks_registry` | Registry mapping embedding model keys to dynamic chunk tables |
 | `typegraph_hashes` | Content hash and deduplication state |
 | `typegraph_hashes_run_times` | Last-run state for replace/sync flows |
@@ -147,6 +148,12 @@ await typegraphInit({
 Each embedding model/dimension pair gets a separate chunk table. Buckets store
 `embeddingModel` and optional `searchEmbeddingModel`; both must point at
 registered embedders in the same vector space.
+
+Embeddings are stored as pgvector `halfvec`, not `vector`. The SDK still passes
+normal numeric arrays from embedders; the adapter casts them to `halfvec` at the
+Postgres boundary and builds HNSW indexes with `halfvec_cosine_ops`. This is a
+fresh-schema default, not a compatibility mode. Existing `vector` schemas should
+be reset or migrated out of band before reseeding.
 
 ## Documents, Events, And Graph Routing
 

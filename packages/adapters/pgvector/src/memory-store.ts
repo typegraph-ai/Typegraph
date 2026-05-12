@@ -128,7 +128,7 @@ const MEMORIES_DDL = (t: string, dims?: number) => {
     category         TEXT NOT NULL CHECK (category IN ('episodic', 'semantic', 'procedural')),
     status           TEXT NOT NULL DEFAULT 'pending',
     content          TEXT NOT NULL,
-    embedding        VECTOR${dims ? `(${dims})` : ''},
+    embedding        HALFVEC${dims ? `(${dims})` : ''},
     importance       REAL NOT NULL DEFAULT 0.5,
     access_count     INTEGER NOT NULL DEFAULT 0,
     last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -199,8 +199,8 @@ const ENTITIES_DDL = (t: string, dims?: number) => {
     status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'merged', 'invalidated')),
     merged_into_entity_id TEXT,
     deleted_at  TIMESTAMPTZ,
-    embedding   VECTOR${dims ? `(${dims})` : ''},
-    description_embedding VECTOR${dims ? `(${dims})` : ''},
+    embedding   HALFVEC${dims ? `(${dims})` : ''},
+    description_embedding HALFVEC${dims ? `(${dims})` : ''},
     -- Identity columns
     tenant_id   TEXT NOT NULL,
     organization_id TEXT,
@@ -389,7 +389,7 @@ const FACT_RECORDS_DDL = (t: string, dims?: number) => {
     from_chunk_id  TEXT,
     weight           REAL NOT NULL DEFAULT 1.0,
     evidence_count   INTEGER NOT NULL DEFAULT 1,
-    embedding        VECTOR${dims ? `(${dims})` : ''},
+    embedding        HALFVEC${dims ? `(${dims})` : ''},
     tenant_id        TEXT NOT NULL,
     organization_id  TEXT,
     group_id         TEXT,
@@ -413,7 +413,7 @@ const FACT_RECORDS_DDL = (t: string, dims?: number) => {
   CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')} ON ${t} (tenant_id, group_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_agent_idx')} ON ${t} (tenant_id, agent_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_thread_idx')} ON ${t} (tenant_id, thread_id);
-  CREATE INDEX IF NOT EXISTS ${idx('embedding_idx')} ON ${t} USING hnsw (embedding vector_cosine_ops);
+  CREATE INDEX IF NOT EXISTS ${idx('embedding_idx')} ON ${t} USING hnsw (embedding halfvec_cosine_ops);
   CREATE INDEX IF NOT EXISTS ${idx('search_vector_idx')} ON ${t} USING gin (search_vector);
 `
 }
@@ -509,7 +509,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     try {
       await this.sql(
         `CREATE INDEX IF NOT EXISTS ${idxName}
-         ON ${table} USING hnsw (embedding vector_cosine_ops)
+         ON ${table} USING hnsw (embedding halfvec_cosine_ops)
          WITH (m = 16, ef_construction = 200)`
       )
       if (target === 'entity') this.hnswEntityIndexCreated = true
@@ -532,7 +532,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          subject, predicate, object, confidence, source_memory_ids,
          trigger, steps, success_count, failure_count, last_outcome,
          valid_at, invalid_at, expired_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::vector,$6,$7,$8,$9,
+       VALUES ($1,$2,$3,$4,$5::halfvec,$6,$7,$8,$9,
                $10,$11,$12,$13,$14,$15,$16,
                $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,
                $27,$28,$29,$30,$31,$32,$33,$34,NOW())
@@ -673,10 +673,10 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     params.push(opts.count)
 
     const rows = await this.sqlWithRetry(
-      `SELECT ${selectColumns(MEMORY_ROW_COLUMNS)}, 1 - (embedding <=> $${params.length - 1}::vector) AS similarity
+      `SELECT ${selectColumns(MEMORY_ROW_COLUMNS)}, 1 - (embedding <=> $${params.length - 1}::halfvec) AS similarity
        FROM ${this.memoriesTable}
        ${whereClause}
-       ORDER BY embedding <=> $${params.length - 1}::vector
+       ORDER BY embedding <=> $${params.length - 1}::halfvec
        LIMIT $${params.length}`,
       params
     )
@@ -718,11 +718,11 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     // ensures they aren't overly penalized.
     const sql = `
       WITH vector_ranked AS (
-        SELECT ${selectColumns(MEMORY_ROW_COLUMNS)}, 1 - (embedding <=> $${vecParamIdx}::vector) AS similarity,
-               ROW_NUMBER() OVER (ORDER BY embedding <=> $${vecParamIdx}::vector) AS vrank
+        SELECT ${selectColumns(MEMORY_ROW_COLUMNS)}, 1 - (embedding <=> $${vecParamIdx}::halfvec) AS similarity,
+               ROW_NUMBER() OVER (ORDER BY embedding <=> $${vecParamIdx}::halfvec) AS vrank
         FROM ${this.memoriesTable}
         ${whereClause}
-        ORDER BY embedding <=> $${vecParamIdx}::vector
+        ORDER BY embedding <=> $${vecParamIdx}::halfvec
         LIMIT $${limitParamIdx} * 3
       ),
       keyword_ranked AS (
@@ -814,7 +814,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         (id, name, entity_type, aliases, properties, status, merged_into_entity_id, deleted_at, embedding, description_embedding,
          tenant_id, organization_id, group_id, user_id, agent_id, thread_id, graph_id,
          valid_at, invalid_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::vector,$10::vector,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::halfvec,$10::halfvec,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())
        ON CONFLICT (tenant_id, graph_id, id) DO UPDATE SET
          name = EXCLUDED.name, entity_type = EXCLUDED.entity_type,
          aliases = EXCLUDED.aliases, properties = EXCLUDED.properties,
@@ -1019,13 +1019,13 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     params.push(limit ?? 20)
     const limitParam = `$${1 + params.length}`
     const rows = await this.sqlWithRetry(
-      `SELECT ${selectColumns(ENTITY_ROW_COLUMNS)}, 1 - (embedding <=> $1::vector) AS similarity
+      `SELECT ${selectColumns(ENTITY_ROW_COLUMNS)}, 1 - (embedding <=> $1::halfvec) AS similarity
        FROM ${this.entitiesTable}
        WHERE embedding IS NOT NULL
          AND invalid_at IS NULL
           AND status = 'active'
           ${scopeClause}
-       ORDER BY embedding <=> $1::vector
+       ORDER BY embedding <=> $1::halfvec
        LIMIT ${limitParam}`,
       [vectorStr, ...params]
     )
@@ -1092,15 +1092,15 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const vectorRows = await this.sqlWithRetry(
       `SELECT ${selectColumns(ENTITY_ROW_COLUMNS)},
               GREATEST(
-                1 - (embedding <=> $1::vector),
-                COALESCE(1 - (description_embedding <=> $1::vector), 0)
+                1 - (embedding <=> $1::halfvec),
+                COALESCE(1 - (description_embedding <=> $1::halfvec), 0)
               ) AS similarity
         FROM ${this.entitiesTable}
         WHERE embedding IS NOT NULL
           ${vectorScopeClause}
           AND invalid_at IS NULL
           AND status = 'active'
-        ORDER BY embedding <=> $1::vector
+        ORDER BY embedding <=> $1::halfvec
         LIMIT ${vectorLimitParam}`,
       [vectorStr, ...vectorWhere.params, maxRows * 3]
     )
@@ -1235,7 +1235,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          description, evidence_text, fact_search_text, from_chunk_id, weight,
          evidence_count, embedding, tenant_id, organization_id, group_id, user_id, agent_id,
          thread_id, graph_id, invalid_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::vector,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::halfvec,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        ON CONFLICT (${conflictTarget === 'edge' ? 'tenant_id, graph_id, edge_id' : 'tenant_id, graph_id, id'}) DO UPDATE SET
          ${conflictTarget === 'id'
            ? `edge_id = EXCLUDED.edge_id,
@@ -1275,11 +1275,11 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     const scopeClause = identity.where ? ` AND ${identity.where}` : ''
     const limitParam = `$${2 + identity.params.length}`
     const rows = await this.sqlWithRetry(
-      `SELECT ${selectColumns(FACT_ROW_COLUMNS)}, 1 - (embedding <=> $1::vector) AS similarity
+      `SELECT ${selectColumns(FACT_ROW_COLUMNS)}, 1 - (embedding <=> $1::halfvec) AS similarity
          FROM ${this.factRecordsTable}
         WHERE embedding IS NOT NULL
           ${scopeClause}
-        ORDER BY embedding <=> $1::vector
+        ORDER BY embedding <=> $1::halfvec
         LIMIT ${limitParam}`,
       [vectorStr, ...identity.params, limit ?? 20]
     )
@@ -1437,13 +1437,13 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       `SELECT c.id AS chunk_id, c.content, c.bucket_id, c.document_id, c.chunk_index,
               c.embedding_model, c.total_chunks, c.metadata, c.tenant_id, c.group_id,
               c.organization_id, c.user_id, c.agent_id, c.thread_id, c.graph_id,
-              1 - (c.embedding <=> $1::vector) AS similarity
+              1 - (c.embedding <=> $1::halfvec) AS similarity
          FROM ${opts.chunksTable} c
         WHERE c.embedding IS NOT NULL
           ${bucketClause}
           ${chunkRefClause}
           ${chunkScopeClause}
-        ORDER BY c.embedding <=> $1::vector
+        ORDER BY c.embedding <=> $1::halfvec
         LIMIT ${limitParam}`,
       params
     )

@@ -30,7 +30,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 describe('pgvector schema invariants', () => {
-  it('renders fresh DDL without removed record-level access columns', async () => {
+  it('renders fresh DDL without removed record-level access columns and with halfvec embeddings', async () => {
     const memoryQueries: string[] = []
     const sql = vi.fn(async (query: string) => {
       memoryQueries.push(query)
@@ -58,9 +58,15 @@ describe('pgvector schema invariants', () => {
     expect(ddl).toContain('PRIMARY KEY (tenant_id, id)')
     expect(ddl).toContain('PRIMARY KEY (tenant_id, graph_id, id)')
     expect(ddl).toContain('(tenant_id, bucket_id, idempotency_key, chunk_index)')
+    expect(ddl).toContain('embedding       HALFVEC(4)')
+    expect(ddl).toContain('embedding        HALFVEC(4)')
+    expect(ddl).toContain('description_embedding HALFVEC(4)')
+    expect(ddl).toContain('halfvec_cosine_ops')
+    expect(ddl).not.toMatch(/\bVECTOR\s*\(/)
+    expect(ddl).not.toContain('vector_cosine_ops')
   })
 
-  it('keeps stale storage terms out of pgadapter source files', () => {
+  it('keeps stale storage terms and vector casts out of pgadapter source files', () => {
     const srcDir = join(process.cwd(), 'src')
     const combined = sourceFiles(srcDir)
       .map((path) => readFileSync(path, 'utf8'))
@@ -69,5 +75,8 @@ describe('pgvector schema invariants', () => {
     for (const term of staleTerms) {
       expect(combined).not.toContain(term)
     }
+    expect(combined).not.toMatch(/\bVECTOR\s*\(/)
+    expect(combined).not.toContain('::vector')
+    expect(combined).not.toContain('vector_cosine_ops')
   })
 })

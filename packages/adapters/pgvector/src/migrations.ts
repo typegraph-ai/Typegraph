@@ -243,7 +243,7 @@ export const BUCKETS_TABLE_SQL = (table: string) => {
   const idx = (suffix: string) => safeIdx(table, suffix)
   return `
   CREATE TABLE IF NOT EXISTS ${table} (
-    id          TEXT PRIMARY KEY,
+    id          TEXT NOT NULL,
     name        TEXT NOT NULL,
     description TEXT,
     status      TEXT NOT NULL DEFAULT 'active'
@@ -260,7 +260,8 @@ export const BUCKETS_TABLE_SQL = (table: string) => {
     search_embedding_model TEXT,
     index_defaults JSONB,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (tenant_id, id)
   );
 
   CREATE INDEX IF NOT EXISTS ${idx('tenant_idx')}

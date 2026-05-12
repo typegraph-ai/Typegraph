@@ -139,13 +139,13 @@ export interface VectorStoreAdapter {
 
   /** Create or update a bucket. */
   upsertBucket?(bucket: Bucket): Promise<Bucket>
-  /** Get a bucket by ID. */
-  getBucket?(id: string): Promise<Bucket | null>
+  /** Get a bucket by ID, optionally scoped to a tenant. */
+  getBucket?(id: string, tenantId?: string): Promise<Bucket | null>
   /** Get multiple buckets by ID in a single round-trip. Missing ids are simply absent from the result. */
-  getBuckets?(ids: string[]): Promise<Bucket[]>
+  getBuckets?(ids: string[], tenantId?: string): Promise<Bucket[]>
   /** List buckets, optionally filtered by identity fields. Supports optional pagination. */
   listBuckets?(filter?: BucketStorageFilter, pagination?: PaginationOpts): Promise<Bucket[] | PaginatedResult<Bucket>>
-  /** Delete a bucket by ID. */
-  deleteBucket?(id: string): Promise<void>
+  /** Delete a bucket by ID, optionally scoped to a tenant. */
+  deleteBucket?(id: string, tenantId?: string): Promise<void>
 
 }

@@ -461,7 +461,7 @@ class TypegraphImpl implements typegraphInstance {
     get: async (bucketId: string, opts?: TypeGraphOptions | null): Promise<Bucket | undefined> => {
       const { identity } = this.resolvePublicOptions(opts, 'bucket.get')
       if (this.adapter.getBucket) {
-        const bucket = await this.adapter.getBucket(bucketId)
+        const bucket = await this.adapter.getBucket(bucketId, identity.tenantId)
         if (bucket && bucket.tenantId !== identity.tenantId) return undefined
         if (bucket && !this.canAccessGraph(this.bucketGraph(bucket), identity, 'read')) return undefined
         if (bucket) {
@@ -537,7 +537,7 @@ class TypegraphImpl implements typegraphInstance {
       }
       await this.enforcePolicy('bucket.delete', identity, bucketId)
       if (this.adapter.deleteBucket) {
-        await this.adapter.deleteBucket(bucketId)
+        await this.adapter.deleteBucket(bucketId, identity.tenantId)
       } else {
         this._buckets.delete(bucketId)
       }
@@ -1376,7 +1376,7 @@ class TypegraphImpl implements typegraphInstance {
   private async ensureBucketsLoaded(): Promise<void> {
     if (this.bucketsLoaded) return
     if (this.adapter.listBuckets) {
-      const result = await this.adapter.listBuckets()
+      const result = await this.adapter.listBuckets({ tenantId: this.config.tenantId })
       const allBuckets = Array.isArray(result) ? result : result.items
       for (const bucket of allBuckets) {
         this._buckets.set(bucket.id, bucket)
@@ -1655,7 +1655,7 @@ class TypegraphImpl implements typegraphInstance {
     if (normalizedOpts.buckets?.length && this.adapter.getBuckets) {
       const missing = normalizedOpts.buckets.filter(id => !this._buckets.has(id))
       if (missing.length > 0) {
-        const fetched = await this.adapter.getBuckets(missing)
+        const fetched = await this.adapter.getBuckets(missing, identity.tenantId)
         for (const b of fetched) {
           this._buckets.set(b.id, b)
           this.resolveBucketEmbeddings(b)

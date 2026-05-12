@@ -36,9 +36,10 @@ function rowFromParams(params: unknown[] = []): Record<string, unknown> {
     user_id: params[15],
     agent_id: params[16],
     thread_id: params[17],
-    visibility: params[18],
+    graph_id: params[18],
+    visibility: params[19],
     created_at: '2026-04-16T00:00:00Z',
-    updated_at: params[20],
+    updated_at: params[21],
   }
 }
 
@@ -132,7 +133,8 @@ describe('PgMemoryStoreAdapter', () => {
     expect(capturedParams[16]).toBe('mock-embed')
     expect(capturedParams[17]).toBe('chunk_pat')
     expect(capturedParams[18]).toBe('tenant-1')
-    expect(capturedParams[23]).toEqual([{ type: 'organization', id: 'org-1' }])
+    expect(capturedParams[23]).toBe('public')
+    expect(capturedParams[24]).toEqual([{ type: 'organization', id: 'org-1' }])
   })
 
   it('retries fact record upsert on duplicate deterministic fact id', async () => {

@@ -61,6 +61,12 @@ function parseJson<T>(value: unknown, fallback: T): T {
   return (value ?? fallback) as T
 }
 
+function parseGraphAccess(value: unknown): TypeGraphGraphRecord['access'] {
+  if (value == null) return undefined
+  if (value === 'public') return 'public'
+  return parseJson<TypeGraphGraphRecord['access'] | null>(value, null) ?? undefined
+}
+
 function buildRelaxedKeywordQuery(query: string): string {
   const terms: string[] = []
   const seen = new Set<string>()
@@ -209,6 +215,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
       `${this.hashesTable}_run_times`,
       this.documentsTable,
       this.bucketsTable,
+      this.graphsTable,
       this.eventsTable,
       this.threadsTable,
       this.linksTable,
@@ -245,6 +252,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
       await this.sql(`DROP TABLE IF EXISTS ${table}`)
     }
     await this.sql(`DROP TABLE IF EXISTS ${this.bucketsTable}`)
+    await this.sql(`DROP TABLE IF EXISTS ${this.graphsTable}`)
     await this.sql(`DROP TABLE IF EXISTS ${this.documentsTable}`)
     await this.sql(`DROP TABLE IF EXISTS ${this.eventsTable}`)
     await this.sql(`DROP TABLE IF EXISTS ${this.threadsTable}`)
@@ -871,9 +879,9 @@ export class PgVectorAdapter implements VectorStoreAdapter {
         (id, name, description, status, tenant_id, graph_id, group_id, user_id, agent_id, thread_id,
          access_scope, access_scope_ids, embedding_model, search_embedding_model, index_defaults, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::text[], $13, $14, $15::jsonb, NOW())
-       ON CONFLICT (id) DO UPDATE SET
+       ON CONFLICT (tenant_id, id) DO UPDATE SET
          name = EXCLUDED.name, description = EXCLUDED.description,
-         status = EXCLUDED.status, tenant_id = EXCLUDED.tenant_id,
+         status = EXCLUDED.status,
          graph_id = EXCLUDED.graph_id,
          group_id = EXCLUDED.group_id, user_id = EXCLUDED.user_id,
          agent_id = EXCLUDED.agent_id, thread_id = EXCLUDED.thread_id,
@@ -898,17 +906,24 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     return mapRowToBucket(rows[0]!)
   }
 
-  async getBucket(id: string): Promise<Bucket | null> {
-    const rows = await this.sql(`SELECT * FROM ${this.bucketsTable} WHERE id = $1`, [id])
+  async getBucket(id: string, tenantId?: string): Promise<Bucket | null> {
+    const rows = tenantId
+      ? await this.sql(`SELECT * FROM ${this.bucketsTable} WHERE tenant_id = $1 AND id = $2`, [tenantId, id])
+      : await this.sql(`SELECT * FROM ${this.bucketsTable} WHERE id = $1 LIMIT 1`, [id])
     return rows.length > 0 ? mapRowToBucket(rows[0]!) : null
   }
 
-  async getBuckets(ids: string[]): Promise<Bucket[]> {
+  async getBuckets(ids: string[], tenantId?: string): Promise<Bucket[]> {
     if (ids.length === 0) return []
-    const rows = await this.sql(
-      `SELECT * FROM ${this.bucketsTable} WHERE id = ANY($1::text[])`,
-      [ids]
-    )
+    const rows = tenantId
+      ? await this.sql(
+        `SELECT * FROM ${this.bucketsTable} WHERE tenant_id = $1 AND id = ANY($2::text[])`,
+        [tenantId, ids]
+      )
+      : await this.sql(
+        `SELECT * FROM ${this.bucketsTable} WHERE id = ANY($1::text[])`,
+        [ids]
+      )
     return rows.map(mapRowToBucket)
   }
 
@@ -939,16 +954,24 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     return rows.map(mapRowToBucket)
   }
 
-  async deleteBucket(id: string): Promise<void> {
+  async deleteBucket(id: string, tenantId?: string): Promise<void> {
     if (id === DEFAULT_BUCKET_ID) {
       throw new Error('Cannot delete the default bucket.')
     }
     // Cascade: delete all documents (which cascades to chunks + hashes)
-    await this.deleteDocuments({ bucketId: id })
-    // Clean up any remaining hash entries for this bucket (all tenants)
-    await this.hashStore.deleteAllByBucket(id)
+    await this.deleteDocuments(tenantId ? { bucketId: id, tenantId } : { bucketId: id })
+    // Clean up any remaining hash entries for this bucket in the same tenant.
+    if (tenantId) {
+      await this.hashStore.deleteByBucket(id, tenantId)
+    } else {
+      await this.hashStore.deleteAllByBucket(id)
+    }
     // Delete the bucket record
-    await this.sql(`DELETE FROM ${this.bucketsTable} WHERE id = $1`, [id])
+    if (tenantId) {
+      await this.sql(`DELETE FROM ${this.bucketsTable} WHERE tenant_id = $1 AND id = $2`, [tenantId, id])
+    } else {
+      await this.sql(`DELETE FROM ${this.bucketsTable} WHERE id = $1`, [id])
+    }
   }
 
   async upsertGraphRecord(input: TypeGraphGraphRecord): Promise<TypeGraphGraphRecord> {
@@ -1129,7 +1152,7 @@ function mapRowToGraph(row: Record<string, unknown>): TypeGraphGraphRecord {
     name: (row.name as string) ?? undefined,
     description: (row.description as string) ?? undefined,
     extends: (row.extends as string[] | undefined) ?? [],
-    access: parseJson(row.access, undefined),
+    access: parseGraphAccess(row.access),
     metadata: parseJson(row.metadata, {}),
     createdAt: row.created_at ? new Date(row.created_at as string) : undefined,
     updatedAt: row.updated_at ? new Date(row.updated_at as string) : undefined,

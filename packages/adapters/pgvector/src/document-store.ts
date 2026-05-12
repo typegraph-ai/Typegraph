@@ -13,6 +13,7 @@ function mapDocumentRow(row: Record<string, unknown>): typegraphDocument {
     bucketId: row.bucket_id as string,
     tenantId: row.tenant_id as string,
     graphId: (row.graph_id as string) ?? 'public',
+    organizationId: (row.organization_id as string) ?? undefined,
     groupId: (row.group_id as string) ?? undefined,
     userId: (row.user_id as string) ?? undefined,
     agentId: (row.agent_id as string) ?? undefined,
@@ -39,13 +40,14 @@ export class PgDocumentStore {
   async upsert(input: UpsertDocumentInput): Promise<UpsertedDocumentRecord> {
     const rows = await this.sql(
       `INSERT INTO ${this.tableName}
-        (id, bucket_id, tenant_id, graph_id, group_id, user_id, agent_id, thread_id,
+        (id, bucket_id, tenant_id, graph_id, organization_id, group_id, user_id, agent_id, thread_id,
          name, description, url, content_hash, chunk_count, status,
-         access_scope, access_scope_ids, metadata, indexed_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, '[]'::jsonb, '{}'::text[], $15::jsonb, NOW(), NOW())
+         metadata, indexed_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, NOW(), NOW())
        ON CONFLICT (bucket_id, tenant_id, content_hash)
          DO UPDATE SET
            graph_id = EXCLUDED.graph_id,
+           organization_id = EXCLUDED.organization_id,
            name = EXCLUDED.name,
            description = EXCLUDED.description,
            url = EXCLUDED.url,
@@ -64,6 +66,7 @@ export class PgDocumentStore {
         input.bucketId,
         input.tenantId,
         input.graphId,
+        input.organizationId ?? null,
         input.groupId ?? null,
         input.userId ?? null,
         input.agentId ?? null,
@@ -83,8 +86,8 @@ export class PgDocumentStore {
     }
   }
 
-  async get(id: string): Promise<typegraphDocument | null> {
-    const rows = await this.sql(`SELECT * FROM ${this.tableName} WHERE id = $1`, [id])
+  async get(tenantId: string, id: string): Promise<typegraphDocument | null> {
+    const rows = await this.sql(`SELECT * FROM ${this.tableName} WHERE tenant_id = $1 AND id = $2`, [tenantId, id])
     if (rows.length === 0) return null
     return mapDocumentRow(rows[0]!)
   }
@@ -109,35 +112,42 @@ export class PgDocumentStore {
     return rows.map(mapDocumentRow)
   }
 
-  async delete(filter: DocumentStorageFilter | null): Promise<{ count: number; ids: string[] }> {
+  async delete(filter: DocumentStorageFilter | null): Promise<{ count: number; documents: Array<{ tenantId: string; bucketId: string; id: string }> }> {
     const { where, params } = buildDocumentWhere(filter)
     if (!where) throw new ConfigError('documents.delete requires at least one filter field.')
-    const rows = await this.sql(`DELETE FROM ${this.tableName} WHERE ${where} RETURNING id`, params)
-    return { count: rows.length, ids: rows.map(r => r.id as string) }
+    const rows = await this.sql(`DELETE FROM ${this.tableName} WHERE ${where} RETURNING tenant_id, bucket_id, id`, params)
+    return {
+      count: rows.length,
+      documents: rows.map(r => ({
+        tenantId: r.tenant_id as string,
+        bucketId: r.bucket_id as string,
+        id: r.id as string,
+      })),
+    }
   }
 
-  async update(id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'metadata'>>): Promise<typegraphDocument | null> {
+  async update(tenantId: string, id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'metadata'>>): Promise<typegraphDocument | null> {
     const setClauses: string[] = ['updated_at = NOW()']
     const params: unknown[] = []
     if (input.name !== undefined) { params.push(input.name); setClauses.push(`name = $${params.length}`) }
     if (input.description !== undefined) { params.push(input.description); setClauses.push(`description = $${params.length}`) }
     if (input.url !== undefined) { params.push(input.url); setClauses.push(`url = $${params.length}`) }
     if (input.metadata !== undefined) { params.push(JSON.stringify(input.metadata)); setClauses.push(`metadata = $${params.length}::jsonb`) }
-    params.push(id)
-    const rows = await this.sql(`UPDATE ${this.tableName} SET ${setClauses.join(', ')} WHERE id = $${params.length} RETURNING *`, params)
+    params.push(tenantId, id)
+    const rows = await this.sql(`UPDATE ${this.tableName} SET ${setClauses.join(', ')} WHERE tenant_id = $${params.length - 1} AND id = $${params.length} RETURNING *`, params)
     return rows.length > 0 ? mapDocumentRow(rows[0]!) : null
   }
 
-  async updateStatus(id: string, status: DocumentStatus, chunkCount?: number): Promise<void> {
+  async updateStatus(tenantId: string, id: string, status: DocumentStatus, chunkCount?: number): Promise<void> {
     if (chunkCount != null) {
       await this.sql(
         `UPDATE ${this.tableName}
          SET status = $1, chunk_count = $2, indexed_at = NOW(), updated_at = NOW()
-         WHERE id = $3`,
-        [status, chunkCount, id]
+         WHERE tenant_id = $3 AND id = $4`,
+        [status, chunkCount, tenantId, id]
       )
     } else {
-      await this.sql(`UPDATE ${this.tableName} SET status = $1, updated_at = NOW() WHERE id = $2`, [status, id])
+      await this.sql(`UPDATE ${this.tableName} SET status = $1, updated_at = NOW() WHERE tenant_id = $2 AND id = $3`, [status, tenantId, id])
     }
   }
 }
@@ -149,6 +159,7 @@ export function buildDocumentWhere(filter?: DocumentStorageFilter | null, alias?
 
   if (filter?.bucketId != null) { params.push(filter.bucketId); conditions.push(`${col('bucket_id')} = $${params.length}`) }
   if (filter?.tenantId != null) { params.push(filter.tenantId); conditions.push(`${col('tenant_id')} = $${params.length}`) }
+  if (filter?.organizationId != null) { params.push(filter.organizationId); conditions.push(`${col('organization_id')} = $${params.length}`) }
   if (filter?.groupId != null) { params.push(filter.groupId); conditions.push(`${col('group_id')} = $${params.length}`) }
   if (filter?.userId != null) { params.push(filter.userId); conditions.push(`${col('user_id')} = $${params.length}`) }
   if (filter?.agentId != null) { params.push(filter.agentId); conditions.push(`${col('agent_id')} = $${params.length}`) }

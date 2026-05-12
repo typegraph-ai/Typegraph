@@ -38,6 +38,7 @@ export function stableEntityId(tenantId: string, type: string, id: string): stri
 }
 
 export interface ChunkIdInput {
+  tenantId: string
   embeddingModel: string
   bucketId: string
   idempotencyKey: string
@@ -54,6 +55,7 @@ export function chunkIdFor(input: ChunkIdInput): string {
   const hash = createHash('sha256')
     .update([
       input.embeddingModel,
+      input.tenantId,
       input.bucketId,
       input.idempotencyKey,
       String(input.chunkIndex),

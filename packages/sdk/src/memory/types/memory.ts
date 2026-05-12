@@ -128,6 +128,9 @@ export interface SemanticEntity {
 export type EntityMentionType = 'subject' | 'object' | 'co_occurrence' | 'entity' | 'alias' | 'document_subject'
 
 export interface SemanticEntityMention {
+  tenantId?: string | undefined
+  graphId?: string | undefined
+  organizationId?: string | undefined
   entityId: string
   documentId: string
   chunkIndex: number
@@ -185,6 +188,7 @@ export interface SemanticChunkRecord extends ChunkRef {
   metadata: Record<string, unknown>
   similarity?: number | undefined
   tenantId?: string | undefined
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined

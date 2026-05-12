@@ -436,6 +436,7 @@ class TypegraphImpl implements typegraphInstance {
         searchEmbeddingModel,
         indexDefaults,
         tenantId: identity.tenantId,
+        organizationId: identity.organizationId,
         groupId: identity.groupId,
         userId: identity.userId,
         agentId: identity.agentId,
@@ -564,7 +565,7 @@ class TypegraphImpl implements typegraphInstance {
       if (!this.adapter.getDocument) {
         throw new ConfigError('Adapter does not support document operations.')
       }
-      const document = await this.adapter.getDocument(id)
+      const document = await this.adapter.getDocument(identity.tenantId, id)
       if (!document) return null
       if (document.tenantId !== identity.tenantId) return null
       return this.canAccessGraph(document.graphId, identity, 'read') ? document : null
@@ -586,11 +587,11 @@ class TypegraphImpl implements typegraphInstance {
 
     update: async (id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'metadata'>>, opts?: TypeGraphOptions | null): Promise<typegraphDocument> => {
       this.assertConfigured()
-      const { telemetry } = this.resolvePublicOptions(opts, 'document.update')
+      const { identity, telemetry } = this.resolvePublicOptions(opts, 'document.update')
       if (!this.adapter.updateDocument) {
         throw new ConfigError('Adapter does not support document update operations.')
       }
-      const updated = await this.adapter.updateDocument(id, input)
+      const updated = await this.adapter.updateDocument(identity.tenantId, id, input)
       this.emitEvent('document.update', id, { fields: Object.keys(input) }, telemetry)
       return updated
     },
@@ -674,6 +675,7 @@ class TypegraphImpl implements typegraphInstance {
         id: input.id ?? generateId('thr'),
         tenantId: identity.tenantId,
         graphId,
+        organizationId: identity.organizationId,
         groupId: identity.groupId,
         userId: identity.userId,
         agentId: identity.agentId,
@@ -1211,6 +1213,7 @@ class TypegraphImpl implements typegraphInstance {
       id: input.id ?? generateId('evt'),
       tenantId: identity.tenantId,
       graphId,
+      organizationId: identity.organizationId,
       groupId: identity.groupId,
       userId: identity.userId,
       agentId: identity.agentId,
@@ -1764,6 +1767,7 @@ class TypegraphImpl implements typegraphInstance {
         documentId: input.id,
         chunkIndex: 0,
         ...(identity.tenantId ? { tenantId: identity.tenantId } : {}),
+        ...(identity.organizationId ? { organizationId: identity.organizationId } : {}),
         ...(identity.groupId ? { groupId: identity.groupId } : {}),
         ...(identity.userId ? { userId: identity.userId } : {}),
         ...(identity.agentId ? { agentId: identity.agentId } : {}),
@@ -1805,6 +1809,7 @@ class TypegraphImpl implements typegraphInstance {
           documentId: input.id,
           chunkIndex: 0,
           ...(identity.tenantId ? { tenantId: identity.tenantId } : {}),
+          ...(identity.organizationId ? { organizationId: identity.organizationId } : {}),
           ...(identity.groupId ? { groupId: identity.groupId } : {}),
           ...(identity.userId ? { userId: identity.userId } : {}),
           ...(identity.agentId ? { agentId: identity.agentId } : {}),

@@ -75,6 +75,7 @@ export interface ChunkBackfillRecord {
   accessScope?: AccessScope | undefined
   graphId?: string | undefined
   tenantId?: string | undefined
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined

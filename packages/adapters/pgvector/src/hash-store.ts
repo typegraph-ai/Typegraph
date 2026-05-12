@@ -6,7 +6,7 @@ function mapRow(row: Record<string, unknown>): HashRecord {
     idempotencyKey: row.idempotency_key as string,
     contentHash: row.content_hash as string,
     bucketId: row.bucket_id as string,
-    tenantId: (row.tenant_id as string) ?? undefined,
+    tenantId: row.tenant_id as string,
     embeddingModel: row.embedding_model as string,
     indexedAt: new Date(row.indexed_at as string),
     chunkCount: row.chunk_count as number,
@@ -63,7 +63,7 @@ export class PgHashStore implements HashStoreAdapter {
         record.idempotencyKey,
         record.contentHash,
         record.bucketId,
-        record.tenantId ?? null,
+        record.tenantId ?? 'public',
         record.embeddingModel,
         record.indexedAt.toISOString(),
         record.chunkCount,
@@ -79,23 +79,18 @@ export class PgHashStore implements HashStoreAdapter {
   }
 
   async listByBucket(bucketId: string, tenantId?: string): Promise<HashRecord[]> {
-    const rows = tenantId != null
-      ? await this.sql(
-          `SELECT * FROM ${this.tableName} WHERE bucket_id = $1 AND tenant_id = $2`,
-          [bucketId, tenantId]
-        )
-      : await this.sql(
-          `SELECT * FROM ${this.tableName} WHERE bucket_id = $1 AND tenant_id IS NULL`,
-          [bucketId]
-        )
+    const rows = await this.sql(
+      `SELECT * FROM ${this.tableName} WHERE bucket_id = $1 AND tenant_id = $2`,
+      [bucketId, tenantId ?? 'public']
+    )
     return rows.map(mapRow)
   }
 
   async getLastRunTime(bucketId: string, tenantId?: string): Promise<Date | null> {
     const rows = await this.sql(
       `SELECT last_run FROM ${this.tableName}_run_times
-       WHERE bucket_id = $1 AND tenant_id = COALESCE($2, '')`,
-      [bucketId, tenantId ?? null]
+       WHERE bucket_id = $1 AND tenant_id = $2`,
+      [bucketId, tenantId ?? 'public']
     )
     if (rows.length === 0) return null
     return new Date(rows[0]!.last_run as string)
@@ -104,10 +99,10 @@ export class PgHashStore implements HashStoreAdapter {
   async setLastRunTime(bucketId: string, tenantId: string | undefined, time: Date): Promise<void> {
     await this.sql(
       `INSERT INTO ${this.tableName}_run_times (bucket_id, tenant_id, last_run)
-       VALUES ($1, COALESCE($2, ''), $3)
+       VALUES ($1, $2, $3)
        ON CONFLICT (bucket_id, tenant_id) DO UPDATE SET
         last_run = EXCLUDED.last_run`,
-      [bucketId, tenantId ?? null, time.toISOString()]
+      [bucketId, tenantId ?? 'public', time.toISOString()]
     )
   }
 
@@ -117,33 +112,23 @@ export class PgHashStore implements HashStoreAdapter {
       `DELETE FROM ${this.tableName}
        WHERE idempotency_key = ANY($1::text[])
          AND bucket_id = $2
-         AND ${tenantId != null ? 'tenant_id = $3' : 'tenant_id IS NULL'}
+         AND tenant_id = $3
        RETURNING store_key`,
-      tenantId != null ? [keys, bucketId, tenantId] : [keys, bucketId]
+      [keys, bucketId, tenantId ?? 'public']
     )
     return rows.length
   }
 
   async deleteByBucket(bucketId: string, tenantId?: string): Promise<void> {
-    if (tenantId != null) {
-      await this.sql(
-        `DELETE FROM ${this.tableName} WHERE bucket_id = $1 AND tenant_id = $2`,
-        [bucketId, tenantId]
-      )
-      await this.sql(
-        `DELETE FROM ${this.tableName}_run_times WHERE bucket_id = $1 AND tenant_id = $2`,
-        [bucketId, tenantId]
-      )
-    } else {
-      await this.sql(
-        `DELETE FROM ${this.tableName} WHERE bucket_id = $1 AND tenant_id IS NULL`,
-        [bucketId]
-      )
-      await this.sql(
-        `DELETE FROM ${this.tableName}_run_times WHERE bucket_id = $1 AND tenant_id IS NULL`,
-        [bucketId]
-      )
-    }
+    const resolvedTenantId = tenantId ?? 'public'
+    await this.sql(
+      `DELETE FROM ${this.tableName} WHERE bucket_id = $1 AND tenant_id = $2`,
+      [bucketId, resolvedTenantId]
+    )
+    await this.sql(
+      `DELETE FROM ${this.tableName}_run_times WHERE bucket_id = $1 AND tenant_id = $2`,
+      [bucketId, resolvedTenantId]
+    )
   }
 
   /** Delete ALL hash entries for a bucket regardless of tenant. Used by bucket cascade delete. */

@@ -104,6 +104,7 @@ export class PgEventSink implements typegraphEventSink {
       const ids: string[] = []
       const eventTypes: string[] = []
       const tenantIds: (string | null)[] = []
+      const organizationIds: (string | null)[] = []
       const groupIds: (string | null)[] = []
       const userIds: (string | null)[] = []
       const agentIds: (string | null)[] = []
@@ -120,6 +121,7 @@ export class PgEventSink implements typegraphEventSink {
         ids.push(e.id)
         eventTypes.push(e.eventType)
         tenantIds.push(e.identity.tenantId ?? null)
+        organizationIds.push(e.identity.organizationId ?? null)
         groupIds.push(e.identity.groupId ?? null)
         userIds.push(e.identity.userId ?? null)
         agentIds.push(e.identity.agentId ?? null)
@@ -135,15 +137,15 @@ export class PgEventSink implements typegraphEventSink {
 
       await this.sql(
         `INSERT INTO ${this.eventsTable} (
-          id, event_type, tenant_id, group_id, user_id, agent_id, thread_id,
+          id, event_type, tenant_id, organization_id, group_id, user_id, agent_id, thread_id,
           target_id, target_type, payload, duration_ms, trace_id, span_id, created_at
         )
         SELECT * FROM unnest(
-          $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[],
-          $8::text[], $9::text[], $10::jsonb[], $11::int[], $12::text[], $13::text[], $14::timestamptz[]
+          $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[],
+          $9::text[], $10::text[], $11::jsonb[], $12::int[], $13::text[], $14::text[], $15::timestamptz[]
         )`,
         [
-          ids, eventTypes, tenantIds, groupIds, userIds, agentIds, threadIds,
+          ids, eventTypes, tenantIds, organizationIds, groupIds, userIds, agentIds, threadIds,
           targetIds, targetTypes, payloads, durationMs, traceIds, spanIds, createdAts,
         ],
       )

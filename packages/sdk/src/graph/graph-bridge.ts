@@ -78,10 +78,13 @@ function stableGraphId(prefix: string, parts: Array<string | number | undefined>
 function mergeScope(defaultScope: typegraphIdentity, override?: typegraphIdentity): typegraphIdentity {
   return {
     tenantId: override?.tenantId ?? defaultScope.tenantId,
+    organizationId: override?.organizationId ?? defaultScope.organizationId,
     groupId: override?.groupId ?? defaultScope.groupId,
     userId: override?.userId ?? defaultScope.userId,
     agentId: override?.agentId ?? defaultScope.agentId,
     threadId: override?.threadId ?? defaultScope.threadId,
+    graphId: override?.graphId ?? defaultScope.graphId,
+    graphIds: override?.graphIds ?? defaultScope.graphIds,
   }
 }
 
@@ -167,6 +170,9 @@ function normalizeSeedScore(value: number): number {
 }
 
 function buildEntityMentions(input: {
+  tenantId?: string | undefined
+  graphId?: string | undefined
+  organizationId?: string | undefined
   entityId: string
   documentId: string
   chunkIndex: number
@@ -187,6 +193,9 @@ function buildEntityMentions(input: {
     if (seen.has(key)) return
     seen.add(key)
     rows.push({
+      tenantId: input.tenantId,
+      graphId: input.graphId,
+      organizationId: input.organizationId,
       entityId: input.entityId,
       documentId: input.documentId,
       chunkIndex: input.chunkIndex,
@@ -661,20 +670,26 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   function scopeFrom(input?: typegraphIdentity): typegraphIdentity {
     return mergeScope(defaultScope, {
       tenantId: input?.tenantId,
+      organizationId: input?.organizationId,
       groupId: input?.groupId,
       userId: input?.userId,
       agentId: input?.agentId,
       threadId: input?.threadId,
+      graphId: input?.graphId,
+      graphIds: input?.graphIds,
     })
   }
 
   function mergeSeedScope(parent: typegraphIdentity | undefined, child?: typegraphIdentity): typegraphIdentity {
     return mergeScope(parent ? scopeFrom(parent) : defaultScope, {
       tenantId: child?.tenantId,
+      organizationId: child?.organizationId,
       groupId: child?.groupId,
       userId: child?.userId,
       agentId: child?.agentId,
       threadId: child?.threadId,
+      graphId: child?.graphId,
+      graphIds: child?.graphIds,
     })
   }
 
@@ -1155,6 +1170,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     documentId?: string | undefined
     chunkIndex?: number | undefined
     tenantId?: string | undefined
+    organizationId?: string | undefined
+    graphId?: string | undefined
     groupId?: string | undefined
     userId?: string | undefined
     agentId?: string | undefined
@@ -1165,6 +1182,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   }): Promise<SemanticEntity> {
     const scope = mergeScope(defaultScope, {
       tenantId: input.tenantId,
+      organizationId: input.organizationId,
+      graphId: input.graphId,
       groupId: input.groupId,
       userId: input.userId,
       agentId: input.agentId,
@@ -1185,6 +1204,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
     if (memoryStore.upsertEntityChunkMentions && input.documentId && input.chunkIndex !== undefined) {
       const mentions = buildEntityMentions({
+        tenantId: result.entity.scope.tenantId ?? 'public',
+        graphId: result.entity.graphId ?? result.entity.scope.graphId ?? 'public',
+        organizationId: result.entity.scope.organizationId,
         entityId: result.entity.id,
         documentId: input.documentId,
         chunkIndex: input.chunkIndex,
@@ -1234,6 +1256,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     chunkIndex?: number | undefined
     documentId?: string | undefined
     tenantId?: string | undefined
+    organizationId?: string | undefined
+    graphId?: string | undefined
     groupId?: string | undefined
     userId?: string | undefined
     agentId?: string | undefined
@@ -1254,6 +1278,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         documentId: mention.documentId,
         chunkIndex: mention.chunkIndex,
         tenantId: mention.tenantId,
+        organizationId: mention.organizationId,
+        graphId: mention.graphId,
         groupId: mention.groupId,
         userId: mention.userId,
         agentId: mention.agentId,
@@ -1289,6 +1315,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     chunkIndex?: number
     documentId?: string
     tenantId?: string | undefined
+    organizationId?: string | undefined
+    graphId?: string | undefined
     groupId?: string | undefined
     userId?: string | undefined
     agentId?: string | undefined
@@ -1298,6 +1326,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   }): Promise<void> {
     const scope = mergeScope(defaultScope, {
       tenantId: triple.tenantId,
+      organizationId: triple.organizationId,
+      graphId: triple.graphId,
       groupId: triple.groupId,
       userId: triple.userId,
       agentId: triple.agentId,
@@ -1321,6 +1351,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         documentId: triple.documentId,
         chunkIndex: triple.chunkIndex,
         tenantId: triple.tenantId,
+        organizationId: triple.organizationId,
+        graphId: triple.graphId,
         groupId: triple.groupId,
         userId: triple.userId,
         agentId: triple.agentId,
@@ -1363,6 +1395,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       documentId: triple.documentId,
       chunkIndex: triple.chunkIndex,
       tenantId: triple.tenantId,
+      organizationId: triple.organizationId,
+      graphId: triple.graphId,
       groupId: triple.groupId,
       userId: triple.userId,
       agentId: triple.agentId,
@@ -1381,6 +1415,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       documentId: triple.documentId,
       chunkIndex: triple.chunkIndex,
       tenantId: triple.tenantId,
+      organizationId: triple.organizationId,
+      graphId: triple.graphId,
       groupId: triple.groupId,
       userId: triple.userId,
       agentId: triple.agentId,
@@ -1517,6 +1553,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
             // Record the co-occurrence mention on the newly-linked entity
             if (memoryStore.upsertEntityChunkMentions && triple.documentId && triple.chunkIndex !== undefined) {
               await memoryStore.upsertEntityChunkMentions([{
+                tenantId: scope.tenantId ?? 'public',
+                graphId: scope.graphId ?? 'public',
+                organizationId: scope.organizationId,
                 entityId: newId,
                 documentId: triple.documentId,
                 chunkIndex: triple.chunkIndex,

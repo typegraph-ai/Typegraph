@@ -21,6 +21,7 @@ export interface Bucket {
   searchEmbeddingModel?: string | undefined
   indexDefaults?: IndexDefaults | undefined
   tenantId: string
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
@@ -76,6 +77,7 @@ export interface BucketListFilter {
 
 export interface BucketStorageFilter extends BucketListFilter {
   tenantId?: string | undefined
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined

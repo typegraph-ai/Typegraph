@@ -27,9 +27,11 @@ export interface Policy {
   name: string
   policyType: PolicyType
   tenantId?: string | undefined
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
+  threadId?: string | undefined
   rules: PolicyRule[]
   enabled: boolean
   createdAt: Date
@@ -40,9 +42,11 @@ export interface CreatePolicyInput {
   name: string
   policyType: PolicyType
   tenantId?: string | undefined
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
+  threadId?: string | undefined
   rules: PolicyRule[]
   enabled?: boolean | undefined
 }

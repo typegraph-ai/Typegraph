@@ -32,12 +32,12 @@ function rowFromParams(params: unknown[] = []): Record<string, unknown> {
     weight: params[10],
     evidence_count: params[11],
     tenant_id: params[13],
-    group_id: params[14],
-    user_id: params[15],
-    agent_id: params[16],
-    thread_id: params[17],
-    graph_id: params[18],
-    visibility: params[19],
+    organization_id: params[14],
+    group_id: params[15],
+    user_id: params[16],
+    agent_id: params[17],
+    thread_id: params[18],
+    graph_id: params[19],
     created_at: '2026-04-16T00:00:00Z',
     updated_at: params[21],
   }
@@ -111,7 +111,6 @@ describe('PgMemoryStoreAdapter', () => {
         embeddingModel: 'mock-embed',
         chunkId: 'chunk_pat',
       },
-      accessScope: [{ type: 'organization', id: 'org-1' }],
       evidence: ['chunk_pat'],
       temporal: {
         validAt: new Date('2026-04-16T00:00:00Z'),
@@ -122,7 +121,7 @@ describe('PgMemoryStoreAdapter', () => {
     await store.upsertGraphEdges([edge])
 
     expect(capturedQuery).toContain('INSERT INTO typegraph_graph_edges')
-    expect(capturedQuery).toContain('ON CONFLICT (source_type, source_id, target_type, target_id, relation)')
+    expect(capturedQuery).toContain('ON CONFLICT (tenant_id, graph_id, source_type, source_id, target_type, target_id, relation)')
     expect(capturedParams[1]).toBe('entity')
     expect(capturedParams[2]).toBe('ent_pat')
     expect(capturedParams[3]).toBe('chunk')
@@ -133,15 +132,15 @@ describe('PgMemoryStoreAdapter', () => {
     expect(capturedParams[16]).toBe('mock-embed')
     expect(capturedParams[17]).toBe('chunk_pat')
     expect(capturedParams[18]).toBe('tenant-1')
-    expect(capturedParams[23]).toBe('public')
-    expect(capturedParams[24]).toEqual([{ type: 'organization', id: 'org-1' }])
+    expect(capturedParams[24]).toBe('public')
+    expect(capturedParams[25]).toEqual(['chunk_pat'])
   })
 
   it('retries fact record upsert on duplicate deterministic fact id', async () => {
     const queries: string[] = []
     const sql = vi.fn(async (query: string, params?: unknown[]) => {
       queries.push(query)
-      if (query.includes('ON CONFLICT (edge_id)')) {
+      if (query.includes('ON CONFLICT (tenant_id, graph_id, edge_id)')) {
         const err = new Error('duplicate key value violates unique constraint "typegraph_fact_records_pkey"')
         Object.assign(err, { code: '23505', constraint: 'typegraph_fact_records_pkey' })
         throw err
@@ -153,8 +152,8 @@ describe('PgMemoryStoreAdapter', () => {
     const result = await store.upsertFactRecord(makeFact())
 
     expect(sql).toHaveBeenCalledTimes(2)
-    expect(queries[0]).toContain('ON CONFLICT (edge_id)')
-    expect(queries[1]).toContain('ON CONFLICT (id)')
+    expect(queries[0]).toContain('ON CONFLICT (tenant_id, graph_id, edge_id)')
+    expect(queries[1]).toContain('ON CONFLICT (tenant_id, graph_id, id)')
     expect(queries[1]).toContain('edge_id = EXCLUDED.edge_id')
     expect(result.id).toBe('fact-stable')
     expect(result.edgeId).toBe('edge-new')
@@ -177,13 +176,15 @@ describe('PgMemoryStoreAdapter', () => {
     await store.upsertEntityExternalIds('ent_alice', [externalId], { tenantId: 'tenant-1' })
 
     expect(capturedQuery).toContain('ON CONFLICT')
-    expect(capturedQuery).toContain('WHERE typegraph_entity_external_ids.entity_id = EXCLUDED.entity_id')
+    expect(capturedQuery).toContain('WHERE typegraph_entity_external_ids.tenant_id = EXCLUDED.tenant_id')
+    expect(capturedQuery).toContain('AND typegraph_entity_external_ids.entity_id = EXCLUDED.entity_id')
     expect(capturedParams[1]).toBe('ent_alice')
     expect(capturedParams[2]).toBe('email')
     expect(capturedParams[3]).toBe('Alice@Example.com')
     expect(capturedParams[4]).toBe('alice@example.com')
     expect(capturedParams[5]).toBe('none')
     expect(capturedParams[7]).toBe('tenant-1')
+    expect(capturedParams[8]).toBe('public')
   })
 
   it('looks up scoped external IDs without skipping SQL parameter positions', async () => {
@@ -205,13 +206,11 @@ describe('PgMemoryStoreAdapter', () => {
     expect(capturedQuery).toContain('xid.type = $1')
     expect(capturedQuery).toContain('xid.normalized_value = $2')
     expect(capturedQuery).toContain('xid.encoding = $3')
-    expect(capturedQuery).toContain('e.group_id = $4')
-    expect(capturedQuery).not.toContain('$5')
+    expect(capturedQuery).not.toContain('$4')
     expect(capturedParams).toEqual([
       'crm_account_id',
       '001ACME',
       'none',
-      'customer_acme_corp',
     ])
   })
 
@@ -269,7 +268,6 @@ describe('PgMemoryStoreAdapter', () => {
       filter: {
         scope: identity,
         category: 'episodic',
-        visibility: 'group',
         activeAt: new Date('2026-04-16T00:00:00Z'),
       },
     })
@@ -283,7 +281,6 @@ describe('PgMemoryStoreAdapter', () => {
         agentId: identity.agentId,
         threadId: identity.threadId,
         category: ['episodic', 'semantic'],
-        visibility: ['group', 'user'],
         activeAt: new Date('2026-04-16T00:00:00Z'),
       },
     })
@@ -299,7 +296,7 @@ describe('PgMemoryStoreAdapter', () => {
       status: ['complete', 'processing'],
       documentIds: ['doc_slack'],
     }, { limit: 10, offset: 5 })
-    await documentStore.update('doc_slack', {
+    await documentStore.update(identity.tenantId, 'doc_slack', {
       name: 'Slack export',
       url: 'https://demo.slack.local/thread',
       metadata: { source: 'slack' },

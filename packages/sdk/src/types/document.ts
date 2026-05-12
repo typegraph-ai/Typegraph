@@ -28,6 +28,7 @@ export interface typegraphDocument {
   id: string
   bucketId: string
   tenantId: string
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
@@ -57,6 +58,7 @@ export interface DocumentFilter {
 
 export interface DocumentStorageFilter extends DocumentFilter {
   tenantId?: string | undefined
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
@@ -68,6 +70,7 @@ export interface UpsertDocumentInput {
   id: string
   bucketId: string
   tenantId: string
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined

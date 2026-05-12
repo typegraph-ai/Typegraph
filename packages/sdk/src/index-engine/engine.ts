@@ -131,10 +131,12 @@ class ConfiguredExtractorRunner implements GraphExtractionRunner {
     documentName?: string,
     identity?: {
       tenantId?: string | undefined
+      organizationId?: string | undefined
       groupId?: string | undefined
       userId?: string | undefined
       agentId?: string | undefined
       threadId?: string | undefined
+      graphId?: string | undefined
     },
     accessScope?: AccessScope,
     chunkId?: string,
@@ -166,6 +168,8 @@ class ConfiguredExtractorRunner implements GraphExtractionRunner {
         ...(chunkIndex !== undefined ? { chunkIndex } : {}),
         ...(documentId ? { documentId } : {}),
         ...(identity?.tenantId ? { tenantId: identity.tenantId } : {}),
+        ...(identity?.organizationId ? { organizationId: identity.organizationId } : {}),
+        ...(identity?.graphId ? { graphId: identity.graphId } : {}),
         ...(identity?.groupId ? { groupId: identity.groupId } : {}),
         ...(identity?.userId ? { userId: identity.userId } : {}),
         ...(identity?.agentId ? { agentId: identity.agentId } : {}),
@@ -208,6 +212,8 @@ class ConfiguredExtractorRunner implements GraphExtractionRunner {
           ...(chunkIndex !== undefined ? { chunkIndex } : {}),
           ...(documentId ? { documentId } : {}),
           ...(identity?.tenantId ? { tenantId: identity.tenantId } : {}),
+          ...(identity?.organizationId ? { organizationId: identity.organizationId } : {}),
+          ...(identity?.graphId ? { graphId: identity.graphId } : {}),
           ...(identity?.groupId ? { groupId: identity.groupId } : {}),
           ...(identity?.userId ? { userId: identity.userId } : {}),
           ...(identity?.agentId ? { agentId: identity.agentId } : {}),
@@ -267,7 +273,7 @@ export class IndexEngine {
     const opts = optionalCompactObject<IngestOptions>(rawOpts, 'IndexEngine.ingestWithChunks') as IngestOptions
     const cleanDocument = sanitizeDocument(document)
     const cleanChunks = chunks.map(sanitizeChunk)
-    const { tenantId, groupId, userId, agentId, threadId, dryRun = false } = opts
+    const { tenantId, organizationId, groupId, userId, agentId, threadId, dryRun = false } = opts
     const graphId = opts.graphId ?? 'public'
     if (!tenantId) throw new ConfigError('ingest requires identity.tenantId.')
     const shouldExtract = !!this.tripleExtractor && !dryRun && !!opts.graphExtraction
@@ -290,6 +296,7 @@ export class IndexEngine {
         id: documentId,
         bucketId,
         tenantId,
+        organizationId,
         groupId,
         userId,
         agentId,
@@ -315,6 +322,7 @@ export class IndexEngine {
 
       const embeddedChunks = cleanChunks.map((chunk, i) => ({
         id: chunkIdFor({
+          tenantId,
           embeddingModel: modelId,
           bucketId,
           idempotencyKey: ikey,
@@ -323,6 +331,7 @@ export class IndexEngine {
         idempotencyKey: ikey,
         bucketId,
         tenantId,
+        organizationId,
         groupId,
         userId,
         agentId,
@@ -351,14 +360,14 @@ export class IndexEngine {
           embeddedChunks,
           propagated,
           documentName,
-          { tenantId, groupId, userId, agentId, threadId, graphId },
+          { tenantId, organizationId, groupId, userId, agentId, threadId, graphId },
         )
       }
 
       if (!dryRun) {
         if (extraction && extraction.failed > 0) {
           if (this.adapter.updateDocumentStatus) {
-            await this.adapter.updateDocumentStatus(documentId, 'failed')
+            await this.adapter.updateDocumentStatus(tenantId, documentId, 'failed')
           }
 
           return {
@@ -376,7 +385,7 @@ export class IndexEngine {
         }
 
         if (this.adapter.updateDocumentStatus) {
-          await this.adapter.updateDocumentStatus(documentId, 'complete', cleanChunks.length)
+          await this.adapter.updateDocumentStatus(tenantId, documentId, 'complete', cleanChunks.length)
         }
 
         const storeKey = buildHashStoreKey(tenantId, bucketId, ikey)
@@ -405,7 +414,7 @@ export class IndexEngine {
       }
     } catch (error) {
       if (this.adapter.updateDocumentStatus && !dryRun) {
-        await this.adapter.updateDocumentStatus(documentId, 'failed')
+        await this.adapter.updateDocumentStatus(tenantId, documentId, 'failed')
       }
       throw error
     }
@@ -425,7 +434,7 @@ export class IndexEngine {
       document: sanitizeDocument(document),
       chunks: chunks.map(sanitizeChunk),
     }))
-    const { tenantId, groupId, userId, agentId, threadId, dryRun = false, traceId, spanId } = opts
+    const { tenantId, organizationId, groupId, userId, agentId, threadId, dryRun = false, traceId, spanId } = opts
     const graphId = opts.graphId ?? 'public'
     if (!tenantId) throw new ConfigError('ingest requires identity.tenantId.')
     const shouldExtract = !!this.tripleExtractor && !dryRun && !!opts.graphExtraction
@@ -435,7 +444,7 @@ export class IndexEngine {
     this.eventSink?.emit({
       id: crypto.randomUUID(),
       eventType: 'index.start',
-      identity: { tenantId, groupId, userId, agentId, threadId },
+      identity: { tenantId, organizationId, groupId, userId, agentId, threadId },
       payload: { bucketId, documentCount: cleanItems.length },
       traceId,
       spanId,
@@ -524,6 +533,7 @@ export class IndexEngine {
           id: documentId,
           bucketId,
           tenantId,
+          organizationId,
           groupId,
           userId,
           agentId,
@@ -565,6 +575,7 @@ export class IndexEngine {
 
       const embeddedChunks = chunks.map((chunk, i) => ({
         id: chunkIdFor({
+          tenantId,
           embeddingModel: modelId,
           bucketId,
           idempotencyKey: ikey,
@@ -573,6 +584,7 @@ export class IndexEngine {
         idempotencyKey: ikey,
         bucketId,
         tenantId,
+        organizationId,
         groupId,
         userId,
         agentId,
@@ -620,13 +632,13 @@ export class IndexEngine {
         if (extraction && extraction.failed > 0) {
           processingFailed++
           if (this.adapter.updateDocumentStatus) {
-            await this.adapter.updateDocumentStatus(documentId, 'failed')
+            await this.adapter.updateDocumentStatus(tenantId, documentId, 'failed')
           }
 
           this.eventSink?.emit({
             id: crypto.randomUUID(),
             eventType: 'index.document',
-            identity: { tenantId, groupId, userId, agentId, threadId },
+            identity: { tenantId, organizationId, groupId, userId, agentId, threadId, graphId },
             targetId: documentId,
             targetType: 'document',
             payload: { bucketId, chunkCount: chunks.length, status: 'failed', extraction },
@@ -638,7 +650,7 @@ export class IndexEngine {
         }
 
         if (this.adapter.updateDocumentStatus) {
-          await this.adapter.updateDocumentStatus(documentId, 'complete', chunks.length)
+          await this.adapter.updateDocumentStatus(tenantId, documentId, 'complete', chunks.length)
         }
 
         const storeKey = buildHashStoreKey(tenantId, bucketId, ikey)
@@ -659,7 +671,7 @@ export class IndexEngine {
       this.eventSink?.emit({
         id: crypto.randomUUID(),
         eventType: 'index.document',
-        identity: { tenantId, groupId, userId, agentId, threadId },
+        identity: { tenantId, organizationId, groupId, userId, agentId, threadId, graphId },
         targetId: documentId,
         targetType: 'document',
         payload: { bucketId, chunkCount: chunks.length, status: documentWasCreated ? 'new' : 'updated' },
@@ -685,7 +697,7 @@ export class IndexEngine {
           this.eventSink?.emit({
             id: crypto.randomUUID(),
             eventType: 'index.document',
-            identity: { tenantId, groupId, userId, agentId, threadId },
+            identity: { tenantId, organizationId, groupId, userId, agentId, threadId, graphId },
             targetId: item.documentId,
             targetType: 'document',
             payload: { bucketId, status: 'failed', error: err instanceof Error ? err.message : String(err) },
@@ -710,7 +722,7 @@ export class IndexEngine {
     this.eventSink?.emit({
       id: crypto.randomUUID(),
       eventType: 'index.complete',
-      identity: { tenantId, groupId, userId, agentId, threadId },
+      identity: { tenantId, organizationId, groupId, userId, agentId, threadId },
       payload: {
         bucketId,
         documentsProcessed: result.inserted + result.updated,
@@ -747,6 +759,7 @@ export class IndexEngine {
     documentName?: string,
     identity?: {
       tenantId?: string | undefined
+      organizationId?: string | undefined
       groupId?: string | undefined
       userId?: string | undefined
       agentId?: string | undefined
@@ -759,6 +772,7 @@ export class IndexEngine {
     let entityContext: EntityContext[] = [...initialEntityContext]
     const cacheKey = {
       tenantId: identity?.tenantId,
+      organizationId: identity?.organizationId,
       groupId: identity?.groupId,
       userId: identity?.userId,
       agentId: identity?.agentId,

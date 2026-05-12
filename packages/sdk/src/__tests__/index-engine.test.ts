@@ -258,7 +258,7 @@ describe('IndexEngine', () => {
       const upsertCall = adapter.calls.find(c => c.method === 'upsertDocumentChunks')!
       expect((upsertCall.args[1] as Array<{ documentId: string }>)[0]!.documentId).toBe(canonicalId)
       expect(extractFromChunk.mock.calls[0]![3]).toBe(canonicalId)
-      expect(adapter.calls.filter(c => c.method === 'updateDocumentStatus').at(-1)!.args[0]).toBe(canonicalId)
+      expect(adapter.calls.filter(c => c.method === 'updateDocumentStatus').at(-1)!.args[1]).toBe(canonicalId)
       expect(events.find(e => e.eventType === 'index.document')!.targetId).toBe(canonicalId)
     })
 
@@ -282,7 +282,7 @@ describe('IndexEngine', () => {
       expect(failed.updated).toBe(0)
       expect(failed.extraction?.failed).toBe(1)
       const failedStatus = adapter.calls.filter(c => c.method === 'updateDocumentStatus').at(-1)!
-      expect(failedStatus.args[1]).toBe('failed')
+      expect(failedStatus.args[2]).toBe('failed')
       const ikey = resolveIdempotencyKey(document, ['url'])
       const storeKey = buildHashStoreKey('tenant-1', bucket.id, ikey)
       expect(await adapter.hashStore.get(storeKey)).toBeNull()
@@ -298,7 +298,7 @@ describe('IndexEngine', () => {
       expect(retried.updated).toBe(1)
       expect(await adapter.hashStore.get(storeKey)).not.toBeNull()
       expect(adapter.calls.some(c => c.method === 'upsertDocumentChunks')).toBe(true)
-      expect(adapter.calls.filter(c => c.method === 'updateDocumentStatus').at(-1)!.args[1]).toBe('complete')
+      expect(adapter.calls.filter(c => c.method === 'updateDocumentStatus').at(-1)!.args[2]).toBe('complete')
     })
 
     it('serializes graph extraction even when concurrency is higher', async () => {
@@ -380,7 +380,7 @@ describe('IndexEngine', () => {
 
       const statusCalls = adapter.calls.filter(c => c.method === 'updateDocumentStatus')
       if (statusCalls.length > 0) {
-        expect(statusCalls[statusCalls.length - 1]!.args[1]).toBe('failed')
+        expect(statusCalls[statusCalls.length - 1]!.args[2]).toBe('failed')
       }
     })
 
@@ -427,7 +427,7 @@ describe('IndexEngine', () => {
       const upsertCall = adapter.calls.find(c => c.method === 'upsertDocumentChunks')!
       expect((upsertCall.args[1] as Array<{ documentId: string }>)[0]!.documentId).toBe(canonicalId)
       expect(extractFromChunk.mock.calls[0]![3]).toBe(canonicalId)
-      expect(adapter.calls.filter(c => c.method === 'updateDocumentStatus').at(-1)!.args[0]).toBe(canonicalId)
+      expect(adapter.calls.filter(c => c.method === 'updateDocumentStatus').at(-1)!.args[1]).toBe(canonicalId)
     })
 
     it('extracts graph facts from chunks without graph-owned chunk persistence', async () => {

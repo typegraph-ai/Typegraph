@@ -15,6 +15,7 @@ export interface EventInput<TMeta extends Record<string, unknown> = Record<strin
 export interface typegraphEventRecord {
   id: string
   tenantId: string
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
@@ -37,6 +38,7 @@ export interface EventFilter {
 
 export interface EventStorageFilter extends EventFilter {
   tenantId?: string | undefined
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { EmbeddedChunk } from '@typegraph-ai/sdk'
 import { PgVectorAdapter } from '../src/adapter.js'
 
 describe('PgVectorAdapter graph records', () => {
@@ -74,5 +75,42 @@ describe('PgVectorAdapter graph records', () => {
     expect(sql.mock.calls[1]?.[1]).toEqual(['tenant_a', 'public'])
     expect(sql.mock.calls[2]?.[0]).toContain('WHERE tenant_id = $1 AND id = ANY($2::text[])')
     expect(sql.mock.calls[2]?.[1]).toEqual(['tenant_a', ['public']])
+  })
+
+  it('bulk-upserts chunks without record-level access scope columns', async () => {
+    let capturedQuery = ''
+    let capturedParams: unknown[] | undefined
+    const sql = vi.fn(async (query: string, params?: unknown[]) => {
+      if (query.includes('SELECT table_name FROM')) {
+        return [{ table_name: 'typegraph_document_chunks_mock' }]
+      }
+      if (query.startsWith('INSERT INTO typegraph_document_chunks_mock')) {
+        capturedQuery = query
+        capturedParams = params
+      }
+      return []
+    })
+    const adapter = new PgVectorAdapter({ sql })
+    const chunk: EmbeddedChunk = {
+      id: 'chunk_1',
+      idempotencyKey: 'doc_1',
+      bucketId: 'bucket_1',
+      tenantId: 'tenant_1',
+      graphId: 'public',
+      documentId: 'document_1',
+      content: 'hello world',
+      embedding: [0.1, 0.2],
+      embeddingModel: 'mock',
+      chunkIndex: 0,
+      totalChunks: 1,
+      metadata: {},
+      indexedAt: new Date('2026-05-12T00:00:00.000Z'),
+    }
+
+    await adapter.upsertDocumentChunks('mock', [chunk])
+
+    expect(capturedQuery).toContain('$17::jsonb[]')
+    expect(capturedQuery).toContain('ON CONFLICT (tenant_id, bucket_id, idempotency_key, chunk_index)')
+    expect(capturedParams?.[16]).toEqual(['{}'])
   })
 })

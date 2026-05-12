@@ -8,6 +8,12 @@ export type JobStatus = 'pending' | 'processing' | 'complete' | 'failed'
 /** A tracked async operation (primarily used in cloud mode). */
 export interface Job {
   id: string
+  tenantId?: string | undefined
+  organizationId?: string | undefined
+  groupId?: string | undefined
+  userId?: string | undefined
+  agentId?: string | undefined
+  threadId?: string | undefined
   status: JobStatus
   type: JobType
   bucketId?: string | undefined
@@ -21,6 +27,12 @@ export interface Job {
 }
 
 export interface JobFilter {
+  tenantId?: string | undefined
+  organizationId?: string | undefined
+  groupId?: string | undefined
+  userId?: string | undefined
+  agentId?: string | undefined
+  threadId?: string | undefined
   bucketId?: string | undefined
   status?: JobStatus | undefined
   type?: JobType | undefined
@@ -29,6 +41,12 @@ export interface JobFilter {
 /** Input for creating or replacing a job row. `id` is caller-provided (e.g. an Inngest run id). */
 export interface UpsertJobInput {
   id: string
+  tenantId?: string | undefined
+  organizationId?: string | undefined
+  groupId?: string | undefined
+  userId?: string | undefined
+  agentId?: string | undefined
+  threadId?: string | undefined
   type: JobType
   status?: JobStatus | undefined
   bucketId?: string | undefined

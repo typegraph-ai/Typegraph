@@ -19,17 +19,19 @@ export class PgPolicyStore implements PolicyStoreAdapter {
   async createPolicy(input: CreatePolicyInput): Promise<Policy> {
     const id = `pol_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`
     const rows = await this.sql(
-      `INSERT INTO ${this.table} (id, name, policy_type, tenant_id, group_id, user_id, agent_id, rules, enabled)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO ${this.table} (id, name, policy_type, tenant_id, organization_id, group_id, user_id, agent_id, thread_id, rules, enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
         id,
         input.name,
         input.policyType,
-        input.tenantId ?? null,
+        input.tenantId ?? 'public',
+        input.organizationId ?? null,
         input.groupId ?? null,
         input.userId ?? null,
         input.agentId ?? null,
+        input.threadId ?? null,
         JSON.stringify(input.rules),
         input.enabled ?? true,
       ],
@@ -113,9 +115,11 @@ export class PgPolicyStore implements PolicyStoreAdapter {
       name: row.name as string,
       policyType: row.policy_type as PolicyType,
       tenantId: row.tenant_id as string | undefined,
+      organizationId: row.organization_id as string | undefined,
       groupId: row.group_id as string | undefined,
       userId: row.user_id as string | undefined,
       agentId: row.agent_id as string | undefined,
+      threadId: row.thread_id as string | undefined,
       rules: typeof row.rules === 'string' ? JSON.parse(row.rules) : (row.rules as Policy['rules']),
       enabled: row.enabled as boolean,
       createdAt: new Date(row.created_at as string),

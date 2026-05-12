@@ -63,6 +63,10 @@ function matchesDocumentFilter(document: typegraphDocument, filter: DocumentFilt
   return true
 }
 
+function documentKey(tenantId: string | undefined, id: string): string {
+  return `${tenantId ?? 'public'}:${id}`
+}
+
 export function createMockHashStore(): HashStoreAdapter & {
   _data: Map<string, HashRecord>
   _lastRunTimes: Map<string, Date>
@@ -292,13 +296,13 @@ export function createMockAdapter(): VectorStoreAdapter & {
         updatedAt: now,
         metadata: input.metadata ?? {},
       }
-      documents.set(id, document)
+      documents.set(documentKey(input.tenantId, id), document)
       return { ...document, wasCreated: !existing }
     },
 
-    async getDocument(id: string): Promise<typegraphDocument | null> {
-      calls.push({ method: 'getDocument', args: [id] })
-      return documents.get(id) ?? null
+    async getDocument(tenantId: string, id: string): Promise<typegraphDocument | null> {
+      calls.push({ method: 'getDocument', args: [tenantId, id] })
+      return documents.get(documentKey(tenantId, id)) ?? null
     },
 
     async listDocuments(filter?: DocumentFilter | null): Promise<typegraphDocument[]> {
@@ -309,21 +313,23 @@ export function createMockAdapter(): VectorStoreAdapter & {
     async deleteDocuments(filter: DocumentFilter | null): Promise<number> {
       calls.push({ method: 'deleteDocuments', args: [filter] })
       let count = 0
-      for (const [id, document] of documents) {
+      const deleted = new Set<string>()
+      for (const [key, document] of documents) {
         if (matchesDocumentFilter(document, filter)) {
-          documents.delete(id)
+          documents.delete(key)
+          deleted.add(`${document.tenantId}:${document.bucketId}:${document.id}`)
           count++
         }
       }
       for (const [model, store] of chunks) {
-        chunks.set(model, store.filter(chunk => documents.has(chunk.documentId)))
+        chunks.set(model, store.filter(chunk => !deleted.has(`${chunk.tenantId}:${chunk.bucketId}:${chunk.documentId}`)))
       }
       return count
     },
 
-    async updateDocumentStatus(id: string, status: DocumentStatus, chunkCount?: number) {
-      calls.push({ method: 'updateDocumentStatus', args: [id, status, chunkCount] })
-      const document = documents.get(id)
+    async updateDocumentStatus(tenantId: string, id: string, status: DocumentStatus, chunkCount?: number) {
+      calls.push({ method: 'updateDocumentStatus', args: [tenantId, id, status, chunkCount] })
+      const document = documents.get(documentKey(tenantId, id))
       if (document) {
         document.status = status
         if (chunkCount !== undefined) document.chunkCount = chunkCount
@@ -332,11 +338,12 @@ export function createMockAdapter(): VectorStoreAdapter & {
     },
 
     async updateDocument(
+      tenantId: string,
       id: string,
       input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'metadata'>>
     ): Promise<typegraphDocument> {
-      calls.push({ method: 'updateDocument', args: [id, input] })
-      const document = documents.get(id)
+      calls.push({ method: 'updateDocument', args: [tenantId, id, input] })
+      const document = documents.get(documentKey(tenantId, id))
       if (!document) throw new Error(`Document ${id} not found`)
       Object.assign(document, input, { updatedAt: new Date() })
       return document
@@ -351,20 +358,21 @@ export function createMockAdapter(): VectorStoreAdapter & {
       calls.push({ method: 'searchWithDocuments', args: [model, embedding, query, opts] })
       const scored = hybridScoreChunks(model, embedding, query, opts)
       return scored
-        .map(chunk => ({ ...chunk, document: documents.get(chunk.documentId) }))
+        .map(chunk => ({ ...chunk, document: documents.get(documentKey(chunk.tenantId, chunk.documentId)) }))
         .filter(chunk => chunk.document && matchesDocumentFilter(chunk.document, opts?.documentFilter))
     },
 
     async getChunksByRange(
       model: string,
+      tenantId: string,
       documentId: string,
       fromIndex: number,
       toIndex: number
     ): Promise<ScoredChunk[]> {
-      calls.push({ method: 'getChunksByRange', args: [model, documentId, fromIndex, toIndex] })
+      calls.push({ method: 'getChunksByRange', args: [model, tenantId, documentId, fromIndex, toIndex] })
       const store = chunks.get(model) ?? []
       return store
-        .filter(c => c.documentId === documentId && c.chunkIndex >= fromIndex && c.chunkIndex <= toIndex)
+        .filter(c => c.tenantId === tenantId && c.documentId === documentId && c.chunkIndex >= fromIndex && c.chunkIndex <= toIndex)
         .map(c => ({ ...c, scores: { semantic: 0 } }))
         .sort((a, b) => a.chunkIndex - b.chunkIndex)
     },

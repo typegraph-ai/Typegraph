@@ -3,6 +3,7 @@ export interface EmbeddedChunk {
   idempotencyKey: string
   bucketId: string
   tenantId: string
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
@@ -36,6 +37,7 @@ export interface ChunkFilter {
   /** Restrict search to exact chunk identities. Empty array intentionally matches nothing. */
   chunkRefs?: ChunkRef[] | undefined
   tenantId?: string | undefined
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined

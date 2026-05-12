@@ -84,15 +84,15 @@ export interface VectorStoreAdapter {
   /** Create or update a document record. Returns the canonical document row. */
   upsertDocumentRecord?(input: UpsertDocumentInput): Promise<UpsertedDocumentRecord>
   /** Get a document by ID. */
-  getDocument?(id: string): Promise<typegraphDocument | null>
+  getDocument?(tenantId: string, id: string): Promise<typegraphDocument | null>
   /** List documents matching a filter. Supports optional pagination. */
   listDocuments?(filter?: DocumentStorageFilter | null, pagination?: PaginationOpts | null): Promise<typegraphDocument[] | PaginatedResult<typegraphDocument>>
   /** Delete documents matching a filter. Returns count deleted. */
   deleteDocuments?(filter: DocumentStorageFilter | null): Promise<number>
   /** Update a document's status and optionally its chunk count. */
-  updateDocumentStatus?(id: string, status: DocumentStatus, chunkCount?: number): Promise<void>
+  updateDocumentStatus?(tenantId: string, id: string, status: DocumentStatus, chunkCount?: number): Promise<void>
   /** Update document metadata fields. Returns updated document. */
-  updateDocument?(id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'metadata'>>): Promise<typegraphDocument>
+  updateDocument?(tenantId: string, id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'metadata'>>): Promise<typegraphDocument>
 
   upsertEvent?(input: UpsertEventInput): Promise<typegraphEventRecord>
   getEvent?(tenantId: string, id: string): Promise<typegraphEventRecord | null>
@@ -130,6 +130,7 @@ export interface VectorStoreAdapter {
   /** Fetch chunks by document and index range (for neighbor expansion). No vector search. */
   getChunksByRange?(
     model: string,
+    tenantId: string,
     documentId: string,
     fromIndex: number,
     toIndex: number

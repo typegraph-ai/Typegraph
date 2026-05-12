@@ -13,6 +13,12 @@ function mapJobRow(row: Record<string, unknown>): Job {
     : (typeof resultRaw === 'string' ? JSON.parse(resultRaw) : resultRaw) as Job['result']
   return {
     id: row.id as string,
+    tenantId: (row.tenant_id as string) ?? undefined,
+    organizationId: (row.organization_id as string) ?? undefined,
+    groupId: (row.group_id as string) ?? undefined,
+    userId: (row.user_id as string) ?? undefined,
+    agentId: (row.agent_id as string) ?? undefined,
+    threadId: (row.thread_id as string) ?? undefined,
     type: row.type as Job['type'],
     status: row.status as JobStatus,
     bucketId: (row.bucket_id as string) ?? undefined,
@@ -34,9 +40,15 @@ export class PgJobStore {
     const status = input.status ?? 'pending'
     const rows = await this.sql(
       `INSERT INTO ${this.tableName}
-        (id, type, status, bucket_id, progress_processed, progress_total, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW())
-       ON CONFLICT (id) DO UPDATE SET
+        (id, tenant_id, organization_id, group_id, user_id, agent_id, thread_id,
+         type, status, bucket_id, progress_processed, progress_total, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+       ON CONFLICT (tenant_id, id) DO UPDATE SET
+         organization_id = EXCLUDED.organization_id,
+         group_id = EXCLUDED.group_id,
+         user_id = EXCLUDED.user_id,
+         agent_id = EXCLUDED.agent_id,
+         thread_id = EXCLUDED.thread_id,
          type = EXCLUDED.type,
          status = EXCLUDED.status,
          bucket_id = EXCLUDED.bucket_id,
@@ -46,6 +58,12 @@ export class PgJobStore {
        RETURNING *`,
       [
         input.id,
+        input.tenantId ?? 'public',
+        input.organizationId ?? null,
+        input.groupId ?? null,
+        input.userId ?? null,
+        input.agentId ?? null,
+        input.threadId ?? null,
         input.type,
         status,
         input.bucketId ?? null,
@@ -68,6 +86,30 @@ export class PgJobStore {
     if (filter?.bucketId != null) {
       params.push(filter.bucketId)
       conditions.push(`bucket_id = $${params.length}`)
+    }
+    if (filter?.tenantId != null) {
+      params.push(filter.tenantId)
+      conditions.push(`tenant_id = $${params.length}`)
+    }
+    if (filter?.organizationId != null) {
+      params.push(filter.organizationId)
+      conditions.push(`organization_id = $${params.length}`)
+    }
+    if (filter?.groupId != null) {
+      params.push(filter.groupId)
+      conditions.push(`group_id = $${params.length}`)
+    }
+    if (filter?.userId != null) {
+      params.push(filter.userId)
+      conditions.push(`user_id = $${params.length}`)
+    }
+    if (filter?.agentId != null) {
+      params.push(filter.agentId)
+      conditions.push(`agent_id = $${params.length}`)
+    }
+    if (filter?.threadId != null) {
+      params.push(filter.threadId)
+      conditions.push(`thread_id = $${params.length}`)
     }
     if (filter?.status != null) {
       params.push(filter.status)

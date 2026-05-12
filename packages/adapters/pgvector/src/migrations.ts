@@ -54,10 +54,11 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
   const idx = (suffix: string) => safeIdx(chunksTable, suffix)
   return `
   CREATE TABLE IF NOT EXISTS ${chunksTable} (
-    id              TEXT PRIMARY KEY,
+    id              TEXT NOT NULL,
     bucket_id       TEXT NOT NULL,
     tenant_id       TEXT NOT NULL,
     graph_id        TEXT NOT NULL DEFAULT 'public',
+    organization_id TEXT,
     group_id        TEXT,
     user_id         TEXT,
     agent_id        TEXT,
@@ -69,13 +70,12 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
     embedding_model TEXT NOT NULL,
     chunk_index     INTEGER NOT NULL,
     total_chunks    INTEGER NOT NULL,
-    access_scope    JSONB NOT NULL DEFAULT '[]',
-    access_scope_ids TEXT[] NOT NULL DEFAULT '{}',
     metadata        JSONB NOT NULL DEFAULT '{}',
     indexed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     search_vector   TSVECTOR GENERATED ALWAYS AS (
       to_tsvector('english', content)
-    ) STORED
+    ) STORED,
+    PRIMARY KEY (tenant_id, id)
   );
 
   CREATE INDEX IF NOT EXISTS ${idx('embedding_idx')}
@@ -91,13 +91,16 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
     ON ${chunksTable} USING gin (search_vector);
 
   CREATE INDEX IF NOT EXISTS ${idx('document_chunk_idx')}
-    ON ${chunksTable} (document_id, chunk_index);
+    ON ${chunksTable} (tenant_id, document_id, chunk_index);
 
   CREATE INDEX IF NOT EXISTS ${idx('bucket_document_chunk_idx')}
-    ON ${chunksTable} (bucket_id, document_id, chunk_index);
+    ON ${chunksTable} (tenant_id, bucket_id, document_id, chunk_index);
 
   CREATE UNIQUE INDEX IF NOT EXISTS ${idx('ikey_chunk_idx')}
-    ON ${chunksTable} (idempotency_key, chunk_index, bucket_id);
+    ON ${chunksTable} (tenant_id, bucket_id, idempotency_key, chunk_index);
+
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_org_idx')}
+    ON ${chunksTable} (tenant_id, organization_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')}
     ON ${chunksTable} (tenant_id, user_id);
@@ -123,11 +126,6 @@ export const MODEL_TABLE_SQL = (chunksTable: string, dimensions: number) => {
   CREATE INDEX IF NOT EXISTS ${idx('thread_idx')}
     ON ${chunksTable} (thread_id);
 
-  CREATE INDEX IF NOT EXISTS ${idx('access_scope_ids_idx')}
-    ON ${chunksTable} USING gin (access_scope_ids);
-
-  CREATE INDEX IF NOT EXISTS ${idx('tenant_access_scope_idx')}
-    ON ${chunksTable} (tenant_id);
 `
 }
 
@@ -142,11 +140,12 @@ export const HASH_TABLE_SQL = (hashesTable: string) => {
     idempotency_key TEXT NOT NULL,
     content_hash    TEXT NOT NULL,
     bucket_id       TEXT NOT NULL,
-    tenant_id       TEXT,
+    tenant_id       TEXT NOT NULL,
+    organization_id TEXT,
     group_id        TEXT,
     user_id         TEXT,
     agent_id        TEXT,
-    thread_id      TEXT,
+    thread_id       TEXT,
     embedding_model TEXT NOT NULL,
     indexed_at      TIMESTAMPTZ NOT NULL,
     chunk_count     INTEGER NOT NULL
@@ -157,7 +156,7 @@ export const HASH_TABLE_SQL = (hashesTable: string) => {
 
   CREATE TABLE IF NOT EXISTS ${hashesTable}_run_times (
     bucket_id  TEXT NOT NULL,
-    tenant_id  TEXT NOT NULL DEFAULT '',
+    tenant_id  TEXT NOT NULL DEFAULT 'public',
     last_run   TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (bucket_id, tenant_id)
   );
@@ -172,10 +171,11 @@ export const DOCUMENTS_TABLE_SQL = (documentsTable: string) => {
   const idx = (suffix: string) => safeIdx(documentsTable, suffix)
   return `
   CREATE TABLE IF NOT EXISTS ${documentsTable} (
-    id              TEXT PRIMARY KEY,
+    id              TEXT NOT NULL,
     bucket_id       TEXT NOT NULL,
     tenant_id       TEXT NOT NULL,
     graph_id        TEXT NOT NULL DEFAULT 'public',
+    organization_id TEXT,
     group_id        TEXT,
     user_id         TEXT,
     agent_id        TEXT,
@@ -187,12 +187,11 @@ export const DOCUMENTS_TABLE_SQL = (documentsTable: string) => {
     chunk_count     INTEGER NOT NULL DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'pending'
                     CHECK (status IN ('pending', 'processing', 'complete', 'failed')),
-    access_scope    JSONB NOT NULL DEFAULT '[]',
-    access_scope_ids TEXT[] NOT NULL DEFAULT '{}',
     indexed_at      TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    metadata        JSONB NOT NULL DEFAULT '{}'
+    metadata        JSONB NOT NULL DEFAULT '{}',
+    PRIMARY KEY (tenant_id, id)
   );
 
   CREATE UNIQUE INDEX IF NOT EXISTS ${idx('document_hash_idx')}
@@ -207,8 +206,8 @@ export const DOCUMENTS_TABLE_SQL = (documentsTable: string) => {
   CREATE INDEX IF NOT EXISTS ${idx('status_idx')}
     ON ${documentsTable} (status);
 
-  CREATE INDEX IF NOT EXISTS ${idx('access_scope_ids_idx')}
-    ON ${documentsTable} USING gin (access_scope_ids);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_org_idx')}
+    ON ${documentsTable} (tenant_id, organization_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')}
     ON ${documentsTable} (tenant_id, user_id);
@@ -250,12 +249,11 @@ export const BUCKETS_TABLE_SQL = (table: string) => {
                 CHECK (status IN ('active', 'inactive')),
     tenant_id   TEXT NOT NULL,
     graph_id    TEXT NOT NULL DEFAULT 'public',
+    organization_id TEXT,
     group_id    TEXT,
     user_id     TEXT,
     agent_id    TEXT,
     thread_id  TEXT,
-    access_scope JSONB NOT NULL DEFAULT '[]',
-    access_scope_ids TEXT[] NOT NULL DEFAULT '{}',
     embedding_model TEXT,
     search_embedding_model TEXT,
     index_defaults JSONB,
@@ -270,8 +268,8 @@ export const BUCKETS_TABLE_SQL = (table: string) => {
   CREATE INDEX IF NOT EXISTS ${idx('tenant_graph_idx')}
     ON ${table} (tenant_id, graph_id);
 
-  CREATE INDEX IF NOT EXISTS ${idx('access_scope_ids_idx')}
-    ON ${table} USING gin (access_scope_ids);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_org_idx')}
+    ON ${table} (tenant_id, organization_id);
 `
 }
 
@@ -303,6 +301,7 @@ export const BUSINESS_EVENTS_TABLE_SQL = (eventsTable: string) => {
     id               TEXT NOT NULL,
     tenant_id        TEXT NOT NULL,
     graph_id         TEXT NOT NULL DEFAULT 'public',
+    organization_id  TEXT,
     group_id         TEXT,
     user_id          TEXT,
     agent_id         TEXT,
@@ -314,8 +313,6 @@ export const BUSINESS_EVENTS_TABLE_SQL = (eventsTable: string) => {
     participant_ids  TEXT[] NOT NULL DEFAULT '{}',
     content          TEXT,
     metadata         JSONB NOT NULL DEFAULT '{}',
-    access_scope     JSONB NOT NULL DEFAULT '[]',
-    access_scope_ids TEXT[] NOT NULL DEFAULT '{}',
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (tenant_id, id)
@@ -333,8 +330,8 @@ export const BUSINESS_EVENTS_TABLE_SQL = (eventsTable: string) => {
   CREATE INDEX IF NOT EXISTS ${idx('participants_idx')}
     ON ${eventsTable} USING gin (participant_ids);
 
-  CREATE INDEX IF NOT EXISTS ${idx('access_scope_ids_idx')}
-    ON ${eventsTable} USING gin (access_scope_ids);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_org_idx')}
+    ON ${eventsTable} (tenant_id, organization_id);
 `
 }
 
@@ -345,14 +342,13 @@ export const THREADS_TABLE_SQL = (threadsTable: string) => {
     id               TEXT NOT NULL,
     tenant_id        TEXT NOT NULL,
     graph_id         TEXT NOT NULL DEFAULT 'public',
+    organization_id  TEXT,
     group_id         TEXT,
     user_id          TEXT,
     agent_id         TEXT,
     name             TEXT NOT NULL,
     description      TEXT,
     metadata         JSONB NOT NULL DEFAULT '{}',
-    access_scope     JSONB NOT NULL DEFAULT '[]',
-    access_scope_ids TEXT[] NOT NULL DEFAULT '{}',
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (tenant_id, id)
@@ -364,8 +360,8 @@ export const THREADS_TABLE_SQL = (threadsTable: string) => {
   CREATE INDEX IF NOT EXISTS ${idx('tenant_graph_idx')}
     ON ${threadsTable} (tenant_id, graph_id);
 
-  CREATE INDEX IF NOT EXISTS ${idx('access_scope_ids_idx')}
-    ON ${threadsTable} USING gin (access_scope_ids);
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_org_idx')}
+    ON ${threadsTable} (tenant_id, organization_id);
 `
 }
 
@@ -373,7 +369,7 @@ export const LINKS_TABLE_SQL = (linksTable: string) => {
   const idx = (suffix: string) => safeIdx(linksTable, suffix)
   return `
   CREATE TABLE IF NOT EXISTS ${linksTable} (
-    id          TEXT PRIMARY KEY,
+    id          TEXT NOT NULL,
     tenant_id   TEXT NOT NULL,
     graph_id    TEXT NOT NULL DEFAULT 'public',
     from_kind   TEXT NOT NULL,
@@ -384,14 +380,15 @@ export const LINKS_TABLE_SQL = (linksTable: string) => {
     metadata    JSONB NOT NULL DEFAULT '{}',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (tenant_id, from_kind, from_id, to_kind, to_id, relation)
+    PRIMARY KEY (tenant_id, graph_id, id),
+    UNIQUE (tenant_id, graph_id, from_kind, from_id, to_kind, to_id, relation)
   );
 
   CREATE INDEX IF NOT EXISTS ${idx('from_idx')}
-    ON ${linksTable} (tenant_id, from_kind, from_id);
+    ON ${linksTable} (tenant_id, graph_id, from_kind, from_id);
 
   CREATE INDEX IF NOT EXISTS ${idx('to_idx')}
-    ON ${linksTable} (tenant_id, to_kind, to_id);
+    ON ${linksTable} (tenant_id, graph_id, to_kind, to_id);
 `
 }
 
@@ -429,6 +426,7 @@ export const TELEMETRY_TABLE_SQL = (telemetryTable: string) => {
     id              TEXT PRIMARY KEY,
     event_type      TEXT NOT NULL,
     tenant_id       TEXT,
+    organization_id TEXT,
     group_id        TEXT,
     user_id         TEXT,
     agent_id        TEXT,
@@ -474,10 +472,12 @@ export const POLICIES_TABLE_SQL = (policiesTable: string) => {
     name        TEXT NOT NULL,
     policy_type TEXT NOT NULL
                 CHECK (policy_type IN ('access', 'retention', 'data_flow')),
-    tenant_id   TEXT,
+    tenant_id   TEXT NOT NULL,
+    organization_id TEXT,
     group_id    TEXT,
     user_id     TEXT,
     agent_id    TEXT,
+    thread_id   TEXT,
     rules       JSONB NOT NULL,
     enabled     BOOLEAN DEFAULT true,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -504,7 +504,13 @@ export const JOBS_TABLE_SQL = (jobsTable: string) => {
   const idx = (suffix: string) => safeIdx(jobsTable, suffix)
   return `
   CREATE TABLE IF NOT EXISTS ${jobsTable} (
-    id                  TEXT PRIMARY KEY,
+    id                  TEXT NOT NULL,
+    tenant_id           TEXT NOT NULL DEFAULT 'public',
+    organization_id     TEXT,
+    group_id            TEXT,
+    user_id             TEXT,
+    agent_id            TEXT,
+    thread_id           TEXT,
     type                TEXT NOT NULL
                         CHECK (type IN ('ingest', 'remember', 'thread_turn', 'correct', 'forget')),
     status              TEXT NOT NULL DEFAULT 'pending'
@@ -516,11 +522,15 @@ export const JOBS_TABLE_SQL = (jobsTable: string) => {
     error               TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    completed_at        TIMESTAMPTZ
+    completed_at        TIMESTAMPTZ,
+    PRIMARY KEY (tenant_id, id)
   );
 
+  CREATE INDEX IF NOT EXISTS ${idx('tenant_created_idx')}
+    ON ${jobsTable} (tenant_id, created_at DESC);
+
   CREATE INDEX IF NOT EXISTS ${idx('status_created_idx')}
-    ON ${jobsTable} (status, created_at DESC);
+    ON ${jobsTable} (tenant_id, status, created_at DESC);
 
   CREATE INDEX IF NOT EXISTS ${idx('bucket_idx')}
     ON ${jobsTable} (bucket_id);

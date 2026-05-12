@@ -10,6 +10,7 @@ export interface ThreadInput<TMeta extends Record<string, unknown> = Record<stri
 export interface typegraphThread {
   id: string
   tenantId: string
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
@@ -34,6 +35,7 @@ export interface ThreadFilter {
 
 export interface ThreadStorageFilter extends ThreadFilter {
   tenantId?: string | undefined
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined

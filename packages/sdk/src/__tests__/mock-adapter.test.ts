@@ -8,6 +8,7 @@ function makeChunk(overrides: Partial<EmbeddedChunk> = {}): EmbeddedChunk {
     id: overrides.id ?? `chunk-${overrides.idempotencyKey ?? 'key-1'}-${overrides.chunkIndex ?? 0}`,
     idempotencyKey: 'key-1',
     bucketId: 'src-1',
+    tenantId: 'tenant-1',
     documentId: 'document-1',
     content: 'Test chunk content',
     embedding: [0.1, 0.2, 0.3, 0.4],
@@ -130,7 +131,7 @@ describe('MockAdapter', () => {
     expect(document.name).toBe('Test')
     expect(document.status).toBe('complete')
 
-    const retrieved = await adapter.getDocument!(document.id)
+    const retrieved = await adapter.getDocument!(document.tenantId, document.id)
     expect(retrieved).toBeDefined()
     expect(retrieved!.id).toBe(document.id)
   })
@@ -143,8 +144,8 @@ describe('MockAdapter', () => {
       chunkCount: 0,
       status: 'processing',
     })
-    await adapter.updateDocumentStatus!(document.id, 'complete', 10)
-    const updated = await adapter.getDocument!(document.id)
+    await adapter.updateDocumentStatus!(document.tenantId, document.id, 'complete', 10)
+    const updated = await adapter.getDocument!(document.tenantId, document.id)
     expect(updated!.status).toBe('complete')
     expect(updated!.chunkCount).toBe(10)
   })
@@ -157,7 +158,7 @@ describe('MockAdapter', () => {
       makeChunk({ documentId: 'document-1', chunkIndex: 2, content: 'C2', idempotencyKey: 'k2' }),
       makeChunk({ documentId: 'document-1', chunkIndex: 3, content: 'C3', idempotencyKey: 'k3' }),
     ])
-    const result = await adapter.getChunksByRange!('model', 'document-1', 1, 2)
+    const result = await adapter.getChunksByRange!('model', 'tenant-1', 'document-1', 1, 2)
     expect(result).toHaveLength(2)
     expect(result[0]!.chunkIndex).toBe(1)
     expect(result[1]!.chunkIndex).toBe(2)

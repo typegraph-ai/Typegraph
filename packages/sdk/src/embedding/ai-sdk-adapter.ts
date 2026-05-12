@@ -20,7 +20,7 @@ import type { Embedder } from './provider.js'
  * const embedding: AISDKEmbeddingInput = {
  *   model: gateway.embeddingModel('voyage/voyage-4-large'),
  *   dimensions: 512,
- *   providerOptions: { voyage: { outputDimension: 512, inputType: 'source' } },
+ *   providerOptions: { voyage: { outputDimension: 512, inputType: 'document' } },
  * }
  * ```
  */
@@ -46,15 +46,7 @@ export function aiSdkEmbedder(config: AISDKEmbeddingInput): Embedder {
     async embed(input): Promise<number[][]> {
       const texts = input.texts
       if (texts.length === 0) return []
-      const providerOptionsWithInput = input.outputDimensions || input.inputType
-        ? {
-            ...(providerOptions ?? {}),
-            typegraph: {
-              ...(input.outputDimensions ? { outputDimensions: input.outputDimensions } : {}),
-              ...(input.inputType ? { inputType: input.inputType } : {}),
-            },
-          }
-        : providerOptions
+      const providerOptionsWithInput = normalizeEmbeddingProviderOptions(model, providerOptions, input)
       if (texts.length === 1) {
         const result = await embed({
           model,
@@ -74,6 +66,84 @@ export function aiSdkEmbedder(config: AISDKEmbeddingInput): Embedder {
       return result.embeddings as number[][]
     },
   }
+}
+
+type ProviderOptions = Record<string, Record<string, unknown>>
+
+function normalizeEmbeddingProviderOptions(
+  model: EmbeddingModelV3,
+  providerOptions: ProviderOptions | undefined,
+  input: { inputType?: 'document' | 'search' | undefined; outputDimensions?: number | undefined },
+): ProviderOptions | undefined {
+  const normalized = cloneProviderOptions(providerOptions)
+
+  // `typegraph` was never a real AI SDK provider namespace. Do not leak
+  // TypeGraph's internal EmbedInput shape to providers or AI Gateway.
+  delete normalized.typegraph
+
+  const provider = embeddingProviderNamespace(model, normalized)
+  if (provider === 'voyage') {
+    const voyage = { ...(normalized.voyage ?? {}) }
+    if (input.outputDimensions !== undefined) {
+      voyage.outputDimension = input.outputDimensions
+    }
+    const inputType = normalizeVoyageInputType(input.inputType ?? stringValue(voyage.inputType))
+    if (inputType) {
+      voyage.inputType = inputType
+    }
+    normalized.voyage = voyage
+  } else if (provider === 'openai') {
+    const openai = { ...(normalized.openai ?? {}) }
+    if (input.outputDimensions !== undefined) {
+      openai.dimensions = input.outputDimensions
+    }
+    normalized.openai = openai
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined
+}
+
+function cloneProviderOptions(providerOptions: ProviderOptions | undefined): ProviderOptions {
+  const cloned: ProviderOptions = {}
+  for (const [provider, options] of Object.entries(providerOptions ?? {})) {
+    cloned[provider] = { ...options }
+  }
+  return cloned
+}
+
+function embeddingProviderNamespace(
+  model: EmbeddingModelV3,
+  providerOptions: ProviderOptions,
+): 'voyage' | 'openai' | undefined {
+  const provider = model.provider.toLowerCase()
+  const modelId = model.modelId.toLowerCase()
+  if (
+    providerOptions.voyage
+    || provider === 'voyage'
+    || modelId.startsWith('voyage/')
+    || modelId.includes('voyage-')
+  ) {
+    return 'voyage'
+  }
+  if (
+    providerOptions.openai
+    || provider === 'openai'
+    || modelId.startsWith('openai/')
+    || modelId.includes('text-embedding')
+  ) {
+    return 'openai'
+  }
+  return undefined
+}
+
+function normalizeVoyageInputType(inputType: string | undefined): 'document' | 'query' | undefined {
+  if (inputType === 'search' || inputType === 'query') return 'query'
+  if (inputType === 'document') return 'document'
+  return undefined
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
 }
 
 /**

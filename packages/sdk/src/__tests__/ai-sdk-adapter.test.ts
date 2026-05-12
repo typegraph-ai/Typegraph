@@ -71,4 +71,32 @@ describe('aiSdkEmbedder', () => {
     // 5 texts with batch size 2 → ceil(5/2) = 3 calls
     expect(doEmbedSpy).toHaveBeenCalledTimes(3)
   })
+
+  it('maps TypeGraph search embeddings to Voyage query provider options', async () => {
+    const input = {
+      ...createMockAISDKModel({ provider: 'gateway', modelId: 'voyage/voyage-4-lite', dimensions: 4 }),
+      providerOptions: { voyage: { outputDimension: 512, inputType: 'search' } },
+    }
+    const doEmbedSpy = vi.spyOn(input.model, 'doEmbed')
+    const provider = aiSdkEmbedder(input)
+
+    await provider.embed({ texts: ['search text'], inputType: 'search', outputDimensions: 256 })
+
+    expect((doEmbedSpy.mock.calls[0]?.[0] as any).providerOptions).toEqual({
+      voyage: { outputDimension: 256, inputType: 'query' },
+    })
+  })
+
+  it('does not leak internal TypeGraph provider options to AI SDK providers', async () => {
+    const input = {
+      ...createMockAISDKModel({ provider: 'gateway', modelId: 'custom/custom-embed', dimensions: 4 }),
+      providerOptions: { typegraph: { outputDimensions: 512, inputType: 'search' } },
+    }
+    const doEmbedSpy = vi.spyOn(input.model, 'doEmbed')
+    const provider = aiSdkEmbedder(input as any)
+
+    await provider.embed({ texts: ['search text'], inputType: 'search', outputDimensions: 256 })
+
+    expect((doEmbedSpy.mock.calls[0]?.[0] as any).providerOptions).toBeUndefined()
+  })
 })

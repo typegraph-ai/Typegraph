@@ -57,16 +57,24 @@ function cacheKey(namespace: string | undefined, key: ExtractionCoreferenceCache
   const parts = [
     'typegraph',
     'coreference',
-    namespace ?? 'default',
-    key.tenantId ?? 'public',
-    key.bucketId,
-    key.groupId ? `group:${key.groupId}` : undefined,
-    key.userId ? `user:${key.userId}` : undefined,
-    key.agentId ? `agent:${key.agentId}` : undefined,
-    key.threadId ? `thread:${key.threadId}` : undefined,
+    encodePart(namespace ?? 'default'),
+    `tenant:${encodePart(key.tenantId ?? 'public')}`,
+    `graph:${encodePart(key.graphId ?? 'public')}`,
+    `bucket:${encodePart(key.bucketId)}`,
+    key.organizationId ? `organization:${encodePart(key.organizationId)}` : undefined,
+    key.groupId ? `group:${encodePart(key.groupId)}` : undefined,
+    key.userId ? `user:${encodePart(key.userId)}` : undefined,
+    key.agentId ? `agent:${encodePart(key.agentId)}` : undefined,
+    key.threadId ? `thread:${encodePart(key.threadId)}` : undefined,
+    key.documentId ? `document:${encodePart(key.documentId)}` : undefined,
+    !key.documentId && key.documentName ? `documentName:${encodePart(key.documentName)}` : undefined,
   ].filter((part): part is string => Boolean(part))
 
-  return parts.map(encodeURIComponent).join(':')
+  return parts.join(':')
+}
+
+function encodePart(value: string): string {
+  return encodeURIComponent(value)
 }
 
 function normalizeEntities(value: unknown): ExtractedEntity[] {

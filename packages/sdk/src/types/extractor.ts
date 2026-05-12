@@ -61,10 +61,12 @@ export interface ExtractionResult {
 
 export interface ExtractionCoreferenceCacheKey {
   tenantId?: string | undefined
+  organizationId?: string | undefined
   groupId?: string | undefined
   userId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
+  graphId?: string | undefined
   bucketId: string
   documentId?: string | undefined
   documentName?: string | undefined

@@ -7,10 +7,22 @@
  * import the derived helpers instead of maintaining their own predicate lists.
  */
 
+import type {
+  CompiledOntology,
+  OntologyConfig,
+  OntologyProfile,
+  OntologyResolutionConfig,
+  OntologyVocabularyRef,
+} from '../types/ontology.js'
+
 export const ENTITY_TYPES = [
   'person',
   'organization',
   'location',
+  'place',
+  'building',
+  'character',
+  'artifact',
   'product',
   'technology',
   'concept',
@@ -23,6 +35,33 @@ export const ENTITY_TYPES = [
   'law_regulation',
   'time_period',
   'creative_work',
+  'publication',
+  'condition',
+  'symptom',
+  'medication',
+  'procedure',
+  'test',
+  'anatomy',
+  'guideline',
+  'recommendation',
+  'party',
+  'court',
+  'jurisdiction',
+  'statute',
+  'regulation',
+  'case',
+  'contract',
+  'clause',
+  'obligation',
+  'permission',
+  'prohibition',
+  'account',
+  'contact',
+  'feature',
+  'ticket',
+  'metric',
+  'integration',
+  'vendor',
 ] as const
 
 export type EntityType = typeof ENTITY_TYPES[number]
@@ -30,7 +69,7 @@ export type EntityType = typeof ENTITY_TYPES[number]
 export const DEFAULT_ENTITY_TYPE: EntityType = 'concept'
 
 export interface EntityTypeSpec {
-  name: EntityType
+  name: string
   description: string
   examples: string[]
 }
@@ -47,8 +86,8 @@ export interface PredicateSpec {
   name: string
   description: string
   category: string
-  domain: readonly EntityType[] | readonly ['*']
-  range: readonly EntityType[] | readonly ['*']
+  domain: readonly string[] | readonly ['*']
+  range: readonly string[] | readonly ['*']
   aliases?: readonly PredicateAliasSpec[] | undefined
   symmetric?: boolean | undefined
   inverse?: string | undefined
@@ -92,20 +131,54 @@ export const ENTITY_TYPE_SPECS: readonly EntityTypeSpec[] = [
   { name: 'role', description: 'A title, job, office, function, responsibility, or persona.', examples: ['CTO', 'account owner'] },
   { name: 'law_regulation', description: 'A statute, policy, regulation, contract clause, or formal rule.', examples: ['GDPR', 'SOC2 policy'] },
   { name: 'time_period', description: 'A named period, fiscal window, era, version interval, or date range.', examples: ['Q1 2026', 'Series B stage'] },
-  { name: 'creative_work', description: 'A genuinely creative work such as a novel, poem, song, film, or artwork.', examples: ['Fear and Loathing in Las Vegas', 'Moby Dick'] },
+  { name: 'creative_work', description: 'A standalone named artistic or intellectual work such as a novel, play, poem, song, film, artwork, essay, sermon, or titled collection.', examples: ['Fear and Loathing in Las Vegas', 'Moby Dick'] },
+  { name: 'publication', description: 'A recurring or periodical published source such as a journal, newspaper, magazine, review, almanac, gazette, or periodical series.', examples: ['London Magazine', 'Berlinische Monatsschrift'] },
+  { name: 'place', description: 'A named place, region, settlement, landmark, or setting.', examples: ['Cairo, Egypt', 'Meryton'] },
+  { name: 'building', description: 'A named building, venue, estate, house, institution, or physical structure.', examples: ['Netherfield Park', 'the Governor’s house'] },
+  { name: 'character', description: 'A named fictional or narrative character.', examples: ['Elizabeth Bennet', 'Sherlock Holmes'] },
+  { name: 'artifact', description: 'A named object, artifact, vehicle, weapon, artwork, or physical item.', examples: ['the One Ring', 'HMS Beagle'] },
+  { name: 'condition', description: 'A disease, disorder, syndrome, diagnosis, or clinical condition.', examples: ['breast cancer', 'hypertension'] },
+  { name: 'symptom', description: 'A symptom, clinical sign, side effect, or presentation.', examples: ['fever', 'shortness of breath'] },
+  { name: 'medication', description: 'A drug, biologic, therapy, vaccine, or named medication class.', examples: ['pembrolizumab', 'metformin'] },
+  { name: 'procedure', description: 'A medical, surgical, diagnostic, or operational procedure.', examples: ['mastectomy', 'MRI'] },
+  { name: 'test', description: 'A clinical test, lab, imaging study, score, or assay.', examples: ['HER2 test', 'complete blood count'] },
+  { name: 'anatomy', description: 'A named body part, organ system, tissue, or anatomical structure.', examples: ['lung', 'left ventricle'] },
+  { name: 'guideline', description: 'A clinical, legal, policy, or operational guideline.', examples: ['NCCN Breast Cancer Guidelines'] },
+  { name: 'recommendation', description: 'A formal recommendation, requirement, instruction, or best-practice statement.', examples: ['annual screening recommendation'] },
+  { name: 'party', description: 'A legal, contractual, or business party.', examples: ['licensor', 'customer'] },
+  { name: 'court', description: 'A court, tribunal, judge panel, or adjudicating body.', examples: ['Supreme Court of Canada'] },
+  { name: 'jurisdiction', description: 'A legal jurisdiction, territory, court system, or regulatory domain.', examples: ['California', 'European Union'] },
+  { name: 'statute', description: 'A statute, act, code section, or legislative instrument.', examples: ['Clean Air Act'] },
+  { name: 'regulation', description: 'A regulation, rule, standard, or administrative requirement.', examples: ['GDPR Article 6'] },
+  { name: 'case', description: 'A legal case, matter, dispute, proceeding, or claim.', examples: ['Roe v. Wade'] },
+  { name: 'contract', description: 'A contract, agreement, order form, license, or legal instrument.', examples: ['master services agreement'] },
+  { name: 'clause', description: 'A clause, section, article, exhibit, or provision in a formal document.', examples: ['limitation of liability'] },
+  { name: 'obligation', description: 'A required duty, covenant, or responsibility.', examples: ['payment obligation'] },
+  { name: 'permission', description: 'A permitted right, authorization, license, or entitlement.', examples: ['redistribution right'] },
+  { name: 'prohibition', description: 'A ban, restriction, exclusion, or forbidden action.', examples: ['reverse engineering restriction'] },
+  { name: 'account', description: 'A customer account, workspace, tenant, opportunity, or CRM account.', examples: ['Acme account'] },
+  { name: 'contact', description: 'A named business contact, stakeholder, or external person profile.', examples: ['Dana at Acme'] },
+  { name: 'feature', description: 'A product feature, capability, module, or workflow.', examples: ['SSO', 'audit logs'] },
+  { name: 'ticket', description: 'A support ticket, issue, bug, request, incident, or case.', examples: ['AUTH-123'] },
+  { name: 'metric', description: 'A named business, product, or operational metric.', examples: ['ARR', 'churn rate'] },
+  { name: 'integration', description: 'A named product integration, connector, webhook, or interoperability path.', examples: ['Okta SSO integration'] },
+  { name: 'vendor', description: 'A vendor, supplier, partner, or third-party system.', examples: ['Salesforce', 'Okta'] },
 ]
 
-const person = ['person'] as const
+const person = ['person', 'character'] as const
 const personOrg = ['organization'] as const
-const org = ['organization'] as const
-const loc = ['location'] as const
+const org = ['organization', 'vendor'] as const
+const loc = ['location', 'place', 'building', 'jurisdiction'] as const
 const role = ['role'] as const
-const authoredWork = ['document', 'creative_work'] as const
-const workObject = ['document', 'creative_work', 'product', 'technology', 'concept'] as const
-const productTech = ['product', 'technology'] as const
-const issueProject = ['issue', 'project'] as const
+const authoredWork = ['document', 'creative_work', 'publication', 'contract', 'guideline'] as const
+const publishedWork = ['document', 'creative_work'] as const
+const publishedContainer = ['publication', 'document', 'creative_work'] as const
+const appearsInSubject = ['person', 'character', 'organization', 'location', 'place', 'building', 'artifact'] as const
+const workObject = ['document', 'creative_work', 'publication', 'contract', 'guideline', 'product', 'technology', 'concept'] as const
+const productTech = ['product', 'technology', 'feature', 'integration'] as const
+const issueProject = ['issue', 'ticket', 'project'] as const
 const eventMeeting = ['event', 'meeting'] as const
-const legal = ['law_regulation'] as const
+const legal = ['law_regulation', 'statute', 'regulation', 'contract', 'clause', 'obligation', 'permission', 'prohibition'] as const
 
 export const PREDICATE_SPECS: readonly PredicateSpec[] = [
   // Core / taxonomy
@@ -241,7 +314,8 @@ export const PREDICATE_SPECS: readonly PredicateSpec[] = [
   { name: 'DUPLICATES', category: 'Work / issue / document', description: 'An issue duplicates another issue.', domain: ['issue'], range: ['issue'], aliases: [{ name: 'DUPLICATE_OF' }] },
   { name: 'RESOLVES', category: 'Work / issue / document', description: 'An entity resolves, fixes, or closes an issue or project.', domain: ALL_TYPES, range: issueProject, aliases: [{ name: 'FIXES' }, { name: 'FIXED_IN' }, { name: 'CLOSES' }, { name: 'CLOSED' }, { name: 'RESOLVED_BY', swap: true }] },
   { name: 'CREATED', category: 'Work / issue / document', description: 'An entity created, launched, built, announced, or produced another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'BUILT' }, { name: 'DEVELOPED' }, { name: 'LAUNCHED' }, { name: 'ANNOUNCED' }, { name: 'PRODUCED' }, { name: 'MANUFACTURED' }, { name: 'INVENTED' }, { name: 'CREATED_BY', swap: true }] },
-  { name: 'AUTHORED', category: 'Work / issue / document', description: 'An entity authored, wrote, composed, or published a document or creative work.', domain: ['person', 'organization'], range: authoredWork, aliases: [{ name: 'WROTE' }, { name: 'COMPOSED' }, { name: 'PENNED' }, { name: 'PUBLISHED' }, { name: 'RELEASED' }, { name: 'WRITTEN_BY', swap: true }, { name: 'AUTHORED_BY', swap: true }, { name: 'COMPOSED_BY', swap: true }, { name: 'PUBLISHED_BY', swap: true }] },
+  { name: 'AUTHORED', category: 'Work / issue / document', description: 'An entity authored, wrote, composed, or created a document, creative work, or publication.', domain: ['person', 'organization'], range: authoredWork, aliases: [{ name: 'WROTE' }, { name: 'COMPOSED' }, { name: 'PENNED' }, { name: 'RELEASED' }, { name: 'WRITTEN_BY', swap: true }, { name: 'AUTHORED_BY', swap: true }, { name: 'COMPOSED_BY', swap: true }] },
+  { name: 'PUBLISHED_IN', category: 'Work / issue / document', description: 'A document or creative work was published, printed, or appeared in a publication, document, or larger work.', domain: publishedWork, range: publishedContainer, aliases: [{ name: 'APPEARED_IN' }, { name: 'PRINTED_IN' }, { name: 'PUBLISHED_IN' }] },
   { name: 'SIGNED', category: 'Work / issue / document', description: 'An entity signed a document, agreement, contract, or policy.', domain: ALL_TYPES, range: ['document', 'law_regulation'], aliases: [{ name: 'SIGNED_BY', swap: true }] },
   { name: 'APPROVED', category: 'Work / issue / document', description: 'An entity approved a document, project, issue, or decision.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'APPROVED_BY', swap: true }] },
   { name: 'REFERENCES', category: 'Work / issue / document', description: 'An entity references another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'REFERS_TO' }, { name: 'CITES' }, { name: 'MENTIONS' }] },
@@ -276,6 +350,31 @@ export const PREDICATE_SPECS: readonly PredicateSpec[] = [
   { name: 'CONQUERED', category: 'Historical / narrative', description: 'An entity conquered, captured, or seized another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'CAPTURED' }, { name: 'SEIZED' }] },
   { name: 'IMPRISONED_IN', category: 'Historical / narrative', description: 'A person or group was imprisoned, jailed, or detained in a location.', domain: ALL_TYPES, range: loc, aliases: [{ name: 'JAILED_IN' }, { name: 'DETAINED_IN' }, { name: 'HELD_IN' }] },
   { name: 'FOUGHT_IN', category: 'Historical / narrative', description: 'An entity fought, served, or battled in an event or conflict.', domain: ALL_TYPES, range: eventMeeting, aliases: [{ name: 'SERVED_IN' }, { name: 'BATTLED_IN' }] },
+  { name: 'CONFLICT_WITH', category: 'Historical / narrative', description: 'Two entities are in war, rivalry, conflict, opposition, or hostility.', domain: ALL_TYPES, range: ALL_TYPES, symmetric: true, aliases: [{ name: 'AT_WAR_WITH' }, { name: 'WAGED_WAR_AGAINST' }, { name: 'FOUGHT_AGAINST' }, { name: 'IN_CONFLICT_WITH' }] },
+  { name: 'APPEARS_IN', category: 'Historical / narrative', description: 'A character, person, organization, place, building, or artifact appears in a creative work, publication, or document.', domain: appearsInSubject, range: authoredWork, aliases: [{ name: 'FEATURED_IN' }] },
+  { name: 'LIVES_AT', category: 'Historical / narrative', description: 'A person or character lives, stays, resides, or is based at a place or building.', domain: person, range: loc, aliases: [{ name: 'RESIDES_AT' }, { name: 'STAYS_AT' }] },
+  { name: 'TRADES_THROUGH', category: 'Historical / narrative', description: 'An entity trades, exchanges, imports, exports, or routes goods through a place or entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'TRADES_WITH' }, { name: 'EXPORTS_TO' }, { name: 'IMPORTS_FROM' }] },
+
+  // Medical
+  { name: 'TREATS', category: 'Medical', description: 'A medication, procedure, or recommendation treats a condition.', domain: ['medication', 'procedure', 'recommendation'], range: ['condition', 'symptom'], aliases: [{ name: 'USED_TO_TREAT' }, { name: 'THERAPY_FOR' }] },
+  { name: 'DIAGNOSED_WITH', category: 'Medical', description: 'A person, patient group, or clinical case is diagnosed with a condition.', domain: ALL_TYPES, range: ['condition'], aliases: [{ name: 'HAS_DIAGNOSIS' }] },
+  { name: 'HAS_SYMPTOM', category: 'Medical', description: 'A condition, case, or person has a symptom or clinical finding.', domain: ALL_TYPES, range: ['symptom'], aliases: [{ name: 'PRESENTS_WITH' }] },
+  { name: 'INDICATED_FOR', category: 'Medical', description: 'A medication, procedure, test, or recommendation is indicated for a condition or patient group.', domain: ['medication', 'procedure', 'test', 'recommendation'], range: ALL_TYPES, aliases: [{ name: 'RECOMMENDED_FOR' }] },
+  { name: 'CONTRAINDICATED_WITH', category: 'Medical', description: 'A medication, procedure, or recommendation should not be used with an entity or condition.', domain: ['medication', 'procedure', 'recommendation'], range: ALL_TYPES, aliases: [{ name: 'AVOID_WITH' }] },
+  { name: 'MEASURED_BY', category: 'Medical', description: 'A condition, symptom, metric, or clinical status is measured by a test or assay.', domain: ALL_TYPES, range: ['test', 'metric'], aliases: [{ name: 'ASSESSED_BY' }, { name: 'TESTED_BY' }] },
+  { name: 'AFFECTS', category: 'Medical', description: 'An entity affects, impacts, or is associated with another entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'IMPACTS' }] },
+  { name: 'RECOMMENDS', category: 'Medical', description: 'A guideline, recommendation, law, policy, or organization recommends an action or entity.', domain: ['guideline', 'recommendation', 'organization', 'law_regulation'], range: ALL_TYPES, aliases: [{ name: 'ADVISES_USE_OF' }] },
+
+  // Legal
+  { name: 'APPLIES_TO', category: 'Legal', description: 'A law, rule, clause, guideline, or recommendation applies to an entity, party, conduct, or jurisdiction.', domain: legal, range: ALL_TYPES, aliases: [{ name: 'COVERS' }] },
+  { name: 'ASSIGNS_OBLIGATION_TO', category: 'Legal', description: 'A contract, clause, regulation, or policy assigns a duty or obligation to a party.', domain: legal, range: ['party', 'person', 'organization'], aliases: [{ name: 'OBLIGATES' }, { name: 'REQUIRES_OF' }] },
+  { name: 'HAS_CLAUSE', category: 'Legal', description: 'A contract, statute, or legal document contains a clause or provision.', domain: ['contract', 'document', 'law_regulation', 'statute', 'regulation'], range: ['clause', 'obligation', 'permission', 'prohibition'], aliases: [{ name: 'CONTAINS_CLAUSE' }] },
+  { name: 'GRANTS_PERMISSION', category: 'Legal', description: 'A legal instrument grants, licenses, permits, or authorizes a right or permission.', domain: legal, range: ['permission', 'party', 'person', 'organization'], aliases: [{ name: 'LICENSES' }, { name: 'AUTHORIZES' }] },
+
+  // SaaS / customer operations
+  { name: 'REQUESTED', category: 'SaaS', description: 'A customer, user, contact, account, or organization requested a feature, support action, or change.', domain: ['account', 'contact', 'organization', 'person'], range: ['feature', 'ticket', 'project', 'product', 'technology'], aliases: [{ name: 'ASKED_FOR' }] },
+  { name: 'REPORTED', category: 'SaaS', description: 'A customer, user, contact, account, or organization reported an issue, ticket, symptom, or event.', domain: ['account', 'contact', 'organization', 'person'], range: ['ticket', 'issue', 'event'], aliases: [{ name: 'FILED' }] },
+  { name: 'RENEWING', category: 'SaaS', description: 'An account, customer, or organization is renewing, expanding, or contracting for a product or service.', domain: ['account', 'organization'], range: ['product', 'project', 'contract'], aliases: [{ name: 'RENEWS' }, { name: 'EXPANDING' }] },
 ]
 
 export const VALID_ENTITY_TYPES = new Set<string>(ENTITY_TYPES)
@@ -312,30 +411,627 @@ export const ALIAS_ASSIGNMENT_CUES = new Set([
 ])
 
 const TYPE_AFFINITY_GROUPS: readonly (readonly EntityType[])[] = [
-  ['organization', 'product', 'technology'],
-  ['project', 'issue'],
+  ['organization', 'product', 'technology', 'vendor', 'account', 'integration', 'feature'],
+  ['project', 'issue', 'ticket'],
   ['event', 'meeting'],
-  ['document', 'creative_work'],
+  ['document', 'creative_work', 'publication', 'contract', 'guideline', 'case'],
+  ['location', 'place', 'building', 'jurisdiction'],
+  ['law_regulation', 'statute', 'regulation', 'contract', 'clause', 'obligation', 'permission', 'prohibition'],
+  ['condition', 'symptom', 'medication', 'procedure', 'test', 'anatomy', 'guideline', 'recommendation'],
+  ['person', 'character', 'contact'],
 ]
 
-export function typeAffinityGroup(type: string | undefined): readonly EntityType[] | undefined {
-  if (!type || !VALID_ENTITY_TYPES.has(type)) return undefined
-  return TYPE_AFFINITY_GROUPS.find(group => group.includes(type as EntityType))
+export const ONTOLOGY_PROFILES = ['general', 'literary', 'medical', 'legal', 'saas'] as const satisfies readonly OntologyProfile[]
+
+function vocab(
+  vocabulary: string,
+  id: string | undefined,
+  label: string,
+  uri: string | undefined,
+  match: OntologyVocabularyRef['match'] = 'close',
+): OntologyVocabularyRef {
+  return {
+    vocabulary,
+    ...(id ? { id } : {}),
+    label,
+    ...(uri ? { uri } : {}),
+    match,
+  }
 }
 
-export function typesShareAffinity(a: string | undefined, b: string | undefined): boolean {
+export const ONTOLOGY_VOCABULARY_SOURCES = {
+  schemaOrg: 'schema.org',
+  wikidata: 'Wikidata',
+  dbpedia: 'DBpedia Ontology',
+  cidocCrm: 'CIDOC CRM',
+  bibframe: 'BIBFRAME',
+  fhir: 'HL7 FHIR',
+  snomedCt: 'SNOMED CT',
+  loinc: 'LOINC',
+  rxNorm: 'RxNorm',
+  mesh: 'MeSH',
+  hpo: 'Human Phenotype Ontology',
+  mondo: 'Mondo Disease Ontology',
+  ncit: 'NCI Thesaurus',
+  eli: 'European Legislation Identifier',
+  akomaNtoso: 'Akoma Ntoso',
+  legalRuleMl: 'LegalRuleML',
+  openTelemetry: 'OpenTelemetry Semantic Conventions',
+  tmForumSid: 'TM Forum SID',
+  itil: 'ITIL',
+} as const
+
+export const BUILT_IN_ENTITY_VOCABULARY: Record<string, readonly OntologyVocabularyRef[]> = {
+  person: [
+    vocab('schema.org', 'Person', 'Person', 'https://schema.org/Person', 'exact'),
+    vocab('Wikidata', 'Q5', 'human', 'https://www.wikidata.org/wiki/Q5', 'close'),
+  ],
+  organization: [
+    vocab('schema.org', 'Organization', 'Organization', 'https://schema.org/Organization', 'exact'),
+    vocab('Wikidata', 'Q43229', 'organization', 'https://www.wikidata.org/wiki/Q43229', 'close'),
+  ],
+  location: [
+    vocab('schema.org', 'Place', 'Place', 'https://schema.org/Place', 'broad'),
+  ],
+  place: [
+    vocab('schema.org', 'Place', 'Place', 'https://schema.org/Place', 'exact'),
+    vocab('Wikidata', 'Q17334923', 'location', 'https://www.wikidata.org/wiki/Q17334923', 'broad'),
+  ],
+  building: [
+    vocab('schema.org', 'Place', 'Place', 'https://schema.org/Place', 'broad'),
+    vocab('CIDOC CRM', 'E24', 'Physical Human-Made Thing', 'https://cidoc-crm.org/Entity/e24-physical-human-made-thing/version-7.1.3', 'broad'),
+  ],
+  product: [
+    vocab('schema.org', 'Product', 'Product', 'https://schema.org/Product', 'exact'),
+  ],
+  technology: [
+    vocab('schema.org', 'SoftwareApplication', 'SoftwareApplication', 'https://schema.org/SoftwareApplication', 'close'),
+  ],
+  event: [
+    vocab('schema.org', 'Event', 'Event', 'https://schema.org/Event', 'exact'),
+    vocab('CIDOC CRM', 'E5', 'Event', 'https://cidoc-crm.org/Entity/e5-event/version-7.1.3', 'close'),
+  ],
+  document: [
+    vocab('schema.org', 'CreativeWork', 'CreativeWork', 'https://schema.org/CreativeWork', 'broad'),
+    vocab('BIBFRAME', 'Work', 'Work', 'https://id.loc.gov/ontologies/bibframe/Work', 'close'),
+  ],
+  creative_work: [
+    vocab('schema.org', 'CreativeWork', 'CreativeWork', 'https://schema.org/CreativeWork', 'exact'),
+    vocab('BIBFRAME', 'Work', 'Work', 'https://id.loc.gov/ontologies/bibframe/Work', 'close'),
+  ],
+  publication: [
+    vocab('schema.org', 'Periodical', 'Periodical', 'https://schema.org/Periodical', 'exact'),
+    vocab('BIBFRAME', 'Serial', 'Serial', 'https://id.loc.gov/ontologies/bibframe/Serial', 'close'),
+    vocab('Wikidata', 'Q1002697', 'periodical literature', 'https://www.wikidata.org/wiki/Q1002697', 'close'),
+  ],
+  character: [
+    vocab('schema.org', 'Person', 'Person', 'https://schema.org/Person', 'close'),
+    vocab('CIDOC CRM', 'E21', 'Person', 'https://cidoc-crm.org/Entity/e21-person/version-7.1.3', 'close'),
+  ],
+  artifact: [
+    vocab('CIDOC CRM', 'E22', 'Human-Made Object', 'https://cidoc-crm.org/Entity/e22-human-made-object/version-7.1.3', 'close'),
+    vocab('schema.org', 'Thing', 'Thing', 'https://schema.org/Thing', 'broad'),
+  ],
+  condition: [
+    vocab('schema.org', 'MedicalCondition', 'MedicalCondition', 'https://schema.org/MedicalCondition', 'close'),
+    vocab('HL7 FHIR', 'Condition', 'Condition resource', 'https://hl7.org/fhir/condition.html', 'close'),
+    vocab('SNOMED CT', '64572001', 'Disease', undefined, 'broad'),
+    vocab('Mondo Disease Ontology', 'MONDO:0000001', 'disease or disorder', 'https://purl.obolibrary.org/obo/MONDO_0000001', 'broad'),
+  ],
+  symptom: [
+    vocab('SNOMED CT', '404684003', 'Clinical finding', undefined, 'broad'),
+    vocab('Human Phenotype Ontology', 'HP:0000118', 'Phenotypic abnormality', 'https://purl.obolibrary.org/obo/HP_0000118', 'broad'),
+  ],
+  medication: [
+    vocab('schema.org', 'Drug', 'Drug', 'https://schema.org/Drug', 'close'),
+    vocab('HL7 FHIR', 'Medication', 'Medication resource', 'https://hl7.org/fhir/medication.html', 'close'),
+    vocab('SNOMED CT', '373873005', 'Pharmaceutical / biologic product', undefined, 'broad'),
+    vocab('RxNorm', undefined, 'Normalized drug vocabulary', 'https://www.nlm.nih.gov/research/umls/rxnorm/index.html', 'related'),
+  ],
+  procedure: [
+    vocab('schema.org', 'MedicalProcedure', 'MedicalProcedure', 'https://schema.org/MedicalProcedure', 'close'),
+    vocab('HL7 FHIR', 'Procedure', 'Procedure resource', 'https://hl7.org/fhir/procedure.html', 'close'),
+    vocab('SNOMED CT', '71388002', 'Procedure', undefined, 'broad'),
+  ],
+  test: [
+    vocab('schema.org', 'MedicalTest', 'MedicalTest', 'https://schema.org/MedicalTest', 'close'),
+    vocab('HL7 FHIR', 'Observation', 'Observation resource', 'https://hl7.org/fhir/observation.html', 'close'),
+    vocab('LOINC', undefined, 'Laboratory and clinical observation vocabulary', 'https://loinc.org/', 'related'),
+  ],
+  anatomy: [
+    vocab('schema.org', 'AnatomicalStructure', 'AnatomicalStructure', 'https://schema.org/AnatomicalStructure', 'close'),
+    vocab('HL7 FHIR', 'BodyStructure', 'BodyStructure resource', 'https://hl7.org/fhir/bodystructure.html', 'close'),
+    vocab('SNOMED CT', '123037004', 'Body structure', undefined, 'broad'),
+  ],
+  guideline: [
+    vocab('HL7 FHIR', 'PlanDefinition', 'PlanDefinition resource', 'https://hl7.org/fhir/plandefinition.html', 'close'),
+    vocab('NCI Thesaurus', undefined, 'Clinical guideline vocabulary', 'https://ncit.nci.nih.gov/', 'related'),
+  ],
+  recommendation: [
+    vocab('HL7 FHIR', 'CarePlan', 'CarePlan resource', 'https://hl7.org/fhir/careplan.html', 'close'),
+  ],
+  jurisdiction: [
+    vocab('European Legislation Identifier', 'Jurisdiction', 'Jurisdiction', 'http://data.europa.eu/eli/ontology#jurisdiction', 'close'),
+  ],
+  statute: [
+    vocab('European Legislation Identifier', 'LegalResource', 'LegalResource', 'http://data.europa.eu/eli/ontology#LegalResource', 'close'),
+    vocab('Akoma Ntoso', 'act', 'act', 'http://docs.oasis-open.org/legaldocml/ns/akn/3.0', 'close'),
+  ],
+  regulation: [
+    vocab('European Legislation Identifier', 'LegalResource', 'LegalResource', 'http://data.europa.eu/eli/ontology#LegalResource', 'close'),
+  ],
+  case: [
+    vocab('Akoma Ntoso', 'judgment', 'judgment', 'http://docs.oasis-open.org/legaldocml/ns/akn/3.0', 'close'),
+  ],
+  contract: [
+    vocab('schema.org', 'CreativeWork', 'CreativeWork', 'https://schema.org/CreativeWork', 'broad'),
+    vocab('Akoma Ntoso', 'documentCollection', 'documentCollection', 'http://docs.oasis-open.org/legaldocml/ns/akn/3.0', 'related'),
+  ],
+  clause: [
+    vocab('European Legislation Identifier', 'LegalResourceSubdivision', 'LegalResourceSubdivision', 'http://data.europa.eu/eli/ontology#LegalResourceSubdivision', 'close'),
+    vocab('Akoma Ntoso', 'article', 'article / provision', 'http://docs.oasis-open.org/legaldocml/ns/akn/3.0', 'close'),
+  ],
+  obligation: [
+    vocab('LegalRuleML', 'Obligation', 'Obligation', 'http://docs.oasis-open.org/legalruleml/ns/v1.0/', 'close'),
+  ],
+  permission: [
+    vocab('LegalRuleML', 'Permission', 'Permission', 'http://docs.oasis-open.org/legalruleml/ns/v1.0/', 'close'),
+  ],
+  prohibition: [
+    vocab('LegalRuleML', 'Prohibition', 'Prohibition', 'http://docs.oasis-open.org/legalruleml/ns/v1.0/', 'close'),
+  ],
+  account: [
+    vocab('schema.org', 'Organization', 'Organization', 'https://schema.org/Organization', 'close'),
+    vocab('TM Forum SID', 'Customer', 'Customer / customer account', undefined, 'close'),
+  ],
+  contact: [
+    vocab('schema.org', 'Person', 'Person', 'https://schema.org/Person', 'close'),
+    vocab('TM Forum SID', 'CustomerContact', 'Customer contact', undefined, 'close'),
+  ],
+  feature: [
+    vocab('schema.org', 'SoftwareApplication', 'SoftwareApplication', 'https://schema.org/SoftwareApplication', 'related'),
+  ],
+  ticket: [
+    vocab('ITIL', 'Incident', 'Incident / service request', undefined, 'close'),
+  ],
+  metric: [
+    vocab('OpenTelemetry Semantic Conventions', 'metric', 'Metric', 'https://opentelemetry.io/docs/specs/semconv/general/metrics/', 'related'),
+  ],
+  integration: [
+    vocab('schema.org', 'SoftwareApplication', 'SoftwareApplication', 'https://schema.org/SoftwareApplication', 'related'),
+  ],
+  vendor: [
+    vocab('schema.org', 'Organization', 'Organization', 'https://schema.org/Organization', 'close'),
+    vocab('TM Forum SID', 'Supplier', 'Supplier / partner', undefined, 'close'),
+  ],
+}
+
+export const BUILT_IN_RELATION_VOCABULARY: Record<string, readonly OntologyVocabularyRef[]> = {
+  IS_A: [
+    vocab('RDF', 'type', 'rdf:type', 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type', 'close'),
+    vocab('Wikidata', 'P31', 'instance of', 'https://www.wikidata.org/wiki/Property:P31', 'close'),
+  ],
+  PART_OF: [
+    vocab('Wikidata', 'P361', 'part of', 'https://www.wikidata.org/wiki/Property:P361', 'close'),
+  ],
+  CONTAINS: [
+    vocab('Wikidata', 'P527', 'has part(s)', 'https://www.wikidata.org/wiki/Property:P527', 'close'),
+  ],
+  EQUIVALENT_TO: [
+    vocab('OWL', 'sameAs', 'owl:sameAs', 'http://www.w3.org/2002/07/owl#sameAs', 'close'),
+    vocab('SKOS', 'exactMatch', 'skos:exactMatch', 'http://www.w3.org/2004/02/skos/core#exactMatch', 'close'),
+  ],
+  AUTHORED: [
+    vocab('schema.org', 'author', 'author', 'https://schema.org/author', 'close'),
+    vocab('Wikidata', 'P50', 'author', 'https://www.wikidata.org/wiki/Property:P50', 'close'),
+  ],
+  PUBLISHED_IN: [
+    vocab('schema.org', 'isPartOf', 'is part of', 'https://schema.org/isPartOf', 'close'),
+    vocab('Wikidata', 'P1433', 'published in', 'https://www.wikidata.org/wiki/Property:P1433', 'exact'),
+  ],
+  LOCATED_IN: [
+    vocab('schema.org', 'location', 'location', 'https://schema.org/location', 'close'),
+    vocab('Wikidata', 'P131', 'located in the administrative territorial entity', 'https://www.wikidata.org/wiki/Property:P131', 'related'),
+  ],
+  WORKS_FOR: [
+    vocab('schema.org', 'worksFor', 'worksFor', 'https://schema.org/worksFor', 'close'),
+    vocab('Wikidata', 'P108', 'employer', 'https://www.wikidata.org/wiki/Property:P108', 'close'),
+  ],
+  MARRIED: [
+    vocab('schema.org', 'spouse', 'spouse', 'https://schema.org/spouse', 'close'),
+    vocab('Wikidata', 'P26', 'spouse', 'https://www.wikidata.org/wiki/Property:P26', 'close'),
+  ],
+  PARENT_OF: [
+    vocab('schema.org', 'parent', 'parent', 'https://schema.org/parent', 'close'),
+  ],
+  APPEARS_IN: [
+    vocab('Wikidata', 'P1441', 'present in work', 'https://www.wikidata.org/wiki/Property:P1441', 'close'),
+  ],
+  TREATS: [
+    vocab('schema.org', 'Drug', 'drug / medical therapy relation', 'https://schema.org/Drug', 'related'),
+    vocab('HL7 FHIR', 'ClinicalUseDefinition', 'clinical use', 'https://hl7.org/fhir/clinicalusedefinition.html', 'related'),
+  ],
+  DIAGNOSED_WITH: [
+    vocab('HL7 FHIR', 'Condition.subject', 'condition on subject', 'https://hl7.org/fhir/condition-definitions.html#Condition.subject', 'close'),
+  ],
+  HAS_SYMPTOM: [
+    vocab('SNOMED CT', '404684003', 'Clinical finding', undefined, 'broad'),
+  ],
+  INDICATED_FOR: [
+    vocab('HL7 FHIR', 'ClinicalUseDefinition.indication', 'clinical indication', 'https://hl7.org/fhir/clinicalusedefinition.html', 'close'),
+  ],
+  CONTRAINDICATED_WITH: [
+    vocab('HL7 FHIR', 'ClinicalUseDefinition.contraindication', 'contraindication', 'https://hl7.org/fhir/clinicalusedefinition.html', 'close'),
+  ],
+  MEASURED_BY: [
+    vocab('HL7 FHIR', 'Observation.code', 'observation code', 'https://hl7.org/fhir/observation-definitions.html#Observation.code', 'related'),
+    vocab('LOINC', undefined, 'clinical observation coding', 'https://loinc.org/', 'related'),
+  ],
+  APPLIES_TO: [
+    vocab('European Legislation Identifier', 'relevant_for', 'relevant for', 'http://data.europa.eu/eli/ontology#relevant_for', 'related'),
+  ],
+  ASSIGNS_OBLIGATION_TO: [
+    vocab('LegalRuleML', 'Obligation', 'deontic obligation', 'http://docs.oasis-open.org/legalruleml/ns/v1.0/', 'close'),
+  ],
+  GRANTS_PERMISSION: [
+    vocab('LegalRuleML', 'Permission', 'deontic permission', 'http://docs.oasis-open.org/legalruleml/ns/v1.0/', 'close'),
+  ],
+  PROHIBITS: [
+    vocab('LegalRuleML', 'Prohibition', 'deontic prohibition', 'http://docs.oasis-open.org/legalruleml/ns/v1.0/', 'close'),
+  ],
+  PERMITS: [
+    vocab('LegalRuleML', 'Permission', 'deontic permission', 'http://docs.oasis-open.org/legalruleml/ns/v1.0/', 'close'),
+  ],
+  REQUESTED: [
+    vocab('ITIL', 'ServiceRequest', 'service request', undefined, 'close'),
+  ],
+  REPORTED: [
+    vocab('ITIL', 'Incident', 'incident', undefined, 'close'),
+  ],
+  INTEGRATES_WITH: [
+    vocab('OpenTelemetry Semantic Conventions', 'service', 'service dependency / telemetry relation', 'https://opentelemetry.io/docs/specs/semconv/resource/', 'related'),
+  ],
+}
+
+const PROFILE_ENTITY_TYPES: Record<OntologyProfile, readonly string[]> = {
+  general: [
+    'person', 'organization', 'location', 'product', 'technology', 'concept', 'event',
+    'meeting', 'document', 'project', 'issue', 'role', 'law_regulation', 'time_period',
+    'creative_work', 'publication',
+  ],
+  literary: [
+    'person', 'character', 'organization', 'location', 'place', 'building', 'artifact',
+    'concept', 'event', 'document', 'creative_work', 'publication', 'role', 'time_period',
+  ],
+  medical: [
+    'person', 'organization', 'location', 'concept', 'document', 'condition', 'symptom',
+    'medication', 'procedure', 'test', 'anatomy', 'guideline', 'recommendation', 'time_period',
+  ],
+  legal: [
+    'person', 'organization', 'location', 'jurisdiction', 'document', 'law_regulation',
+    'statute', 'regulation', 'case', 'contract', 'clause', 'party', 'court', 'obligation',
+    'permission', 'prohibition', 'concept', 'time_period',
+  ],
+  saas: [
+    'person', 'organization', 'account', 'contact', 'product', 'technology', 'feature',
+    'ticket', 'issue', 'project', 'meeting', 'document', 'contract', 'metric', 'integration',
+    'vendor', 'concept', 'time_period',
+  ],
+}
+
+const PROFILE_PREDICATE_CATEGORIES: Record<OntologyProfile, readonly string[]> = {
+  general: [
+    'Core / taxonomy',
+    'People / roles / orgs',
+    'People / personal',
+    'Business / organization',
+    'Product / technical',
+    'Work / issue / document',
+    'Event / meeting / location / legal',
+    'Historical / narrative',
+  ],
+  literary: [
+    'Core / taxonomy',
+    'People / roles / orgs',
+    'People / personal',
+    'Work / issue / document',
+    'Event / meeting / location / legal',
+    'Historical / narrative',
+  ],
+  medical: ['Core / taxonomy', 'Event / meeting / location / legal', 'Work / issue / document', 'Medical'],
+  legal: ['Core / taxonomy', 'People / roles / orgs', 'Business / organization', 'Event / meeting / location / legal', 'Legal'],
+  saas: [
+    'Core / taxonomy',
+    'People / roles / orgs',
+    'Business / organization',
+    'Product / technical',
+    'Work / issue / document',
+    'Event / meeting / location / legal',
+    'SaaS',
+  ],
+}
+
+const DEFAULT_RESOLUTION: Required<OntologyResolutionConfig> = {
+  genericAliasBlocklist: [
+    'indians', 'whites', 'the indians', 'the whites', 'natives', 'foreigners',
+    'men', 'women', 'people', 'citizens', 'inhabitants', 'soldiers', 'troops',
+  ],
+  coordinateEntityTypes: ['location', 'place', 'building', 'jurisdiction'],
+  coordinatePeerNames: [
+    'mexico', 'guatemala', 'france', 'germany', 'belize', 'honduras',
+    'uxmal', 'mayapan', 'chichen itza', 'chichen-itza',
+  ],
+  qualifiedPlaceSecondParts: [
+    'egypt', 'kentucky', 'yucatan', 'yucatán', 'massachusetts', 'california',
+    'texas', 'new york', 'england', 'france', 'germany', 'italy', 'spain',
+    'guatemala', 'mexico', 'canada',
+  ],
+}
+
+const PROFILE_PROMPT_GUIDELINES: Record<OntologyProfile, { entityGuidelines: string[]; relationGuidelines: string[] }> = {
+  general: { entityGuidelines: [], relationGuidelines: [] },
+  literary: {
+    entityGuidelines: [
+      'For literary or historical text, extract named characters, titled people, named places, buildings, artifacts, events, standalone creative works, and publications.',
+      'Use creative_work only for independent named works such as novels, plays, poems, songs, films, artworks, essays, sermons, or titled collections. Use publication for journals, newspapers, magazines, reviews, almanacs, gazettes, and periodicals.',
+      'Do not extract the current source document, generated source/chunk labels, unnamed chapters, structural headings, or storage labels as creative works or publications.',
+      'Only extract a creative work or publication when it is named and materially participates in a fact. Omit title-like items that appear only in footnotes, lists, citations, or as minor context with no useful relationship.',
+      'Do not treat broad ethnic, racial, class, or nationality labels as aliases for named entities unless the text gives a proper group name.',
+      'Split peer coordinate lists such as "Mexico, Guatemala" or "Uxmal, Mayapan, and Chichen-Itza" into separate entities, but preserve qualified places such as "Cairo, Egypt".',
+    ],
+    relationGuidelines: [
+      'Use CONFLICT_WITH for wars, hostilities, rivalries, or named conflicts between two entities.',
+      'Use APPEARS_IN for characters, people, organizations, places, buildings, or artifacts that belong to a named creative work, publication, or document.',
+      'Use PUBLISHED_IN when a document or creative work appears in a journal, newspaper, magazine, review, almanac, gazette, periodical, document, or larger work.',
+    ],
+  },
+  medical: {
+    entityGuidelines: ['Prefer precise clinical entities: condition, symptom, medication, procedure, test, anatomy, guideline, and recommendation.'],
+    relationGuidelines: ['Use TREATS, INDICATED_FOR, CONTRAINDICATED_WITH, MEASURED_BY, HAS_SYMPTOM, and RECOMMENDS for clinical guideline facts.'],
+  },
+  legal: {
+    entityGuidelines: ['Prefer legal entities: party, court, jurisdiction, statute, regulation, case, contract, clause, obligation, permission, and prohibition.'],
+    relationGuidelines: ['Use APPLIES_TO, ASSIGNS_OBLIGATION_TO, HAS_CLAUSE, GRANTS_PERMISSION, PROHIBITS, PERMITS, AMENDS, and REPEALS for legal facts.'],
+  },
+  saas: {
+    entityGuidelines: ['Prefer SaaS entities: account, contact, feature, ticket, metric, integration, vendor, product, project, and meeting.'],
+    relationGuidelines: ['Use REQUESTED, REPORTED, RENEWING, USES, INTEGRATES_WITH, ASSIGNED_TO, RESOLVES, BLOCKS, and DESCRIBES for customer/product facts.'],
+  },
+}
+
+function normalizeProfile(value: unknown): OntologyProfile | undefined {
+  return typeof value === 'string' && (ONTOLOGY_PROFILES as readonly string[]).includes(value)
+    ? value as OntologyProfile
+    : undefined
+}
+
+function stableOntologyStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stableOntologyStringify).join(',')}]`
+  const obj = value as Record<string, unknown>
+  return `{${Object.keys(obj).sort().map(key => `${JSON.stringify(key)}:${stableOntologyStringify(obj[key])}`).join(',')}}`
+}
+
+function stableHash(value: unknown): string {
+  const input = stableOntologyStringify(value)
+  let h = 5381
+  for (let i = 0; i < input.length; i++) h = ((h << 5) + h + input.charCodeAt(i)) | 0
+  return (h >>> 0).toString(36)
+}
+
+function vocabularyKey(ref: OntologyVocabularyRef): string {
+  return [
+    ref.vocabulary.trim().toLowerCase(),
+    ref.id?.trim().toLowerCase() ?? '',
+    ref.uri?.trim().toLowerCase() ?? '',
+    ref.label?.trim().toLowerCase() ?? '',
+  ].join('|')
+}
+
+function dedupeVocabularyRefs(refs: readonly OntologyVocabularyRef[]): OntologyVocabularyRef[] {
+  const byKey = new Map<string, OntologyVocabularyRef>()
+  for (const ref of refs) {
+    const vocabulary = ref.vocabulary.trim()
+    if (!vocabulary) continue
+    const normalized: OntologyVocabularyRef = {
+      vocabulary,
+      ...(ref.id?.trim() ? { id: ref.id.trim() } : {}),
+      ...(ref.uri?.trim() ? { uri: ref.uri.trim() } : {}),
+      ...(ref.label?.trim() ? { label: ref.label.trim() } : {}),
+      ...(ref.match ? { match: ref.match } : {}),
+    }
+    byKey.set(vocabularyKey(normalized), normalized)
+  }
+  return [...byKey.values()]
+}
+
+export function compileOntology(config?: OntologyConfig): CompiledOntology {
+  const profiles = (config?.profiles ?? ['general'])
+    .map(normalizeProfile)
+    .filter((profile): profile is OntologyProfile => !!profile)
+  const activeProfiles = profiles.length > 0 ? [...new Set(profiles)] : ['general' as const]
+
+  const entityTypes = new Set<string>()
+  for (const profile of activeProfiles) {
+    for (const type of PROFILE_ENTITY_TYPES[profile]) entityTypes.add(type)
+  }
+  for (const [type, entity] of Object.entries(config?.entities ?? {})) {
+    const normalized = type.trim()
+    if (!normalized) continue
+    entityTypes.add(normalized)
+    if (entity.extends) entityTypes.add(entity.extends)
+  }
+
+  const categories = new Set(activeProfiles.flatMap(profile => PROFILE_PREDICATE_CATEGORIES[profile]))
+  const relationSpecs = new Map<string, PredicateSpec>()
+  for (const spec of PREDICATE_SPECS) {
+    if (categories.has(spec.category)) relationSpecs.set(spec.name, spec)
+  }
+  for (const [name, relation] of Object.entries(config?.relations ?? {})) {
+    const normalized = sanitizePredicate(name)
+    if (!normalized) continue
+    relationSpecs.set(normalized, {
+      name: normalized,
+      category: 'Custom',
+      description: relation.description ?? normalized.toLowerCase().replace(/_/g, ' '),
+      domain: relation.from ?? ALL_TYPES,
+      range: relation.to ?? ALL_TYPES,
+      symmetric: relation.symmetric,
+      inverse: relation.inverse,
+      aliases: relation.aliases?.map(alias => ({ name: alias })),
+    })
+  }
+
+  const resolution: Required<OntologyResolutionConfig> = {
+    genericAliasBlocklist: [...new Set([
+      ...(DEFAULT_RESOLUTION.genericAliasBlocklist ?? []),
+      ...(config?.resolution?.genericAliasBlocklist ?? []),
+    ].map(normalizeOntologyToken).filter(Boolean))],
+    coordinateEntityTypes: [...new Set([
+      ...(DEFAULT_RESOLUTION.coordinateEntityTypes ?? []),
+      ...(config?.resolution?.coordinateEntityTypes ?? []),
+    ].map(normalizeOntologyToken).filter(Boolean))],
+    coordinatePeerNames: [...new Set([
+      ...(DEFAULT_RESOLUTION.coordinatePeerNames ?? []),
+      ...(config?.resolution?.coordinatePeerNames ?? []),
+    ].map(normalizeOntologyToken).filter(Boolean))],
+    qualifiedPlaceSecondParts: [...new Set([
+      ...(DEFAULT_RESOLUTION.qualifiedPlaceSecondParts ?? []),
+      ...(config?.resolution?.qualifiedPlaceSecondParts ?? []),
+    ].map(normalizeOntologyToken).filter(Boolean))],
+  }
+
+  const prompt = {
+    entityGuidelines: [...new Set([
+      ...activeProfiles.flatMap(profile => PROFILE_PROMPT_GUIDELINES[profile].entityGuidelines),
+      ...(config?.prompt?.entityGuidelines ?? []),
+    ].map(item => item.trim()).filter(Boolean))],
+    relationGuidelines: [...new Set([
+      ...activeProfiles.flatMap(profile => PROFILE_PROMPT_GUIDELINES[profile].relationGuidelines),
+      ...(config?.prompt?.relationGuidelines ?? []),
+    ].map(item => item.trim()).filter(Boolean))],
+  }
+
+  const compiledConfig: OntologyConfig = {
+    version: config?.version ?? activeProfiles.join('+'),
+    profiles: activeProfiles,
+    ...(config?.entities ? { entities: config.entities } : {}),
+    ...(config?.relations ? { relations: config.relations } : {}),
+    ...(config?.resolution ? { resolution: config.resolution } : {}),
+    ...(config?.prompt ? { prompt: config.prompt } : {}),
+    ...(config?.metadata ? { metadata: config.metadata } : {}),
+  }
+
+  const relationNames = [...relationSpecs.keys()]
+  const relationAliases: Record<string, string> = {}
+  for (const spec of relationSpecs.values()) {
+    relationAliases[sanitizePredicate(spec.name)] = spec.name
+    for (const alias of spec.aliases ?? []) relationAliases[sanitizePredicate(alias.name)] = spec.name
+  }
+
+  const entityVocabulary: Record<string, OntologyVocabularyRef[]> = {}
+  const sortedEntityTypes = [...entityTypes].sort()
+  for (const type of sortedEntityTypes) {
+    const custom = config?.entities?.[type]
+    const inheritedType = custom?.extends?.trim()
+    const refs = dedupeVocabularyRefs([
+      ...(inheritedType ? BUILT_IN_ENTITY_VOCABULARY[inheritedType] ?? [] : []),
+      ...(BUILT_IN_ENTITY_VOCABULARY[type] ?? []),
+      ...(custom?.vocabulary ?? []),
+    ])
+    if (refs.length > 0) entityVocabulary[type] = refs
+  }
+
+  const customRelationsByName = new Map(
+    Object.entries(config?.relations ?? {})
+      .map(([name, relation]) => [sanitizePredicate(name), relation] as const),
+  )
+  const relationVocabulary: Record<string, OntologyVocabularyRef[]> = {}
+  const sortedRelationNames = [...relationNames].sort()
+  for (const name of sortedRelationNames) {
+    const refs = dedupeVocabularyRefs([
+      ...(BUILT_IN_RELATION_VOCABULARY[name] ?? []),
+      ...(customRelationsByName.get(name)?.vocabulary ?? []),
+    ])
+    if (refs.length > 0) relationVocabulary[name] = refs
+  }
+
+  const vocabulary = {
+    entities: entityVocabulary,
+    relations: relationVocabulary,
+  }
+
+  return {
+    version: compiledConfig.version,
+    hash: stableHash({ config: compiledConfig, relationNames: sortedRelationNames, entityTypes: sortedEntityTypes, vocabulary }),
+    config: compiledConfig,
+    profiles: activeProfiles,
+    entityTypes: sortedEntityTypes,
+    relationNames: sortedRelationNames,
+    relationAliases,
+    vocabulary,
+    resolution,
+    prompt,
+    compiledAt: new Date(),
+  }
+}
+
+export const DEFAULT_ONTOLOGY = compileOntology()
+
+function normalizeOntologyToken(value: string): string {
+  return value
+    .trim()
+    .replace(/[Ææ]/g, 'ae')
+    .replace(/[Œœ]/g, 'oe')
+    .normalize('NFKD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function ontologyEntityTypeSet(ontology?: CompiledOntology): Set<string> {
+  return new Set((ontology ?? DEFAULT_ONTOLOGY).entityTypes)
+}
+
+function ontologyPredicateSpecs(ontology?: CompiledOntology): PredicateSpec[] {
+  if (!ontology) return [...PREDICATE_SPECS]
+  const active = new Set(ontology.relationNames)
+  return PREDICATE_SPECS.filter(spec => active.has(spec.name))
+    .concat(Object.entries(ontology.config.relations ?? {})
+      .map(([name, relation]) => ({
+        name: sanitizePredicate(name),
+        category: 'Custom',
+        description: relation.description ?? sanitizePredicate(name).toLowerCase().replace(/_/g, ' '),
+        domain: relation.from ?? ALL_TYPES,
+        range: relation.to ?? ALL_TYPES,
+        symmetric: relation.symmetric,
+        inverse: relation.inverse,
+        aliases: relation.aliases?.map(alias => ({ name: alias })),
+      })))
+}
+
+export function typeAffinityGroup(type: string | undefined, ontology?: CompiledOntology): readonly string[] | undefined {
+  if (!type) return undefined
+  if (ontology && !ontologyEntityTypeSet(ontology).has(type)) return undefined
+  return TYPE_AFFINITY_GROUPS.find(group => (group as readonly string[]).includes(type))
+}
+
+export function typesShareAffinity(a: string | undefined, b: string | undefined, ontology?: CompiledOntology): boolean {
   if (!a || !b || a === b) return true
-  const group = typeAffinityGroup(a)
-  return !!group && group.includes(b as EntityType)
+  const group = typeAffinityGroup(a, ontology)
+  return !!group && group.includes(b)
 }
 
 export function normalizeTypeCandidates(
   primaryType: string | undefined,
   candidates?: TypeCandidate[] | undefined,
+  ontology?: CompiledOntology,
 ): TypeCandidate[] {
+  const allowed = ontologyEntityTypeSet(ontology)
   const byType = new Map<string, number>()
   const add = (type: string | undefined, confidence: number) => {
-    if (!type || !VALID_ENTITY_TYPES.has(type)) return
+    if (!type || !allowed.has(type)) return
     const current = byType.get(type) ?? 0
     byType.set(type, Math.max(current, Math.max(0, Math.min(1, confidence))))
   }
@@ -353,20 +1049,22 @@ export function effectiveEntityTypes(
   primaryType: string | undefined,
   candidates?: TypeCandidate[] | undefined,
   minConfidence = 0.6,
+  ontology?: CompiledOntology,
 ): string[] {
-  const normalized = normalizeTypeCandidates(primaryType, candidates)
+  const allowed = ontologyEntityTypeSet(ontology)
+  const normalized = normalizeTypeCandidates(primaryType, candidates, ontology)
   const types = normalized
     .filter(candidate => candidate.type === primaryType || candidate.confidence >= minConfidence)
     .map(candidate => candidate.type)
   return [...new Set(types.length > 0 ? types : [primaryType ?? DEFAULT_ENTITY_TYPE])]
-    .filter(type => VALID_ENTITY_TYPES.has(type))
+    .filter(type => allowed.has(type))
 }
 
-const PREDICATE_ALIAS_BY_NAME = buildPredicateAliasMap()
+const PREDICATE_ALIAS_BY_NAME = buildPredicateAliasMap(PREDICATE_SPECS)
 
-function buildPredicateAliasMap(): Map<string, { canonical: string; alias: PredicateAliasSpec }> {
+function buildPredicateAliasMap(specs: readonly PredicateSpec[]): Map<string, { canonical: string; alias: PredicateAliasSpec }> {
   const map = new Map<string, { canonical: string; alias: PredicateAliasSpec }>()
-  for (const spec of PREDICATE_SPECS) {
+  for (const spec of specs) {
     map.set(sanitizePredicate(spec.name), { canonical: spec.name, alias: { name: spec.name } })
     for (const alias of spec.aliases ?? []) {
       const key = sanitizePredicate(alias.name)
@@ -379,6 +1077,10 @@ function buildPredicateAliasMap(): Map<string, { canonical: string; alias: Predi
   return map
 }
 
+function predicateAliasMap(ontology?: CompiledOntology): Map<string, { canonical: string; alias: PredicateAliasSpec }> {
+  return ontology ? buildPredicateAliasMap(ontologyPredicateSpecs(ontology)) : PREDICATE_ALIAS_BY_NAME
+}
+
 export function sanitizePredicate(predicate: string): string {
   return predicate
     .trim()
@@ -387,11 +1089,13 @@ export function sanitizePredicate(predicate: string): string {
     .replace(/[^A-Z0-9_]/g, '')
 }
 
-export function isSymmetricPredicate(predicate: string): boolean {
-  return SYMMETRIC_PREDICATES.has(sanitizePredicate(predicate))
+export function isSymmetricPredicate(predicate: string, ontology?: CompiledOntology): boolean {
+  const normalized = sanitizePredicate(predicate)
+  if (!ontology) return SYMMETRIC_PREDICATES.has(normalized)
+  return ontologyPredicateSpecs(ontology).some(spec => spec.name === normalized && !!spec.symmetric)
 }
 
-export function normalizePredicateWithDirection(predicate: string): PredicateNormalization {
+export function normalizePredicateWithDirection(predicate: string, ontology?: CompiledOntology): PredicateNormalization {
   const original = sanitizePredicate(predicate)
   if (ALIAS_RELATION_CUES.has(original)) {
     return {
@@ -403,15 +1107,16 @@ export function normalizePredicateWithDirection(predicate: string): PredicateNor
     }
   }
 
-  const resolved = PREDICATE_ALIAS_BY_NAME.get(original)
+  const resolved = predicateAliasMap(ontology).get(original)
   const normalized = resolved?.canonical ?? original
-  const valid = ALL_PREDICATES.has(normalized) && !GENERIC_DISALLOWED_PREDICATES.has(normalized)
+  const activePredicates = ontology ? new Set(ontology.relationNames) : ALL_PREDICATES
+  const valid = activePredicates.has(normalized) && !GENERIC_DISALLOWED_PREDICATES.has(normalized)
   return {
     original,
     predicate: normalized,
     valid,
     swapSubjectObject: !!resolved?.alias.swap,
-    symmetric: isSymmetricPredicate(normalized),
+    symmetric: isSymmetricPredicate(normalized, ontology),
     ...(resolved?.alias.temporalStatus ? { temporalStatus: resolved.alias.temporalStatus } : {}),
   }
 }
@@ -420,8 +1125,9 @@ export function validatePredicateTypes(
   predicate: string,
   subjectType?: string | undefined,
   objectType?: string | undefined,
+  ontology?: CompiledOntology,
 ): PredicateTypeValidation {
-  const normalized = normalizePredicateWithDirection(predicate)
+  const normalized = normalizePredicateWithDirection(predicate, ontology)
   if (!normalized.valid) {
     return {
       valid: false,
@@ -430,7 +1136,7 @@ export function validatePredicateTypes(
       reason: 'invalid-predicate',
     }
   }
-  const spec = PREDICATE_BY_NAME.get(normalized.predicate)
+  const spec = ontologyPredicateSpecs(ontology).find(item => item.name === normalized.predicate)
   if (!spec) {
     return {
       valid: false,
@@ -453,21 +1159,22 @@ export function validatePredicateEffectiveTypes(
   predicate: string,
   subjectTypes: readonly string[],
   objectTypes: readonly string[],
+  ontology?: CompiledOntology,
 ): PredicateTypeValidation {
   const source = subjectTypes.length > 0 ? subjectTypes : [DEFAULT_ENTITY_TYPE]
   const target = objectTypes.length > 0 ? objectTypes : [DEFAULT_ENTITY_TYPE]
   let lastValidation: PredicateTypeValidation | undefined
   for (const subjectType of source) {
     for (const objectType of target) {
-      const validation = validatePredicateTypes(predicate, subjectType, objectType)
+      const validation = validatePredicateTypes(predicate, subjectType, objectType, ontology)
       if (validation.valid) return validation
       lastValidation = validation
     }
   }
-  return lastValidation ?? validatePredicateTypes(predicate, source[0], target[0])
+  return lastValidation ?? validatePredicateTypes(predicate, source[0], target[0], ontology)
 }
 
-function typeAllowed(allowed: readonly EntityType[] | readonly ['*'], type?: string | undefined): boolean {
+function typeAllowed(allowed: readonly string[] | readonly ['*'], type?: string | undefined): boolean {
   if ((allowed as readonly string[]).includes('*')) return true
   if (!type) return true
   return (allowed as readonly string[]).includes(type)
@@ -477,9 +1184,9 @@ function typeAllowed(allowed: readonly EntityType[] | readonly ['*'], type?: str
  * Get canonical predicates formatted for extraction and intent prompts.
  * Synonyms are intentionally omitted so the model emits a compact vocabulary.
  */
-export function getPredicatesForPrompt(): string {
+export function getPredicatesForPrompt(ontology?: CompiledOntology): string {
   const byCategory = new Map<string, PredicateSpec[]>()
-  for (const spec of PREDICATE_SPECS) {
+  for (const spec of ontologyPredicateSpecs(ontology)) {
     const list = byCategory.get(spec.category) ?? []
     list.push(spec)
     byCategory.set(spec.category, list)
@@ -494,4 +1201,17 @@ export function getPredicatesForPrompt(): string {
 ${lines.join('\n')}
 
 Use ONLY predicates from this vocabulary. Do not invent new predicate names. Use aliases only to understand source phrasing, not as output predicate names.`
+}
+
+export function getEntityTypesForPrompt(ontology?: CompiledOntology): string {
+  return (ontology?.entityTypes ?? ENTITY_TYPES).join(', ')
+}
+
+export function getOntologyPromptGuidelines(ontology?: CompiledOntology): string {
+  const active = ontology ?? DEFAULT_ONTOLOGY
+  const lines = [
+    ...(active.prompt.entityGuidelines ?? []).map(line => `- ${line}`),
+    ...(active.prompt.relationGuidelines ?? []).map(line => `- ${line}`),
+  ]
+  return lines.length > 0 ? lines.join('\n') : ''
 }

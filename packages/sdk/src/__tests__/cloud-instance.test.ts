@@ -21,6 +21,46 @@ describe('createCloudInstance', () => {
     vi.unstubAllGlobals()
   })
 
+  it('passes bucket graph and index settings through to cloud', async () => {
+    const fetchMock = mockFetch()
+    const instance = createCloudInstance({ apiKey: 'test-key', baseUrl: 'https://example.test/api', tenantId: 'tenant-1' })
+
+    await instance.bucket.create({
+      id: 'grb-novel-v1__novel-30752__2ffe0e79',
+      name: 'grb-novel-v1__novel-30752__2ffe0e79',
+      graph: 'graphrag-bench-novel__grb-novel-v1__novel-30752__2ffe0e79',
+      graphConfig: {
+        ontology: { version: 'graphrag-bench-novel:literary:v1', profiles: ['literary'] },
+        metadata: { benchmark: 'graphrag-bench-novel' },
+      },
+      graphExtraction: true,
+      indexDefaults: {
+        chunkSize: 1200,
+        chunkOverlap: 100,
+        graphExtraction: true,
+      },
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe('https://example.test/api/v1/buckets')
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      id: 'grb-novel-v1__novel-30752__2ffe0e79',
+      name: 'grb-novel-v1__novel-30752__2ffe0e79',
+      graph: 'graphrag-bench-novel__grb-novel-v1__novel-30752__2ffe0e79',
+      graphConfig: {
+        ontology: { version: 'graphrag-bench-novel:literary:v1', profiles: ['literary'] },
+        metadata: { benchmark: 'graphrag-bench-novel' },
+      },
+      graphExtraction: true,
+      indexDefaults: {
+        chunkSize: 1200,
+        chunkOverlap: 100,
+        graphExtraction: true,
+      },
+    })
+  })
+
   it('sends ingest options nested under opts', async () => {
     const fetchMock = mockFetch()
     const instance = createCloudInstance({ apiKey: 'test-key', baseUrl: 'https://example.test/api', tenantId: 'tenant-1' })

@@ -53,7 +53,7 @@ const config = {
   },
   ontology: {
     version: '2026-05-08',
-    presets: ['b2b-saas'],
+    profiles: ['saas'],
   },
 }
 

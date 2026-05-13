@@ -1,5 +1,6 @@
 import type { Brand } from './identity.js'
 import type { AgentId, GroupId, OrganizationId, ThreadId, UserId } from './identity.js'
+import type { OntologyConfig } from './ontology.js'
 
 export type GraphId = Brand<string, 'GraphId'>
 
@@ -23,6 +24,7 @@ export interface GraphConfig {
   description?: string | undefined
   extends?: string[] | undefined
   access?: 'public' | GraphAccessConfig | undefined
+  ontology?: OntologyConfig | undefined
   metadata?: Record<string, unknown> | undefined
 }
 

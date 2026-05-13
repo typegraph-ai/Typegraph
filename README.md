@@ -133,8 +133,12 @@ const config = {
   },
   ontology: {
     version: '2026-05-08',
+    profiles: ['saas'],
     entities: {
-      organization: { description: 'A company, customer, vendor, or partner.' },
+      organization: {
+        description: 'A company, customer, vendor, or partner.',
+        vocabulary: [{ vocabulary: 'schema.org', id: 'Organization', uri: 'https://schema.org/Organization' }],
+      },
       person: { description: 'A human user, employee, or contact.' },
       system: { description: 'A software system or business application.' },
     },
@@ -407,7 +411,11 @@ const config = {
   searchEmbedding,
   llm,
   extractor, // optional custom extractor
-  ontology,  // optional config-driven ontology
+  ontology: {
+    version: '2026-05-08',
+    profiles: ['general'], // built-ins: general, literary, medical, legal, saas
+    // optional custom entity/relation definitions use the same shape as profiles
+  },
 }
 ```
 

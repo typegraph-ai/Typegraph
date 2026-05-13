@@ -174,6 +174,8 @@ export interface KnowledgeGraphBridge {
     chunkIndex?: number
     documentId?: string
     tenantId?: string | undefined
+    organizationId?: string | undefined
+    graphId?: string | undefined
     groupId?: string | undefined
     userId?: string | undefined
     agentId?: string | undefined
@@ -224,6 +226,8 @@ export interface KnowledgeGraphBridge {
     chunkIndex?: number | undefined
     documentId?: string | undefined
     tenantId?: string | undefined
+    organizationId?: string | undefined
+    graphId?: string | undefined
     groupId?: string | undefined
     userId?: string | undefined
     agentId?: string | undefined

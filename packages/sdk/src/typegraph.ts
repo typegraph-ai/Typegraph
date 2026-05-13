@@ -27,7 +27,8 @@ import type { ExternalId, MemoryRecord } from './memory/types/memory.js'
 import type { typegraphLogger } from './types/logger.js'
 import type { Job, JobFilter, UpsertJobInput, JobStatusPatch } from './types/job.js'
 import type { PaginationOpts, PaginatedResult } from './types/pagination.js'
-import type { OntologyConfig } from './types/ontology.js'
+import type { CompiledOntology, OntologyConfig } from './types/ontology.js'
+import { compileOntology } from './index-engine/ontology.js'
 import type { GraphAccessPrincipals, GraphConfig, TypeGraphGraphRecord } from './types/graph.js'
 import { PolicyEngine, PolicyViolationError } from './governance/policy-engine.js'
 import type { AISDKLLMInput } from './llm/ai-sdk-adapter.js'
@@ -71,6 +72,7 @@ function normalizeGraphConfig(id: string, tenantId: string, input?: GraphConfig)
     description: input?.description,
     extends: id === DEFAULT_GRAPH_ID ? [] : input?.extends,
     access: input?.access ?? (id === DEFAULT_GRAPH_ID ? 'public' : undefined),
+    ontology: input?.ontology,
     metadata: input?.metadata ?? {},
   }
 }
@@ -209,7 +211,7 @@ export interface BucketsApi {
   upsert(input: CreateBucketInput & { id: string }, opts?: TypeGraphOptions | null): Promise<Bucket>
   get(bucketId: string, opts?: TypeGraphOptions | null): Promise<Bucket | undefined>
   list(filter?: BucketListFilter | null, opts?: TypeGraphOptions | null, pagination?: PaginationOpts | null): Promise<Bucket[] | PaginatedResult<Bucket>>
-  update(bucketId: string, input: Partial<Pick<Bucket, 'name' | 'description' | 'status' | 'indexDefaults' | 'graph' | 'graphExtraction'>>, opts?: TypeGraphOptions | null): Promise<Bucket>
+  update(bucketId: string, input: Partial<Pick<Bucket, 'name' | 'description' | 'status' | 'indexDefaults' | 'graph' | 'graphExtraction'>> & { graphConfig?: GraphConfig | undefined }, opts?: TypeGraphOptions | null): Promise<Bucket>
   delete(bucketId: string, opts?: TypeGraphOptions | null): Promise<void>
 }
 
@@ -367,6 +369,7 @@ export interface typegraphInstance {
 class TypegraphImpl implements typegraphInstance {
   private _buckets = new Map<string, Bucket>()
   private graphConfigs = new Map<string, TypeGraphGraphRecord>()
+  private compiledOntologies = new Map<string, CompiledOntology>()
   private bucketEmbeddings = new Map<string, Embedder>()
   private bucketSearchEmbeddings = new Map<string, Embedder>()
   private embeddingRegistry = new Map<string, Embedder>()
@@ -382,6 +385,12 @@ class TypegraphImpl implements typegraphInstance {
   private policyEngine?: PolicyEngine
 
   private get logger() { return this.config?.logger }
+
+  private resolveOntology(graphId?: string): CompiledOntology {
+    return this.compiledOntologies.get(graphId ?? DEFAULT_GRAPH_ID)
+      ?? this.compiledOntologies.get(DEFAULT_GRAPH_ID)
+      ?? compileOntology(this.config?.ontology)
+  }
 
   private emitEvent(
     eventType: typegraphEventType,
@@ -411,6 +420,7 @@ class TypegraphImpl implements typegraphInstance {
       const embeddingModel = input.embeddingModel ?? embeddingModelKey(this.defaultEmbedding)
       const searchEmbeddingModel = input.searchEmbeddingModel ?? (this.defaultSearchEmbedding ? embeddingModelKey(this.defaultSearchEmbedding) : undefined)
       const graph = input.graph ?? DEFAULT_GRAPH_ID
+      await this.ensureBucketGraph(graph, identity, input.graphConfig)
       this.requireWritableGraph(graph, identity)
 
       // Validate model keys exist in registry
@@ -506,11 +516,15 @@ class TypegraphImpl implements typegraphInstance {
       return all
     },
 
-    update: async (bucketId: string, input: Partial<Pick<Bucket, 'name' | 'description' | 'status' | 'indexDefaults' | 'graph' | 'graphExtraction'>>, opts?: TypeGraphOptions | null): Promise<Bucket> => {
+    update: async (bucketId: string, input: Partial<Pick<Bucket, 'name' | 'description' | 'status' | 'indexDefaults' | 'graph' | 'graphExtraction'>> & { graphConfig?: GraphConfig | undefined }, opts?: TypeGraphOptions | null): Promise<Bucket> => {
       const { identity, telemetry } = this.resolvePublicOptions(opts, 'bucket.update')
       const bucket = await this.bucket.get(bucketId, opts)
       if (!bucket) throw new NotFoundError('Bucket', bucketId)
-      if (input.graph !== undefined) this.requireWritableGraph(input.graph, identity)
+      if (input.graph !== undefined || input.graphConfig !== undefined) {
+        const graph = input.graph ?? bucket.graph ?? DEFAULT_GRAPH_ID
+        await this.ensureBucketGraph(graph, identity, input.graphConfig)
+        this.requireWritableGraph(graph, identity)
+      }
       if (input.name !== undefined) bucket.name = input.name
       if (input.description !== undefined) bucket.description = input.description
       if (input.status !== undefined) bucket.status = input.status
@@ -1095,6 +1109,43 @@ class TypegraphImpl implements typegraphInstance {
     }
   }
 
+  private async ensureBucketGraph(graphId: string, identity: typegraphIdentity, graphConfig?: GraphConfig | undefined): Promise<void> {
+    const existing = this.graphConfigs.get(graphId)
+    if (existing && !graphConfig) return
+    const graph = existing
+      ? {
+          ...existing,
+          ...graphConfig,
+          id: graphId,
+          tenantId: existing.tenantId,
+          extends: graphConfig?.extends ?? existing.extends,
+          access: graphConfig?.access ?? existing.access,
+          ontology: graphConfig?.ontology ?? existing.ontology,
+          metadata: { ...(existing.metadata ?? {}), ...(graphConfig?.metadata ?? {}) },
+        } satisfies TypeGraphGraphRecord
+      : normalizeGraphConfig(graphId, identity.tenantId ?? this.config.tenantId, {
+          access: 'public',
+          ...graphConfig,
+          metadata: { type: 'bucket', ...(graphConfig?.metadata ?? {}) },
+        })
+    this.graphConfigs.set(graphId, graph)
+    this.compiledOntologies.set(graphId, compileOntology(graph.ontology ?? this.config.ontology))
+    if (this.adapter.upsertGraphRecord) {
+      await this.adapter.upsertGraphRecord(graph)
+    }
+  }
+
+  private async loadPersistedGraphs(tenantId: string): Promise<void> {
+    if (!this.adapter.listGraphRecords) return
+    const graphs = await this.adapter.listGraphRecords(tenantId)
+    for (const graph of graphs) {
+      if (!this.graphConfigs.has(graph.id)) {
+        this.graphConfigs.set(graph.id, graph)
+        this.compiledOntologies.set(graph.id, compileOntology(graph.ontology ?? this.config.ontology))
+      }
+    }
+  }
+
   private bucketGraph(bucket: Bucket | undefined): string {
     return bucket?.graph ?? DEFAULT_GRAPH_ID
   }
@@ -1289,12 +1340,27 @@ class TypegraphImpl implements typegraphInstance {
     this.memoryServiceInstance = undefined
     this.graphBridgeInstance = undefined
     this.graphConfigs.clear()
+    this.compiledOntologies.clear()
     const graphInputs = {
       [DEFAULT_GRAPH_ID]: { access: 'public' as const, ...(config.graphs?.[DEFAULT_GRAPH_ID] ?? {}) },
       ...(config.graphs ?? {}),
     }
     for (const [id, graphConfig] of Object.entries(graphInputs)) {
-      this.graphConfigs.set(id, normalizeGraphConfig(id, config.tenantId, graphConfig))
+      const normalized = normalizeGraphConfig(id, config.tenantId, graphConfig)
+      this.graphConfigs.set(id, normalized)
+      this.compiledOntologies.set(id, compileOntology(normalized.ontology ?? config.ontology))
+    }
+    for (const input of Object.values(config.buckets ?? {})) {
+      const graphId = input.graph ?? DEFAULT_GRAPH_ID
+      if (!this.graphConfigs.has(graphId)) {
+        const normalized = normalizeGraphConfig(graphId, config.tenantId, {
+          access: 'public',
+          ...input.graphConfig,
+          metadata: { type: 'bucket', ...(input.graphConfig?.metadata ?? {}) },
+        })
+        this.graphConfigs.set(graphId, normalized)
+        this.compiledOntologies.set(graphId, compileOntology(normalized.ontology ?? config.ontology))
+      }
     }
 
     // Resolve default providers
@@ -1331,6 +1397,7 @@ class TypegraphImpl implements typegraphInstance {
         embedding: this.defaultEmbedding,
         scope: { tenantId: config.tenantId },
         ...(config.llm ? { explorationLlm: config.llm } : {}),
+        resolveOntology: this.resolveOntology.bind(this),
       }
       this.graphBridgeInstance = createKnowledgeGraphBridge(this.adapter.getTable
         ? { ...graphConfig, resolveChunksTable: this.adapter.getTable.bind(this.adapter) }
@@ -1466,6 +1533,7 @@ class TypegraphImpl implements typegraphInstance {
     this.applyConfig(runtimeConfig)
 
     await this.adapter.connect()
+    await this.loadPersistedGraphs(runtimeConfig.tenantId)
 
     // Proactively ensure the default embedding model is registered.
     // Idempotent: Map.has() short-circuits, CREATE IF NOT EXISTS + ON CONFLICT DO NOTHING.
@@ -1742,11 +1810,14 @@ class TypegraphImpl implements typegraphInstance {
     const extractor = this.config.extractor
     if (!extractor) throw new ConfigError('Configured extraction requires `extractor` or `llm`.')
     const graph = this.requireKnowledgeGraph()
-    const ontology = input.ontology ?? this.config.ontology
+    const ontology = input.ontology && typeof input.ontology === 'object' && 'hash' in input.ontology
+      ? input.ontology as CompiledOntology
+      : this.resolveOntology(identity.graphId)
     const result = await extractor.extract({
       ...input,
-      ...(ontology ? { ontology } : {}),
+      ontology,
     }, {
+      ontology,
       log: {
         debug: (message, data) => this.logger?.debug?.(message, data),
         warn: (message, data) => this.logger?.warn?.(message, data),
@@ -2003,6 +2074,7 @@ class TypegraphImpl implements typegraphInstance {
       this.logger,
       kg,
       this.config.extractionCoreferenceCache,
+      this.resolveOntology.bind(this),
     )
     if (this.config.extractor && kg) {
       engine.useExtractor(this.config.extractor)

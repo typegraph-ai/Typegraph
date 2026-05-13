@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { TripleExtractor } from '../index-engine/triple-extractor.js'
+import { compileOntology } from '../index-engine/ontology.js'
 import type { KnowledgeGraphBridge, LLMProvider } from '../types/index.js'
 
 function mockLLM(output: unknown): LLMProvider {
@@ -10,6 +11,488 @@ function mockLLM(output: unknown): LLMProvider {
 }
 
 describe('TripleExtractor', () => {
+  it('does not include document names in extraction prompts', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const llm: LLMProvider = {
+      generateText: vi.fn().mockResolvedValue(''),
+      generateJSON: vi.fn().mockResolvedValue([
+        { name: 'Alice', type: 'person', description: 'A named person in the text.', aliases: [] },
+      ]),
+    }
+    const extractor = new TripleExtractor({ llm, graph })
+
+    await extractor.extractFromChunk(
+      'Alice walked through the garden.',
+      'bucket-1',
+      0,
+      'document-1',
+      undefined,
+      undefined,
+      'Novel-41603 [14/64]',
+    )
+
+    const prompts = vi.mocked(llm.generateJSON).mock.calls.map(call => String(call[0])).join('\n')
+    expect(prompts).not.toContain('Novel-41603')
+    expect(prompts).not.toContain('document named')
+  })
+
+  it('splits peer coordinate place lists but preserves qualified places', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          { name: 'Mexico, Guatemala', type: 'place', description: 'Two Central American places.', aliases: [] },
+          { name: 'Cairo, Egypt', type: 'place', description: 'A city in Egypt.', aliases: ['Cairo'] },
+          { name: 'Uxmal, Mayapan, and Chichen-Itza', type: 'place', description: 'Three Mayan sites.', aliases: [] },
+        ],
+        relationships: [],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'The account compares Mexico, Guatemala, Cairo, Egypt, Uxmal, Mayapan, and Chichen-Itza.',
+      'bucket-1',
+      0,
+      'source-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'chunk-1',
+      compileOntology({ version: 'literary-test', profiles: ['literary'] }),
+    )
+
+    const mentions = vi.mocked(graph.addEntityMentions).mock.calls[0]![0]
+    expect(mentions.map(m => m.name)).toEqual(expect.arrayContaining([
+      'Mexico',
+      'Guatemala',
+      'Cairo, Egypt',
+      'Uxmal',
+      'Mayapan',
+      'Chichen-Itza',
+    ]))
+    expect(mentions.map(m => m.name)).not.toContain('Mexico, Guatemala')
+  })
+
+  it('uses literary ontology predicate aliases for conflict facts', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          { name: 'Mexico', type: 'place', description: 'A country.', aliases: [] },
+          { name: 'Guatemala', type: 'place', description: 'A country.', aliases: [] },
+        ],
+        relationships: [
+          { subject: 'Mexico', predicate: 'AT_WAR_WITH', object: 'Guatemala', confidence: 0.9 },
+        ],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'Mexico was at war with Guatemala.',
+      'bucket-1',
+      0,
+      'source-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'chunk-1',
+      compileOntology({ version: 'literary-test', profiles: ['literary'] }),
+    )
+
+    expect(graph.addTriple).toHaveBeenCalledWith(expect.objectContaining({
+      predicate: 'AT_WAR_WITH',
+      subject: 'Mexico',
+      object: 'Guatemala',
+    }))
+  })
+
+  it('classifies periodicals as publications and preserves standalone creative works', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          {
+            name: 'London Magazine',
+            type: 'creative_work',
+            description: 'An 18th-century British literary magazine.',
+            aliases: [],
+          },
+          {
+            name: 'Berlinische Monatsschrift',
+            type: 'creative_work',
+            description: 'A German journal that published literary articles.',
+            aliases: [],
+          },
+          {
+            name: 'Don Quixote',
+            type: 'creative_work',
+            description: 'A novel by Miguel de Cervantes.',
+            aliases: [],
+          },
+          {
+            name: 'Hamlet',
+            type: 'creative_work',
+            description: 'A play by William Shakespeare.',
+            aliases: [],
+          },
+        ],
+        relationships: [],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'London Magazine and Berlinische Monatsschrift discussed Don Quixote and Hamlet.',
+      'bucket-1',
+      0,
+      'source-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'chunk-1',
+      compileOntology({ version: 'literary-test', profiles: ['literary'] }),
+    )
+
+    const mentions = vi.mocked(graph.addEntityMentions).mock.calls[0]![0]
+    expect(mentions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'London Magazine', type: 'publication' }),
+      expect.objectContaining({ name: 'Berlinische Monatsschrift', type: 'publication' }),
+      expect.objectContaining({ name: 'Don Quixote', type: 'creative_work' }),
+      expect.objectContaining({ name: 'Hamlet', type: 'creative_work' }),
+    ]))
+  })
+
+  it('rejects generated source labels and source excerpt works', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          {
+            name: 'Novel-10321 [4/75]',
+            type: 'creative_work',
+            description: 'The creative work from which this passage originates.',
+            aliases: ['Novel-10321'],
+          },
+          {
+            name: 'Novel-41603',
+            type: 'document',
+            description: 'The source document containing this excerpt.',
+            aliases: ['Novel-41603 [14/64]'],
+          },
+        ],
+        relationships: [],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    const result = await extractor.extractFromChunk(
+      'The passage describes Rudolph Hackh and a princess.',
+      'bucket-1',
+      0,
+      'source-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'chunk-1',
+      compileOntology({ version: 'literary-test', profiles: ['literary'] }),
+    )
+
+    expect(result?.entities).toEqual([])
+    expect(graph.addEntityMentions).not.toHaveBeenCalled()
+  })
+
+  it('rejects untitled structural headings by default', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          {
+            name: 'Chapter XII',
+            type: 'creative_work',
+            description: 'The twelfth chapter of the educational text.',
+            aliases: ['Chapter XIII'],
+          },
+        ],
+        relationships: [],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    const result = await extractor.extractFromChunk(
+      'CHAPTER XII. Food and health are discussed.',
+      'bucket-1',
+      0,
+      'source-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'chunk-1',
+      compileOntology({ version: 'literary-test', profiles: ['literary'] }),
+    )
+
+    expect(result?.entities).toEqual([])
+    expect(graph.addEntityMentions).not.toHaveBeenCalled()
+  })
+
+  it('does not merge numbered or sibling works as aliases', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          {
+            name: 'Elegy XIV',
+            type: 'creative_work',
+            description: 'A specific poem in a larger work.',
+            aliases: ['Elegy XV', 'Elegy VII', 'The beauties of Corinna'],
+          },
+          {
+            name: 'Old Testament',
+            type: 'creative_work',
+            description: 'The first part of the Christian Bible.',
+            aliases: ['New Testament'],
+          },
+          {
+            name: 'Minna von Barnhelm',
+            type: 'creative_work',
+            description: 'A play written by Gotthold Ephraim Lessing.',
+            aliases: ['Götz von Berlichingen'],
+          },
+        ],
+        relationships: [],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'Elegy XIV, Old Testament, and Minna von Barnhelm are discussed alongside other works.',
+      'bucket-1',
+      0,
+      'source-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'chunk-1',
+      compileOntology({ version: 'literary-test', profiles: ['literary'] }),
+    )
+
+    const mentions = vi.mocked(graph.addEntityMentions).mock.calls[0]![0]
+    expect(mentions.find(m => m.name === 'Elegy XIV')?.aliases).not.toEqual(expect.arrayContaining(['Elegy XV', 'Elegy VII']))
+    expect(mentions.find(m => m.name === 'Old Testament')?.aliases).not.toContain('New Testament')
+    expect(mentions.find(m => m.name === 'Minna von Barnhelm')?.aliases).not.toContain('Götz von Berlichingen')
+  })
+
+  it('rewrites work-to-publication APPEARS_IN facts to PUBLISHED_IN', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          {
+            name: 'Empfindsamkeiten am Rheinfalle',
+            type: 'creative_work',
+            description: 'A poem.',
+            aliases: [],
+          },
+          {
+            name: 'Morgenblatt',
+            type: 'creative_work',
+            description: 'A German journal that published poems.',
+            aliases: [],
+          },
+        ],
+        relationships: [
+          {
+            subject: 'Empfindsamkeiten am Rheinfalle',
+            predicate: 'APPEARS_IN',
+            object: 'Morgenblatt',
+            confidence: 0.9,
+            description: 'Empfindsamkeiten am Rheinfalle appeared in Morgenblatt.',
+            evidenceText: 'published in the Morgenblatt',
+          },
+        ],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'The poem Empfindsamkeiten am Rheinfalle was published in the Morgenblatt.',
+      'bucket-1',
+      0,
+      'source-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'chunk-1',
+      compileOntology({ version: 'literary-test', profiles: ['literary'] }),
+    )
+
+    expect(graph.addTriple).toHaveBeenCalledWith(expect.objectContaining({
+      subject: 'Empfindsamkeiten am Rheinfalle',
+      predicate: 'PUBLISHED_IN',
+      object: 'Morgenblatt',
+      objectType: 'publication',
+    }))
+  })
+
+  it('allows custom ontology users to model structural sections explicitly', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          {
+            name: 'Chapter XII',
+            type: 'section',
+            description: 'A named section in the user ontology.',
+            aliases: [],
+          },
+        ],
+        relationships: [],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'CHAPTER XII. Food and health are discussed.',
+      'bucket-1',
+      0,
+      'source-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'chunk-1',
+      compileOntology({
+        version: 'custom-section',
+        profiles: ['literary'],
+        entities: {
+          section: { extends: 'document', description: 'A structural section intentionally modeled by the user.' },
+        },
+      }),
+    )
+
+    expect(graph.addEntityMentions).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ name: 'Chapter XII', type: 'section' }),
+    ]))
+  })
+
+  it('forwards graph and organization identity to graph writes', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          { name: 'Cæsar Simon', type: 'person', aliases: ['Cole Conway'] },
+          { name: 'Steve Sharp', type: 'person', aliases: [] },
+        ],
+        relationships: [
+          {
+            subject: 'Cæsar Simon',
+            predicate: 'collaborated_with',
+            object: 'Steve Sharp',
+            confidence: 0.9,
+            description: 'Cæsar Simon and Steve Sharp were companions in Paducah.',
+            evidenceText: 'in Paducah, Kentucky, calling himself Cole Conway, in company with one Steve Sharp',
+          },
+        ],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'At twenty years of age Cousin Cæsar was in Paducah, Kentucky, calling himself Cole Conway, in company with one Steve Sharp.',
+      'bucket-1',
+      0,
+      'document-1',
+      undefined,
+      undefined,
+      undefined,
+      {
+        tenantId: 'tenant-1',
+        organizationId: 'org-1',
+        groupId: 'Novel-30752',
+        graphId: 'source-graph',
+      },
+      undefined,
+      'chunk-1',
+    )
+
+    expect(graph.addEntityMentions).toHaveBeenCalled()
+    const mentions = vi.mocked(graph.addEntityMentions).mock.calls[0]![0]
+    expect(mentions.length).toBeGreaterThan(0)
+    expect(mentions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tenantId: 'tenant-1',
+        organizationId: 'org-1',
+        groupId: 'Novel-30752',
+        graphId: 'source-graph',
+      }),
+    ]))
+
+    expect(graph.addTriple).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: 'tenant-1',
+      organizationId: 'org-1',
+      groupId: 'Novel-30752',
+      graphId: 'source-graph',
+      bucketId: 'bucket-1',
+      documentId: 'document-1',
+      chunkId: 'chunk-1',
+    }))
+  })
+
   it('preserves complete person surface forms as aliases and entity mentions', async () => {
     const graph: KnowledgeGraphBridge = {
       addEntityMentions: vi.fn().mockResolvedValue(undefined),

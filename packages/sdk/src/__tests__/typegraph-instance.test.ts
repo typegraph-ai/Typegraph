@@ -40,6 +40,85 @@ describe('typegraphInit', () => {
       expect(bucket.status).toBe('active')
     })
 
+    it('accepts a bucket-owned graph and registers it as a public graph', async () => {
+      const bucket = await instance.bucket.create({ id: 'novel-a', name: 'Novel A', graph: 'graph-novel-a' })
+
+      expect(bucket.graph).toBe('graph-novel-a')
+      expect((instance as any).graphConfigs.get('graph-novel-a')).toMatchObject({
+        id: 'graph-novel-a',
+        tenantId: 'tenant-1',
+        access: 'public',
+        metadata: { type: 'bucket' },
+      })
+      expect(adapter._graphs.get('tenant-1:graph-novel-a')).toMatchObject({
+        id: 'graph-novel-a',
+        tenantId: 'tenant-1',
+      })
+    })
+
+    it('applies bucket graphConfig ontology to bucket-owned graphs', async () => {
+      await instance.bucket.create({
+        id: 'novel-a',
+        name: 'Novel A',
+        graph: 'graph-novel-a',
+        graphConfig: {
+          ontology: { version: 'bench-literary', profiles: ['literary'] },
+          metadata: { benchmark: 'graphrag-bench-novel' },
+        },
+      })
+
+      expect((instance as any).graphConfigs.get('graph-novel-a')).toMatchObject({
+        id: 'graph-novel-a',
+        tenantId: 'tenant-1',
+        access: 'public',
+        ontology: { version: 'bench-literary', profiles: ['literary'] },
+        metadata: { type: 'bucket', benchmark: 'graphrag-bench-novel' },
+      })
+      expect((instance as any).compiledOntologies.get('graph-novel-a').entityTypes).toContain('character')
+      expect(adapter._graphs.get('tenant-1:graph-novel-a')).toMatchObject({
+        ontology: { version: 'bench-literary', profiles: ['literary'] },
+        metadata: { type: 'bucket', benchmark: 'graphrag-bench-novel' },
+      })
+    })
+
+    it('registers configured bucket graphs during init', async () => {
+      const inst = await typegraphInit({
+        vectorStore: adapter,
+        embedding,
+        tenantId: 'tenant-1',
+        buckets: {
+          novel: { name: 'Novel', graph: 'graph-from-config' },
+        },
+      })
+
+      expect((inst as any).graphConfigs.get('graph-from-config')).toMatchObject({
+        id: 'graph-from-config',
+        tenantId: 'tenant-1',
+        access: 'public',
+      })
+      expect(adapter._graphs.get('tenant-1:graph-from-config')).toMatchObject({
+        id: 'graph-from-config',
+        tenantId: 'tenant-1',
+      })
+    })
+
+    it('loads persisted bucket graphs during init', async () => {
+      await adapter.upsertGraphRecord!({
+        id: 'persisted-graph',
+        tenantId: 'tenant-1',
+        name: 'Persisted',
+        access: 'public',
+      })
+
+      const inst = await typegraphInit({ vectorStore: adapter, embedding, tenantId: 'tenant-1' })
+
+      expect((inst as any).graphConfigs.get('persisted-graph')).toMatchObject({
+        id: 'persisted-graph',
+        tenantId: 'tenant-1',
+        access: 'public',
+      })
+    })
+
     it('registers embedding for new bucket', async () => {
       const bucket = await instance.bucket.create({ name: 'Test Bucket' })
       expect(instance.getEmbeddingForBucket(bucket.id)).toBeDefined()

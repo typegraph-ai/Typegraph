@@ -5,12 +5,13 @@ import { embeddingModelKey } from '../embedding/provider.js'
 import type { AccessScope, typegraphIdentity } from '../types/identity.js'
 import type { EmbeddingConfig } from '../types/bucket.js'
 import type { LLMConfig, LLMProvider } from '../types/llm-provider.js'
+import type { CompiledOntology } from '../types/ontology.js'
 import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, InternalFactSearchOpts, InternalGraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, InternalGraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, EntityScopeResolution, KnowledgeSearchOpts, KnowledgeSearchResult, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult } from '../types/graph-bridge.js'
 import { resolveEmbedder, resolveLLMProvider } from '../typegraph.js'
 import type { ExternalId, MemoryStoreAdapter, SemanticEdge, SemanticEntity, SemanticEntityMention, SemanticEntityChunkEdge, SemanticFactRecord, SemanticGraphEdge } from '../memory/types/index.js'
 import type { ChunkRef } from '../types/chunk.js'
 import { ConfigError, GraphSelfEdgeError } from '../types/errors.js'
-import { EntityResolver, PredicateNormalizer, createTemporal } from '../memory/index.js'
+import { EntityResolver, createTemporal } from '../memory/index.js'
 import { EmbeddedGraph } from './graph/embedded-graph.js'
 import { parseGraphQueryIntent } from './query-intent.js'
 import { generateId } from '../utils/id.js'
@@ -22,9 +23,11 @@ import { optionalCompactObject, requiredObject } from '../utils/input.js'
 import { isSymmetricPredicate } from '../memory/extraction/predicate-normalizer.js'
 import {
   ALIAS_ASSIGNMENT_CUES,
+  DEFAULT_ONTOLOGY,
   DEFAULT_ENTITY_TYPE,
   GENERIC_DISALLOWED_PREDICATES,
   effectiveEntityTypes,
+  normalizePredicateWithDirection,
   normalizeTypeCandidates,
   sanitizePredicate,
   validatePredicateEffectiveTypes,
@@ -53,6 +56,7 @@ export interface CreateKnowledgeGraphBridgeConfig {
   resolveChunksTable?: (model: string) => string | Promise<string>
   factRelevanceFilter?: FactRelevanceFilter | undefined
   explorationLlm?: LLMConfig | undefined
+  resolveOntology?: (graphId?: string) => CompiledOntology
 }
 
 function normalizeSurfaceText(value: string): string {
@@ -148,8 +152,8 @@ function typeCandidatesFromMetadata(metadata: Record<string, unknown> | undefine
     .filter((item): item is TypeCandidate => !!item)
 }
 
-function effectiveTypesForEntity(entity: SemanticEntity): string[] {
-  return effectiveEntityTypes(entity.entityType, typeCandidatesFromMetadata(entity.metadata))
+function effectiveTypesForEntity(entity: SemanticEntity, ontology?: CompiledOntology): string[] {
+  return effectiveEntityTypes(entity.entityType, typeCandidatesFromMetadata(entity.metadata), 0.6, ontology)
 }
 
 function factSentenceForProfile(
@@ -263,7 +267,10 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
   const graph = new EmbeddedGraph(memoryStore)
   const resolver = new EntityResolver({ store: memoryStore, embedding })
-  const predicateNormalizer = new PredicateNormalizer(embedding)
+
+  function ontologyForGraph(graphId?: string): CompiledOntology {
+    return config.resolveOntology?.(graphId) ?? DEFAULT_ONTOLOGY
+  }
 
   function uniqueIds(ids: string[]): string[] {
     return [...new Set(ids)]
@@ -988,7 +995,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     validFrom?: string | undefined
     validTo?: string | undefined
   }): Promise<{ edge: SemanticEdge; fact?: SemanticFactRecord | undefined; source: SemanticEntity; target: SemanticEntity }> {
-    const normalizedRelation = predicateNormalizer.normalizeWithDirection(input.relation)
+    const ontology = ontologyForGraph(input.scope.graphId)
+    const normalizedRelation = normalizePredicateWithDirection(input.relation, ontology)
     if (!normalizedRelation.valid || GENERIC_DISALLOWED_PREDICATES.has(normalizedRelation.predicate)) {
       throw new Error(`Invalid or too-generic graph relation: ${input.relation}`)
     }
@@ -1013,8 +1021,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const relation = normalizedRelation.predicate
     const typeValidation = validatePredicateEffectiveTypes(
       relation,
-      effectiveTypesForEntity(source),
-      effectiveTypesForEntity(target),
+      effectiveTypesForEntity(source, ontology),
+      effectiveTypesForEntity(target, ontology),
+      ontology,
     )
     if (normalizedRelation.symmetric) {
       const sourceKey = normalizeSurfaceText(source.id || source.name)
@@ -1189,6 +1198,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       agentId: input.agentId,
       threadId: input.threadId,
     })
+    const ontology = ontologyForGraph(scope.graphId)
     const result = await resolver.resolve(
       input.name,
       input.type ?? DEFAULT_ENTITY_TYPE,
@@ -1198,6 +1208,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       input.accessScope,
       [],
       input.typeCandidates,
+      ontology,
     )
 
     await graph.addEntity(result.entity)
@@ -1364,7 +1375,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       return
     }
 
-    const normalizedRelation = predicateNormalizer.normalizeWithDirection(triple.predicate)
+    const ontology = ontologyForGraph(triple.graphId)
+    const normalizedRelation = normalizePredicateWithDirection(triple.predicate, ontology)
     if (!normalizedRelation.valid || GENERIC_DISALLOWED_PREDICATES.has(normalizedRelation.predicate)) return
 
     let sourceInput = {
@@ -1433,8 +1445,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const relation = normalizedRelation.predicate
     const typeValidation = validatePredicateEffectiveTypes(
       relation,
-      effectiveTypesForEntity(sourceEntity),
-      effectiveTypesForEntity(targetEntity),
+      effectiveTypesForEntity(sourceEntity, ontology),
+      effectiveTypesForEntity(targetEntity, ontology),
+      ontology,
     )
     const weight = (triple.confidence ?? 1.0) * (typeValidation.valid ? 1 : 0.85)
     const relationshipDescription = cleanOptionalText(triple.relationshipDescription)

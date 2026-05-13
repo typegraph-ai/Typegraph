@@ -1,4 +1,5 @@
 import type { DocumentInput } from './document.js'
+import type { GraphConfig } from './graph.js'
 import type { Embedder } from '../embedding/provider.js'
 import type { AISDKEmbeddingInput } from '../embedding/ai-sdk-adapter.js'
 
@@ -66,6 +67,8 @@ export interface CreateBucketInput {
   searchEmbeddingModel?: string | undefined
   /** Write graph for this bucket. Defaults to "public". */
   graph?: string | undefined
+  /** Optional graph config to apply when creating/updating the bucket's write graph. */
+  graphConfig?: GraphConfig | undefined
   /** Bucket default for graph extraction. Equivalent to indexDefaults.graphExtraction. */
   graphExtraction?: boolean | undefined
   indexDefaults?: IndexDefaults | undefined

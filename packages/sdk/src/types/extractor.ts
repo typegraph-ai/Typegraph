@@ -1,5 +1,5 @@
 import type { EntityRef } from './identity.js'
-import type { OntologyConfig } from './ontology.js'
+import type { CompiledOntology, OntologyConfig } from './ontology.js'
 import type { TypeCandidate } from '../index-engine/ontology.js'
 
 export interface ExtractorCapabilities {
@@ -18,13 +18,14 @@ export interface ExtractorInput {
   content: string
   occurredAt?: Date | undefined
   metadata?: Record<string, unknown> | undefined
-  ontology?: OntologyConfig | undefined
+  ontology?: OntologyConfig | CompiledOntology | undefined
   participants?: EntityRef[] | undefined
 }
 
 export interface ExtractorContext {
   abortSignal?: AbortSignal | undefined
   coreferenceCache?: ExtractionCoreferenceCache | undefined
+  ontology?: CompiledOntology | undefined
   log?: {
     debug?: (message: string, data?: Record<string, unknown>) => void
     warn?: (message: string, data?: Record<string, unknown>) => void
@@ -67,6 +68,7 @@ export interface ExtractionCoreferenceCacheKey {
   agentId?: string | undefined
   threadId?: string | undefined
   graphId?: string | undefined
+  ontologyHash?: string | undefined
   bucketId: string
   documentId?: string | undefined
   documentName?: string | undefined

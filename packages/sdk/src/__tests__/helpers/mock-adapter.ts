@@ -1,6 +1,7 @@
 import type { VectorStoreAdapter, HashStoreAdapter, SearchOpts, HashRecord, UndeployResult, ScoredChunkWithDocument } from '../../types/adapter.js'
 import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '../../types/chunk.js'
 import type { DocumentFilter, DocumentStatus, typegraphDocument, UpsertDocumentInput, UpsertedDocumentRecord } from '../../types/document.js'
+import type { TypeGraphGraphRecord } from '../../types/graph.js'
 import { createHash } from 'crypto'
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -136,9 +137,11 @@ export function createMockAdapter(): VectorStoreAdapter & {
   calls: MockAdapterCall[]
   _chunks: Map<string, EmbeddedChunk[]>
   _documents: Map<string, typegraphDocument>
+  _graphs: Map<string, TypeGraphGraphRecord>
 } {
   const chunks = new Map<string, EmbeddedChunk[]>()
   const documents = new Map<string, typegraphDocument>()
+  const graphs = new Map<string, TypeGraphGraphRecord>()
   const calls: MockAdapterCall[] = []
   const hashStore = createMockHashStore()
 
@@ -196,10 +199,12 @@ export function createMockAdapter(): VectorStoreAdapter & {
     calls: MockAdapterCall[]
     _chunks: Map<string, EmbeddedChunk[]>
     _documents: Map<string, typegraphDocument>
+    _graphs: Map<string, TypeGraphGraphRecord>
   } = {
     calls,
     _chunks: chunks,
     _documents: documents,
+    _graphs: graphs,
     hashStore,
 
     async deploy() {
@@ -347,6 +352,25 @@ export function createMockAdapter(): VectorStoreAdapter & {
       if (!document) throw new Error(`Document ${id} not found`)
       Object.assign(document, input, { updatedAt: new Date() })
       return document
+    },
+
+    async upsertGraphRecord(input: TypeGraphGraphRecord): Promise<TypeGraphGraphRecord> {
+      calls.push({ method: 'upsertGraphRecord', args: [input] })
+      const now = new Date()
+      const existing = graphs.get(`${input.tenantId}:${input.id}`)
+      const record = { ...existing, ...input, createdAt: existing?.createdAt ?? now, updatedAt: now }
+      graphs.set(`${record.tenantId}:${record.id}`, record)
+      return record
+    },
+
+    async getGraphRecord(tenantId: string, id: string): Promise<TypeGraphGraphRecord | null> {
+      calls.push({ method: 'getGraphRecord', args: [tenantId, id] })
+      return graphs.get(`${tenantId}:${id}`) ?? null
+    },
+
+    async listGraphRecords(tenantId: string): Promise<TypeGraphGraphRecord[]> {
+      calls.push({ method: 'listGraphRecords', args: [tenantId] })
+      return [...graphs.values()].filter(graph => graph.tenantId === tenantId)
     },
 
     async searchWithDocuments(

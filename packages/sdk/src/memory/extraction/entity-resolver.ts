@@ -3,6 +3,7 @@ import { embedText } from '../../embedding/provider.js'
 import type { AccessScope, typegraphIdentity } from '../../types/identity.js'
 import type { ExternalId, SemanticEntity } from '../types/memory.js'
 import type { MemoryStoreAdapter } from '../types/adapter.js'
+import type { CompiledOntology } from '../../types/ontology.js'
 import { createTemporal } from '../temporal.js'
 import { generateId } from '../../utils/id.js'
 import { normalizeTypeCandidates, type TypeCandidate, typesShareAffinity } from '../../index-engine/ontology.js'
@@ -77,7 +78,7 @@ const ALIAS_QUANTIFIER_WORDS = new Set(['both', 'all', 'either', 'neither'])
  *   isValidAlias("the team") → false
  *   isValidAlias("2024") → false
  */
-export function isValidAlias(alias: string): boolean {
+export function isValidAlias(alias: string, ontology?: CompiledOntology): boolean {
   const trimmed = alias.trim()
 
   // Reject empty or single-character
@@ -87,6 +88,7 @@ export function isValidAlias(alias: string): boolean {
   if (trimmed.length > 80) return false
 
   const lower = trimmed.toLowerCase()
+  if ((ontology?.resolution.genericAliasBlocklist ?? []).includes(normalizeAliasToken(trimmed))) return false
   const tokens = nameTokens(trimmed)
   if (tokens.length > 0) {
     if (ALIAS_GREETING_WORDS.has(tokens[0]!)) return false
@@ -142,8 +144,8 @@ function hasSentenceBoundaryInsideAlias(value: string): boolean {
   return /[.!?]|--|—|–/.test(withoutInitials)
 }
 
-function isDisplayAliasSafe(alias: string, entityType: string): boolean {
-  if (!isValidAlias(alias)) return false
+function isDisplayAliasSafe(alias: string, entityType: string, ontology?: CompiledOntology): boolean {
+  if (!isValidAlias(alias, ontology)) return false
   if (entityType !== 'person') return true
   if (hasSentenceBoundaryInsideAlias(alias)) return false
   const tokens = nameTokens(alias)
@@ -191,8 +193,9 @@ function isStrongAliasForMerge(
   entityType: string,
   ownerName: string,
   ownerAliases: string[],
+  ontology?: CompiledOntology,
 ): boolean {
-  if (!isDisplayAliasSafe(alias, entityType)) return false
+  if (!isDisplayAliasSafe(alias, entityType, ontology)) return false
   if (entityType !== 'person') return true
 
   const aliasTokens = nameTokens(alias)
@@ -271,12 +274,14 @@ export interface EntityResolverConfig {
   embedding: Embedder
   /** Cosine similarity threshold for considering entities as duplicates. Default: 0.68 */
   similarityThreshold?: number | undefined
+  ontology?: CompiledOntology | undefined
 }
 
 export class EntityResolver {
   private readonly store: MemoryStoreAdapter
   private readonly embedding: Embedder
   private readonly threshold: number
+  private readonly ontology?: CompiledOntology | undefined
   // In-memory cache: scoped normalized name → entity. Eliminates duplicates from
   // DB LIMIT misses and timing races between addTriple calls.
   private readonly nameCache = new Map<string, SemanticEntity>()
@@ -285,6 +290,7 @@ export class EntityResolver {
     this.store = config.store
     this.embedding = config.embedding
     this.threshold = config.similarityThreshold ?? 0.85
+    this.ontology = config.ontology
   }
 
   private cacheKey(name: string, scope: typegraphIdentity, accessScope?: AccessScope): string {
@@ -320,7 +326,9 @@ export class EntityResolver {
     accessScope?: AccessScope,
     externalIds: ExternalId[] = [],
     typeCandidates?: TypeCandidate[],
+    ontologyOverride?: CompiledOntology,
   ): Promise<{ entity: SemanticEntity; isNew: boolean }> {
+    const ontology = ontologyOverride ?? this.ontology
     const normalizedName = normalizeForComparison(name)
 
     // Phase 0: Deterministic external IDs. These take precedence over all
@@ -348,16 +356,16 @@ export class EntityResolver {
 
     // Phase 1: In-memory cache (instant — catches all prior entities in this session)
     const cached = this.nameCache.get(this.cacheKey(name, scope, accessScope))
-    if (cached && typesCompatibleForExact(entityType, cached.entityType)) {
+    if (cached && typesCompatibleForExact(entityType, cached.entityType, ontology)) {
       const merged = await this.merge(cached, { name, entityType, aliases, description, externalIds, typeCandidates })
       this.cacheEntity(merged)
       return { entity: merged, isNew: false }
     }
     // Also check aliases against cache (skip invalid aliases to prevent false cache hits)
     for (const alias of aliases) {
-      if (!isStrongAliasForMerge(alias, entityType, name, aliases)) continue
+      if (!isStrongAliasForMerge(alias, entityType, name, aliases, ontology)) continue
       const cachedByAlias = this.nameCache.get(this.cacheKey(alias, scope, accessScope))
-      if (cachedByAlias && typesCompatibleForExact(entityType, cachedByAlias.entityType)) {
+      if (cachedByAlias && typesCompatibleForExact(entityType, cachedByAlias.entityType, ontology)) {
         const merged = await this.merge(cachedByAlias, { name, entityType, aliases, description, externalIds, typeCandidates })
         this.cacheEntity(merged)
         return { entity: merged, isNew: false }
@@ -368,7 +376,7 @@ export class EntityResolver {
     if (this.store.findEntities) {
       const candidates = (await this.store.findEntities(name, scope, 10))
         .filter(candidate => candidateMatchesWriteScope(candidate, scope, accessScope))
-      const aliasMatch = this.findByAlias(name, aliases, entityType, candidates)
+      const aliasMatch = this.findByAlias(name, aliases, entityType, candidates, ontology)
       if (aliasMatch) {
         const merged = await this.merge(aliasMatch, { name, entityType, aliases, description, externalIds, typeCandidates })
         this.cacheEntity(merged)
@@ -377,14 +385,14 @@ export class EntityResolver {
 
       // Phase 2: Normalized string matching (catches case/punctuation variants)
       for (const candidate of candidates) {
-        if (!typesCompatibleForExact(entityType, candidate.entityType)) continue
+        if (!typesCompatibleForExact(entityType, candidate.entityType, ontology)) continue
         if (normalizeForComparison(candidate.name) === normalizedName) {
           const merged = await this.merge(candidate, { name, entityType, aliases, description, externalIds, typeCandidates })
           this.cacheEntity(merged)
           return { entity: merged, isNew: false }
         }
         for (const alias of candidate.aliases) {
-          if (!isStrongAliasForMerge(alias, candidate.entityType, candidate.name, candidate.aliases)) continue
+          if (!isStrongAliasForMerge(alias, candidate.entityType, candidate.name, candidate.aliases, ontology)) continue
           if (normalizeForComparison(alias) === normalizedName) {
             const merged = await this.merge(candidate, { name, entityType, aliases, description, externalIds, typeCandidates })
             this.cacheEntity(merged)
@@ -395,7 +403,7 @@ export class EntityResolver {
 
       // Phase 2.5: Fuzzy matching via trigram Jaccard (catches abbreviations/reorderings)
       // e.g., "NY Times" vs "New York Times", "J.K. Rowling" vs "JK Rowling"
-      const fuzzyMatch = this.findByFuzzy(name, aliases, entityType, candidates)
+      const fuzzyMatch = this.findByFuzzy(name, aliases, entityType, candidates, ontology)
       if (fuzzyMatch) {
           const merged = await this.merge(fuzzyMatch, { name, entityType, aliases, description, externalIds, typeCandidates })
         this.cacheEntity(merged)
@@ -412,7 +420,7 @@ export class EntityResolver {
 
       // Phase 3: Direct name-embedding match
       for (const candidate of similar) {
-        if (!typesCompatibleForFuzzy(entityType, candidate.entityType)) continue
+        if (!typesCompatibleForFuzzy(entityType, candidate.entityType, ontology)) continue
         if (entityType === 'person' && candidate.entityType === 'person') {
           if (!hasMatchingLastToken(name, candidate.name)) continue
           if (hasWeakPersonNameMergeEvidence(name, candidate.name)) continue
@@ -434,7 +442,7 @@ export class EntityResolver {
       // (e.g., "Chris Mullin" vs "Christopher Paul Mullin" — both NBA players)
       if (description) {
         const descMatch = await this.resolveByDescription(
-          name, entityType, description, similar, nameEmbedding,
+          name, entityType, description, similar, nameEmbedding, ontology,
         )
         if (descMatch) {
           const merged = await this.merge(descMatch, { name, entityType, aliases, description, externalIds, typeCandidates })
@@ -459,7 +467,7 @@ export class EntityResolver {
       externalIds,
       metadata: {
         ...(description ? { description } : {}),
-        ...((typeCandidates?.length ?? 0) > 0 ? { typeCandidates: normalizeTypeCandidates(entityType, typeCandidates) } : {}),
+        ...((typeCandidates?.length ?? 0) > 0 ? { typeCandidates: normalizeTypeCandidates(entityType, typeCandidates, ontology) } : {}),
       },
       embedding: nameEmbedding,
       descriptionEmbedding,
@@ -480,18 +488,19 @@ export class EntityResolver {
     aliases: string[],
     entityType: string,
     candidates: SemanticEntity[],
+    ontology?: CompiledOntology,
   ): SemanticEntity | undefined {
     const incomingNames = [
       name,
-      ...aliases.filter(alias => isStrongAliasForMerge(alias, entityType, name, aliases)),
+      ...aliases.filter(alias => isStrongAliasForMerge(alias, entityType, name, aliases, ontology)),
     ].map(normalizeForComparison)
 
     for (const candidate of candidates) {
-      if (!typesCompatibleForExact(entityType, candidate.entityType)) continue
+      if (!typesCompatibleForExact(entityType, candidate.entityType, ontology)) continue
       const candidateNames = [
         candidate.name,
         ...candidate.aliases.filter(alias =>
-          isStrongAliasForMerge(alias, candidate.entityType, candidate.name, candidate.aliases)
+          isStrongAliasForMerge(alias, candidate.entityType, candidate.name, candidate.aliases, ontology)
         ),
       ].map(normalizeForComparison)
 
@@ -522,7 +531,7 @@ export class EntityResolver {
     const newAliases: string[] = []
 
     for (const alias of existing.aliases) {
-      if (!isDisplayAliasSafe(alias, existing.entityType)) continue
+      if (!isDisplayAliasSafe(alias, existing.entityType, this.ontology)) continue
       const key = normalizeForComparison(alias)
       if (existingAliases.has(key) || key === normalizeForComparison(existing.name)) continue
       existingAliases.add(key)
@@ -532,7 +541,7 @@ export class EntityResolver {
     // Add the incoming name as an alias if different from canonical (validate first)
     if (normalizeForComparison(incoming.name) !== normalizeForComparison(existing.name)) {
       const key = normalizeForComparison(incoming.name)
-      if (!existingAliases.has(key) && isDisplayAliasSafe(incoming.name, incoming.entityType)) {
+      if (!existingAliases.has(key) && isDisplayAliasSafe(incoming.name, incoming.entityType, this.ontology)) {
         existingAliases.add(key)
         newAliases.push(incoming.name)
       }
@@ -540,7 +549,7 @@ export class EntityResolver {
 
     // Add new aliases (filter out garbage)
     for (const alias of incoming.aliases) {
-      if (!isDisplayAliasSafe(alias, incoming.entityType)) continue
+      if (!isDisplayAliasSafe(alias, incoming.entityType, this.ontology)) continue
       const key = normalizeForComparison(alias)
       if (!existingAliases.has(key) && key !== normalizeForComparison(existing.name)) {
         existingAliases.add(key)
@@ -556,7 +565,7 @@ export class EntityResolver {
       ...metadataTypeCandidates(metadata),
       ...(incoming.typeCandidates ?? []),
       { type: incoming.entityType, confidence: 0.85 },
-    ])
+    ], this.ontology)
     if (mergedTypeCandidates.length > 0) {
       metadata.typeCandidates = mergedTypeCandidates
     }
@@ -602,15 +611,16 @@ export class EntityResolver {
     aliases: string[],
     entityType: string,
     candidates: SemanticEntity[],
+    ontology?: CompiledOntology,
   ): SemanticEntity | undefined {
     const FUZZY_THRESHOLD = 0.85
     const incomingNames = [
       name,
-      ...aliases.filter(alias => isStrongAliasForMerge(alias, entityType, name, aliases)),
+      ...aliases.filter(alias => isStrongAliasForMerge(alias, entityType, name, aliases, ontology)),
     ]
 
     for (const candidate of candidates) {
-      if (!typesCompatibleForFuzzy(entityType, candidate.entityType)) continue
+      if (!typesCompatibleForFuzzy(entityType, candidate.entityType, ontology)) continue
       if (entityType === 'person' && candidate.entityType === 'person') {
         if (!hasMatchingLastToken(name, candidate.name)) continue
         if (hasWeakPersonNameMergeEvidence(name, candidate.name)) continue
@@ -618,7 +628,7 @@ export class EntityResolver {
       const candidateNames = [
         candidate.name,
         ...candidate.aliases.filter(alias =>
-          isStrongAliasForMerge(alias, candidate.entityType, candidate.name, candidate.aliases)
+          isStrongAliasForMerge(alias, candidate.entityType, candidate.name, candidate.aliases, ontology)
         ),
       ]
 
@@ -645,10 +655,11 @@ export class EntityResolver {
     description: string,
     candidates: SemanticEntity[],
     nameEmbedding: number[],
+    ontology?: CompiledOntology,
   ): Promise<SemanticEntity | undefined> {
     // Filter to near-miss candidates that have descriptions and stored description embeddings
     const nearMisses = candidates.filter(c => {
-      if (!typesCompatibleForFuzzy(entityType, c.entityType)) return false
+      if (!typesCompatibleForFuzzy(entityType, c.entityType, ontology)) return false
       if (entityType === 'person' && c.entityType === 'person') {
         if (!hasMatchingLastToken(name, c.name)) return false
         if (isWeakSingleTokenPersonNamePair(name, c.name)) return false
@@ -712,6 +723,17 @@ function normalizeForComparison(s: string): string {
     .replace(/\p{Diacritic}/gu, '')
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '')
+}
+
+function normalizeAliasToken(s: string): string {
+  return s
+    .replace(/[Ææ]/g, 'ae')
+    .replace(/[Œœ]/g, 'oe')
+    .normalize('NFKD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
 }
 
 function externalIdKey(externalId: ExternalId): string {
@@ -1068,8 +1090,8 @@ function isGenericType(type: string | undefined): boolean {
  * `concept` is intentionally not generic: curated concepts should not drift into
  * products, technologies, or organizations through extraction.
  */
-function typesCompatibleForExact(a: string, b: string): boolean {
-  return a === b || isGenericType(a) || isGenericType(b) || typesShareAffinity(a, b)
+function typesCompatibleForExact(a: string, b: string, ontology?: CompiledOntology): boolean {
+  return a === b || isGenericType(a) || isGenericType(b) || typesShareAffinity(a, b, ontology)
 }
 
 /**
@@ -1077,8 +1099,9 @@ function typesCompatibleForExact(a: string, b: string): boolean {
  * similarity can put organizations, products, and technologies near each other,
  * so cross-type fuzzy merges stay disabled by default.
  */
-function typesCompatibleForFuzzy(a: string, b: string): boolean {
-  return a === b || isGenericType(a) || isGenericType(b)
+function typesCompatibleForFuzzy(a: string, b: string, ontology?: CompiledOntology): boolean {
+  if (a === b || isGenericType(a) || isGenericType(b)) return true
+  return ontology ? typesShareAffinity(a, b, ontology) : false
 }
 
 /**

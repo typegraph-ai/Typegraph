@@ -13,6 +13,7 @@ import type { typegraphEventSink } from '../types/events.js'
 import type { typegraphLogger } from '../types/logger.js'
 import type { KnowledgeGraphBridge } from '../types/graph-bridge.js'
 import type { ExtractionCoreferenceCache, Extractor, ExtractedEntity, ExtractedRelation } from '../types/extractor.js'
+import type { CompiledOntology } from '../types/ontology.js'
 import { optionalCompactObject } from '../utils/input.js'
 import { ConfigError } from '../types/errors.js'
 
@@ -140,15 +141,17 @@ class ConfiguredExtractorRunner implements GraphExtractionRunner {
     },
     accessScope?: AccessScope,
     chunkId?: string,
+    ontology?: CompiledOntology,
   ): Promise<{ entities: EntityContext[] } | undefined> {
     const result = await this.extractor.extract({
       id: chunkId ?? `${documentId ?? bucketId}:${chunkIndex ?? 0}`,
       kind: 'document',
-      name: documentName,
       content,
       metadata,
+      ontology,
     }, {
       coreferenceCache: this.coreferenceCache,
+      ontology,
       log: {
         debug: (message, data) => this.logger?.debug?.(message, data),
         warn: (message, data) => this.logger?.warn?.(message, data),
@@ -248,6 +251,7 @@ export class IndexEngine {
     logger?: typegraphLogger,
     private knowledgeGraph?: KnowledgeGraphBridge,
     private extractionCoreferenceCache?: ExtractionCoreferenceCache,
+    private resolveOntology?: (graphId?: string) => CompiledOntology,
   ) {
     this.eventSink = eventSink
     this.logger = logger
@@ -353,13 +357,12 @@ export class IndexEngine {
 
       let extraction: { succeeded: number; failed: number; failedChunks?: ExtractionFailure[] } | undefined
       if (shouldExtract) {
-        const documentName = (propagated.name as string | undefined) ?? cleanDocument.name
         extraction = await this.extractTriplesForChunks(
           bucketId,
           documentId,
           embeddedChunks,
           propagated,
-          documentName,
+          undefined,
           { tenantId, organizationId, groupId, userId, agentId, threadId, graphId },
         )
       }
@@ -606,14 +609,13 @@ export class IndexEngine {
 
       let extraction: { succeeded: number; failed: number; failedChunks?: ExtractionFailure[] } | undefined
       if (shouldExtract) {
-        const documentName = (propagated.name as string | undefined) ?? document.name
         extraction = await this.extractTriplesForChunks(
           bucketId,
           documentId,
           embeddedChunks,
           propagated,
-          documentName,
-          { tenantId, groupId, userId, agentId, threadId, graphId },
+          undefined,
+          { tenantId, organizationId, groupId, userId, agentId, threadId, graphId },
         )
 
         if (!result.extraction) result.extraction = { succeeded: 0, failed: 0 }
@@ -770,6 +772,7 @@ export class IndexEngine {
     initialEntityContext: EntityContext[] = [],
   ): Promise<{ succeeded: number; failed: number; failedChunks?: ExtractionFailure[] }> {
     let entityContext: EntityContext[] = [...initialEntityContext]
+    const ontology = this.resolveOntology?.(identity?.graphId)
     const cacheKey = {
       tenantId: identity?.tenantId,
       organizationId: identity?.organizationId,
@@ -778,6 +781,7 @@ export class IndexEngine {
       agentId: identity?.agentId,
       threadId: identity?.threadId,
       graphId: identity?.graphId,
+      ontologyHash: ontology?.hash,
       bucketId,
       documentId,
       documentName,
@@ -822,6 +826,7 @@ export class IndexEngine {
             identity,
             accessScope,
             chunk.id,
+            ontology,
           ),
           TRIPLE_EXTRACTION_TIMEOUT_MS,
         )

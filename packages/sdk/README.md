@@ -436,9 +436,12 @@ await typegraphInit({
   extractor: customExtractor,
   ontology: {
     version: '2026-05-08',
-    presets: ['b2b-saas'],
+    profiles: ['saas'],
     entities: {
-      organization: { description: 'Customer, vendor, partner, or internal org' },
+      organization: {
+        description: 'Customer, vendor, partner, or internal org',
+        vocabulary: [{ vocabulary: 'schema.org', id: 'Organization', uri: 'https://schema.org/Organization' }],
+      },
       product_area: { description: 'Owned product surface or component' },
       issue: { description: 'Product, support, security, or implementation issue' },
     },
@@ -464,7 +467,13 @@ interface Extractor {
 ```
 
 Ontology is supplied on deploy/init so cloud and self-hosted deployments can use
-the same config-driven model.
+the same config-driven model. Built-in profiles are `general`, `literary`,
+`medical`, `legal`, and `saas`. They use the same config shape as custom
+ontologies and include lightweight references to mature vocabularies such as
+Schema.org, Wikidata, HL7 FHIR, SNOMED CT, LOINC, RxNorm, ELI, Akoma Ntoso,
+LegalRuleML, OpenTelemetry semantic conventions, TM Forum SID, and ITIL. These
+references are metadata for grounding, mapping, and future import tooling; they
+are not expanded into the extraction prompt.
 
 ## Memory
 

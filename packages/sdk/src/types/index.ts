@@ -37,8 +37,13 @@ export type {
 
 export type {
   OntologyConfig,
+  OntologyProfile,
   OntologyEntityConfig,
   OntologyRelationConfig,
+  OntologyVocabularyMatch,
+  OntologyVocabularyRef,
+  OntologyResolutionConfig,
+  OntologyPromptConfig,
   CompiledOntology,
 } from './ontology.js'
 

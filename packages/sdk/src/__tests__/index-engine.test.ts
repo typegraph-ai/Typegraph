@@ -328,6 +328,38 @@ describe('IndexEngine', () => {
       expect(extractFromChunk).toHaveBeenCalledTimes(2)
       expect(maxActive).toBe(1)
     })
+
+    it('passes the resolved graph identity to graph extraction', async () => {
+      const document = createTestDocument({
+        id: 'document-source-graph',
+        content: 'Alice works at Acme.',
+        name: 'Source Graph Document',
+      })
+      const { bucket } = createMockBucket({ documents: [] })
+      const extractFromChunk = vi.fn().mockResolvedValue({ entities: [] })
+      const engine = new IndexEngine(adapter, embedding)
+      engine.tripleExtractor = { extractFromChunk } as any
+
+      await engine.ingestBatch(
+        bucket.id,
+        [{ document, chunks: [{ content: document.content, chunkIndex: 0 }] }],
+        {
+          tenantId: 'tenant-1',
+          organizationId: 'org-1',
+          groupId: 'Novel-30752',
+          graphId: 'internal-source-graph',
+          graphExtraction: true,
+        },
+      )
+
+      expect(extractFromChunk).toHaveBeenCalledTimes(1)
+      expect(extractFromChunk.mock.calls[0]![7]).toEqual(expect.objectContaining({
+        tenantId: 'tenant-1',
+        organizationId: 'org-1',
+        groupId: 'Novel-30752',
+        graphId: 'internal-source-graph',
+      }))
+    })
   })
 
   describe('ingestWithChunks', () => {

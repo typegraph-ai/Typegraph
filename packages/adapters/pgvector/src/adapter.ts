@@ -984,6 +984,10 @@ export class PgVectorAdapter implements VectorStoreAdapter {
   }
 
   async upsertGraphRecord(input: TypeGraphGraphRecord): Promise<TypeGraphGraphRecord> {
+    const metadata = {
+      ...(input.metadata ?? {}),
+      ...(input.ontology ? { ontology: input.ontology } : {}),
+    }
     const rows = await this.sql(
       `INSERT INTO ${this.graphsTable}
         (id, tenant_id, name, description, extends, access, metadata, updated_at)
@@ -1003,7 +1007,7 @@ export class PgVectorAdapter implements VectorStoreAdapter {
         input.description ?? null,
         input.extends ?? [],
         input.access == null ? null : JSON.stringify(input.access),
-        JSON.stringify(input.metadata ?? {}),
+        JSON.stringify(metadata),
       ],
     )
     return mapRowToGraph(rows[0]!)
@@ -1161,6 +1165,8 @@ function mapRowToBucket(row: Record<string, unknown>): Bucket {
 }
 
 function mapRowToGraph(row: Record<string, unknown>): TypeGraphGraphRecord {
+  const metadata = parseJson<Record<string, unknown>>(row.metadata, {})
+  const ontology = metadata.ontology
   return {
     id: row.id as string,
     tenantId: row.tenant_id as string,
@@ -1168,7 +1174,8 @@ function mapRowToGraph(row: Record<string, unknown>): TypeGraphGraphRecord {
     description: (row.description as string) ?? undefined,
     extends: (row.extends as string[] | undefined) ?? [],
     access: parseGraphAccess(row.access),
-    metadata: parseJson(row.metadata, {}),
+    ontology: ontology && typeof ontology === 'object' ? ontology as TypeGraphGraphRecord['ontology'] : undefined,
+    metadata,
     createdAt: row.created_at ? new Date(row.created_at as string) : undefined,
     updatedAt: row.updated_at ? new Date(row.updated_at as string) : undefined,
   }

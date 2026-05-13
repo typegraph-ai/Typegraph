@@ -7,9 +7,11 @@ vi.mock('ai', () => ({
   Output: {
     json: () => ({ type: 'json' }),
     object: (opts: { schema: unknown }) => ({ type: 'object', schema: opts.schema }),
+    array: (opts: { element: unknown }) => ({ type: 'array', element: opts.element }),
   },
 }))
 
+import { z } from 'zod/v4-mini'
 import { aiSdkLlmProvider } from '../llm/ai-sdk-adapter.js'
 
 const fakeModel = {
@@ -77,6 +79,17 @@ describe('aiSdkLlmProvider providerOptions', () => {
         providerOptions: { google: { thinkingConfig: { thinkingLevel: 'medium' } } },
       }),
     )
+  })
+
+  it('uses array output for root array schemas', async () => {
+    mockGenerateText.mockResolvedValueOnce({ text: '', output: [{ name: 'Alice' }] })
+    const provider = aiSdkLlmProvider({ model: fakeModel })
+    const schema = z.array(z.object({ name: z.string() }))
+    const result = await provider.generateJSON<Array<{ name: string }>>('prompt', undefined, { schema })
+    const call = mockGenerateText.mock.calls[0][0]
+
+    expect(call.output).toEqual(expect.objectContaining({ type: 'array' }))
+    expect(result).toEqual([{ name: 'Alice' }])
   })
 
   it('preserves non-overlapping provider namespaces when merging', async () => {

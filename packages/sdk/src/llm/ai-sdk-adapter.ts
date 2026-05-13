@@ -48,6 +48,27 @@ function mergeProviderOptions(
   return out
 }
 
+function arrayElementSchema(schema: unknown): unknown | undefined {
+  if (!schema || typeof schema !== 'object') return undefined
+  const candidate = schema as {
+    type?: unknown
+    _def?: { type?: unknown; typeName?: unknown; element?: unknown }
+    _zod?: { def?: { type?: unknown; typeName?: unknown; element?: unknown } }
+  }
+  const def = candidate._zod?.def ?? candidate._def
+  const type = typeof def?.type === 'string' ? def.type : candidate.type
+  const typeName = def?.typeName
+  if (type !== 'array' && typeName !== 'ZodArray') return undefined
+  return def?.element ?? (typeof def?.type === 'object' ? def.type : undefined)
+}
+
+function outputForSchema(schema: unknown | undefined): ReturnType<typeof Output.json> | ReturnType<typeof Output.object> | ReturnType<typeof Output.array> {
+  if (!schema) return Output.json()
+  const element = arrayElementSchema(schema)
+  if (element) return Output.array({ element: element as any })
+  return Output.object({ schema: schema as any })
+}
+
 /**
  * Wraps an AI SDK language model into typegraph's LLMProvider interface.
  * Uses the AI SDK's `generateText` and `Output` for structured output.
@@ -73,9 +94,7 @@ export function aiSdkLlmProvider(config: AISDKLLMInput): LLMProvider {
       const merged = mergeProviderOptions(defaultProviderOptions, options?.providerOptions)
       const result = await generateText({
         model,
-        output: options?.schema
-          ? Output.object({ schema: options.schema as any })
-          : Output.json(),
+        output: outputForSchema(options?.schema),
         prompt: prompt + '\n\nRespond with valid JSON only, no markdown fences.',
         ...(systemPrompt ? { system: systemPrompt } : {}),
         maxOutputTokens: options?.maxOutputTokens ?? 16384,

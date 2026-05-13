@@ -2,11 +2,12 @@ import { z } from 'zod/v4-mini'
 import type { LLMProvider } from '../types/llm-provider.js'
 import type { KnowledgeGraphBridge } from '../types/graph-bridge.js'
 import type { AccessScope } from '../types/identity.js'
+import type { CompiledOntology } from '../types/ontology.js'
 import {
-  ENTITY_TYPES,
-  ENTITY_TYPES_LIST,
-  VALID_ENTITY_TYPES,
+  DEFAULT_ONTOLOGY,
   effectiveEntityTypes,
+  getEntityTypesForPrompt,
+  getOntologyPromptGuidelines,
   getPredicatesForPrompt,
   normalizePredicateWithDirection,
   normalizeTypeCandidates,
@@ -65,11 +66,11 @@ export interface EntityContext {
 
 const entitySchema = z.array(z.object({
   name: z.string(),
-  type: z.enum(ENTITY_TYPES),
-  typeCandidates: z.optional(z.array(z.object({
-    type: z.enum(ENTITY_TYPES),
+  type: z.string(),
+  typeCandidates: z.array(z.object({
+    type: z.string(),
     confidence: z.number(),
-  }))),
+  })),
   description: z.string(),
   aliases: z.array(z.string()),
 }))
@@ -79,11 +80,11 @@ const relationshipSchema = z.array(z.object({
   predicate: z.string(),
   object: z.string(),
   confidence: z.number(),
-  description: z.optional(z.string()),
-  evidenceText: z.optional(z.string()),
-  temporalStatus: z.optional(z.enum(['current', 'former', 'historical', 'unknown'])),
-  validFrom: z.optional(z.string()),
-  validTo: z.optional(z.string()),
+  description: z.string(),
+  evidenceText: z.string(),
+  temporalStatus: z.enum(['current', 'former', 'historical', 'unknown']),
+  validFrom: z.string(),
+  validTo: z.string(),
 }))
 
 const singlePassSchema = z.object({
@@ -142,49 +143,50 @@ function normalizeName(value: string): string {
     .replace(/\s+/g, ' ')
 }
 
-function typeFamilyKey(type: string | undefined): string {
+function typeFamilyKey(type: string | undefined, ontology?: CompiledOntology): string {
   if (!type) return 'unknown'
-  if (typesShareAffinity(type, 'organization')) return 'brand-platform'
-  if (typesShareAffinity(type, 'project')) return 'work-item'
-  if (typesShareAffinity(type, 'event')) return 'event-meeting'
-  if (typesShareAffinity(type, 'document')) return 'document-work'
+  if (typesShareAffinity(type, 'organization', ontology)) return 'brand-platform'
+  if (typesShareAffinity(type, 'project', ontology)) return 'work-item'
+  if (typesShareAffinity(type, 'event', ontology)) return 'event-meeting'
+  if (typesShareAffinity(type, 'document', ontology)) return 'document-work'
+  if (typesShareAffinity(type, 'location', ontology)) return 'place'
   return type
 }
 
-function entityDisplayContext(entityContext?: EntityContext[]): string {
+function entityDisplayContext(entityContext?: EntityContext[], ontology?: CompiledOntology): string {
   if (!entityContext?.length) return ''
   return entityContext.map(entity => {
     const aliases = (entity.aliases ?? []).length > 0 ? ` aliases: ${(entity.aliases ?? []).join(', ')}` : ''
-    const types = effectiveEntityTypes(entity.type, entity.typeCandidates).join('/')
+    const types = effectiveEntityTypes(entity.type, entity.typeCandidates, 0.6, ontology).join('/')
     return `- ${entity.name} (${types})${aliases}`
   }).join('\n')
 }
 
-function entityContextNameMap(entityContext?: EntityContext[]): Map<string, EntityContext> {
+function entityContextNameMap(entityContext?: EntityContext[], ontology?: CompiledOntology): Map<string, EntityContext> {
   const map = new Map<string, EntityContext>()
   for (const entity of entityContext ?? []) {
     const names = [entity.name, ...(entity.aliases ?? [])]
     for (const name of names) {
-      const key = `${typeFamilyKey(entity.type)}:${normalizeName(name)}`
+      const key = `${typeFamilyKey(entity.type, ontology)}:${normalizeName(name)}`
       if (normalizeName(name)) map.set(key, entity)
     }
   }
   return map
 }
 
-function contextMatch(entity: ExtractedEntity, entityContext?: EntityContext[]): EntityContext | undefined {
-  const byName = entityContextNameMap(entityContext)
+function contextMatch(entity: ExtractedEntity, entityContext?: EntityContext[], ontology?: CompiledOntology): EntityContext | undefined {
+  const byName = entityContextNameMap(entityContext, ontology)
   const candidateNames = [entity.name, ...(entity.aliases ?? [])]
-  const entityTypes = effectiveEntityTypes(entity.type, entity.typeCandidates)
+  const entityTypes = effectiveEntityTypes(entity.type, entity.typeCandidates, 0.6, ontology)
   for (const type of entityTypes) {
     for (const name of candidateNames) {
       const normalized = normalizeName(name)
       if (!normalized) continue
-      const direct = byName.get(`${typeFamilyKey(type)}:${normalized}`)
+      const direct = byName.get(`${typeFamilyKey(type, ontology)}:${normalized}`)
       if (direct) return direct
       const exact = (entityContext ?? []).find(context =>
         normalizeName(context.name) === normalized
-        && typesShareAffinity(context.type, entity.type)
+        && typesShareAffinity(context.type, entity.type, ontology)
       )
       if (exact) return exact
     }
@@ -199,6 +201,18 @@ function nameTokens(value: string): string[] {
 function wordCount(value: string): number {
   const normalized = normalizeName(value)
   return normalized ? normalized.split(/\s+/).length : 0
+}
+
+function allowedEntityTypes(ontology?: CompiledOntology): Set<string> {
+  return new Set((ontology ?? DEFAULT_ONTOLOGY).entityTypes)
+}
+
+function ontologyAllowsType(type: string, ontology?: CompiledOntology): boolean {
+  return allowedEntityTypes(ontology).has(type)
+}
+
+function ontologyAllowsRelation(predicate: string, ontology?: CompiledOntology): boolean {
+  return (ontology ?? DEFAULT_ONTOLOGY).relationNames.includes(predicate)
 }
 
 function lastToken(value: string): string {
@@ -232,6 +246,143 @@ const PERSON_TITLE_TOKENS = new Set([
   'captain', 'cousin', 'doctor', 'dr', 'judge', 'lady', 'lord', 'miss',
   'mr', 'mrs', 'ms', 'queen', 'saint', 'sir', 'st',
 ])
+
+const WORK_LIKE_TYPES = new Set(['creative_work', 'document', 'publication'])
+const WORK_ALIAS_STOPWORDS = new Set([
+  'a', 'an', 'and', 'by', 'der', 'des', 'die', 'das', 'de', 'du', 'for', 'in',
+  'la', 'le', 'of', 'on', 'or', 'the', 'to', 'und', 'von', 'zur',
+])
+const ORDINAL_WORDS = new Set([
+  'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth',
+  'ninth', 'tenth', 'eleventh', 'twelfth', 'thirteenth', 'fourteenth',
+  'fifteenth', 'sixteenth', 'seventeenth', 'eighteenth', 'nineteenth',
+  'twentieth',
+])
+const OPPOSING_QUALIFIER_WORDS = new Set([
+  'old', 'new', 'first', 'second', 'third', 'fourth', 'upper', 'lower',
+  'eastern', 'western', 'northern', 'southern',
+])
+
+function isWorkLikeType(type: string | undefined): boolean {
+  return !!type && WORK_LIKE_TYPES.has(type)
+}
+
+function isGeneratedStorageLabel(value: string): boolean {
+  const cleaned = sanitizeField(value)
+  return /^(?:novel|source|document|doc)[-_ ]?[a-z0-9]+(?:\s*\[\d+\/\d+\])?$/i.test(cleaned)
+}
+
+function isSourceExcerptDescription(value: string): boolean {
+  const normalized = normalizeName(value)
+  return /\b(?:current|provided|source|storage|this)\s+(?:document|text|excerpt|passage|chunk|source)\b/.test(normalized)
+    || /\b(?:document|text|excerpt|passage|chunk)\s+from\s+which\b/.test(normalized)
+    || /\bfrom\s+which\s+(?:the\s+)?(?:text|passage|excerpt)\s+is\s+excerpted\b/.test(normalized)
+    || /\b(?:creative|literary)\s+work\s+from\s+which\s+this\b/.test(normalized)
+}
+
+function isUntitledStructuralHeading(value: string): boolean {
+  const normalized = normalizeName(value)
+  return /^(?:chapter|book|volume|part|section|act|scene|canto)\s+(?:[ivxlcdm]+|\d+|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth)$/.test(normalized)
+}
+
+function isPeriodicalLike(value: string): boolean {
+  const normalized = normalizeName(value)
+  return /\b(?:journal|newspaper|magazine|review|periodical|publication|gazette|almanac|chronicle|herald|post|correspondent|zeitung|zeitungen|monatsschrift|intelligenzblatter|intelligenzblatt|merkur|mercurius|bibliothek)\b/.test(normalized)
+}
+
+function meaningfulWorkTokens(value: string): string[] {
+  return normalizeName(value)
+    .split(/\s+/)
+    .filter(token => token && !WORK_ALIAS_STOPWORDS.has(token))
+}
+
+function romanToNumber(value: string): number | undefined {
+  const roman = value.toLowerCase()
+  if (!/^[ivxlcdm]+$/.test(roman)) return undefined
+  const values: Record<string, number> = { i: 1, v: 5, x: 10, l: 50, c: 100, d: 500, m: 1000 }
+  let total = 0
+  let previous = 0
+  for (let index = roman.length - 1; index >= 0; index--) {
+    const current = values[roman[index]!] ?? 0
+    total += current < previous ? -current : current
+    previous = Math.max(previous, current)
+  }
+  return total > 0 ? total : undefined
+}
+
+function ordinalValue(token: string): string | undefined {
+  if (/^\d+$/.test(token)) return token
+  if (ORDINAL_WORDS.has(token)) return token
+  const roman = romanToNumber(token)
+  return roman !== undefined ? String(roman) : undefined
+}
+
+function ordinalSignature(value: string): { family: string; ordinal: string } | undefined {
+  const tokens = meaningfulWorkTokens(value)
+  for (const token of tokens) {
+    const ordinal = ordinalValue(token)
+    if (!ordinal) continue
+    const family = tokens.filter(item => item !== token).join(' ')
+    if (family) return { family, ordinal }
+  }
+  return undefined
+}
+
+function hasOrdinalConflict(a: string, b: string): boolean {
+  const left = ordinalSignature(a)
+  const right = ordinalSignature(b)
+  return !!left && !!right && left.family === right.family && left.ordinal !== right.ordinal
+}
+
+function qualifierSignature(value: string): { family: string; qualifier: string } | undefined {
+  const tokens = meaningfulWorkTokens(value)
+  const qualifier = tokens.find(token => OPPOSING_QUALIFIER_WORDS.has(token))
+  if (!qualifier) return undefined
+  const family = tokens.filter(token => token !== qualifier).join(' ')
+  return family ? { family, qualifier } : undefined
+}
+
+function hasOpposingQualifierConflict(a: string, b: string): boolean {
+  const left = qualifierSignature(a)
+  const right = qualifierSignature(b)
+  return !!left && !!right && left.family === right.family && left.qualifier !== right.qualifier
+}
+
+function tokenOverlapRatio(a: string, b: string): number {
+  const left = new Set(meaningfulWorkTokens(a))
+  const right = new Set(meaningfulWorkTokens(b))
+  if (left.size === 0 || right.size === 0) return 0
+  let shared = 0
+  for (const token of left) if (right.has(token)) shared++
+  return shared / Math.min(left.size, right.size)
+}
+
+function hasExplicitWorkAliasCue(name: string, alias: string, content: string): boolean {
+  const normalizedContent = normalizeName(content)
+  const normalizedName = normalizeName(name)
+  const normalizedAlias = normalizeName(alias)
+  if (!normalizedName || !normalizedAlias) return false
+  const nameIndex = normalizedContent.indexOf(normalizedName)
+  const aliasIndex = normalizedContent.indexOf(normalizedAlias)
+  if (nameIndex < 0 || aliasIndex < 0) return false
+  const start = Math.max(0, Math.min(nameIndex, aliasIndex) - 80)
+  const end = Math.min(normalizedContent.length, Math.max(nameIndex + normalizedName.length, aliasIndex + normalizedAlias.length) + 80)
+  return /\b(?:also known as|known as|translated as|translation of|under the title|under title|titled|called|same work|same title|equivalent)\b/.test(normalizedContent.slice(start, end))
+}
+
+function isCompatibleWorkAlias(name: string, alias: string, content: string): boolean {
+  if (isGeneratedStorageLabel(alias) || isUntitledStructuralHeading(alias)) return false
+  if (isBadAliasFragment(alias) || hasSentenceBoundaryInsideAlias(alias)) return false
+  if (hasOrdinalConflict(name, alias) || hasOpposingQualifierConflict(name, alias)) return false
+  const normalizedName = normalizeName(name)
+  const normalizedAlias = normalizeName(alias)
+  if (!normalizedName || normalizedName === normalizedAlias) return false
+  if (normalizedName.includes(normalizedAlias) && normalizedAlias.length >= 5) return true
+  if (normalizedAlias.includes(normalizedName) && normalizedName.length >= 5) return true
+  if (looksLikeInitialism(alias) && aliasInitialsMatchOwner(alias, name)) return true
+  if (tokenOverlapRatio(name, alias) >= 0.5) return true
+  return hasExplicitWorkAliasCue(name, alias, content)
+}
 
 function isBadAliasFragment(value: string): boolean {
   const tokens = normalizeName(value).split(/\s+/).filter(Boolean)
@@ -488,7 +639,55 @@ function augmentLocationAliases(entity: ExtractedEntity, content: string): void 
   }
 }
 
+function splitCoordinateEntity(entity: ExtractedEntity, ontology?: CompiledOntology): ExtractedEntity[] {
+  const active = ontology ?? DEFAULT_ONTOLOGY
+  const typeKey = normalizeName(entity.type)
+  const coordinateEntityTypes = active.resolution.coordinateEntityTypes ?? []
+  const coordinatePeerNames = active.resolution.coordinatePeerNames ?? []
+  const qualifiedPlaceSecondParts = active.resolution.qualifiedPlaceSecondParts ?? []
+  if (!coordinateEntityTypes.includes(typeKey)) return [entity]
+  if (!/[,&]|\band\b/i.test(entity.name)) return [entity]
+
+  const parts = sanitizeField(entity.name)
+    .replace(/\s*,\s*(?:and\s+)?/gi, '|')
+    .replace(/\s+\band\b\s+/gi, '|')
+    .split('|')
+    .map(part => sanitizeField(part))
+    .filter(Boolean)
+
+  if (parts.length < 2) return [entity]
+
+  const normalizedParts = parts.map(normalizeName)
+  if (
+    parts.length === 2
+    && qualifiedPlaceSecondParts.includes(normalizedParts[1]!)
+    && !coordinatePeerNames.includes(normalizedParts[0]!)
+  ) {
+    return [entity]
+  }
+
+  const shouldSplit = parts.length > 2
+    || normalizedParts.every(part => coordinatePeerNames.includes(part))
+    || /\band\b/i.test(entity.name)
+  if (!shouldSplit) return [entity]
+
+  return parts.map(part => ({
+    ...entity,
+    name: part,
+    description: entity.description
+      ? entity.description.replace(entity.name, part)
+      : entity.description,
+    aliases: (entity.aliases ?? []).filter(alias => !parts.some(other => normalizeName(alias) === normalizeName(other))),
+  }))
+}
+
 function promoteOrRejectEntity(entity: ExtractedEntity): ExtractedEntity | undefined {
+  if (isWorkLikeType(entity.type)) {
+    if (isGeneratedStorageLabel(entity.name)) return undefined
+    if (isUntitledStructuralHeading(entity.name)) return undefined
+    if (isSourceExcerptDescription(entity.description)) return undefined
+  }
+
   if (entity.type === 'person' && wordCount(entity.name) === 1) {
     const key = normalizeName(entity.name)
     const betterAlias = entity.aliases
@@ -520,24 +719,71 @@ function promoteOrRejectEntity(entity: ExtractedEntity): ExtractedEntity | undef
   return entity
 }
 
+function applyWorkPublicationGuards(entity: ExtractedEntity, content: string, ontology?: CompiledOntology): ExtractedEntity | undefined {
+  if (!isWorkLikeType(entity.type)) return entity
+
+  if (isGeneratedStorageLabel(entity.name)) return undefined
+  if (isUntitledStructuralHeading(entity.name)) return undefined
+  if (isSourceExcerptDescription(entity.description)) return undefined
+
+  if (
+    entity.type === 'creative_work'
+    && ontologyAllowsType('publication', ontology)
+    && (isPeriodicalLike(entity.name) || isPeriodicalLike(entity.description))
+  ) {
+    entity.type = 'publication'
+    entity.typeCandidates = normalizeTypeCandidates(entity.type, [
+      { type: 'publication', confidence: 1 },
+      ...(entity.typeCandidates ?? []),
+    ], ontology)
+  }
+
+  entity.aliases = entity.aliases.filter(alias => isCompatibleWorkAlias(entity.name, alias, content))
+  return entity
+}
+
+function relationshipTypesInclude(entity: ExtractedEntity, types: readonly string[], ontology?: CompiledOntology): boolean {
+  const effective = effectiveTypesForExtracted(entity, ontology)
+  return effective.some(type => types.includes(type))
+}
+
+function canonicalizeRelationshipPredicate(
+  predicate: string,
+  subjectEntity: ExtractedEntity,
+  objectEntity: ExtractedEntity,
+  ontology?: CompiledOntology,
+): string {
+  if (
+    predicate === 'APPEARS_IN'
+    && ontologyAllowsRelation('PUBLISHED_IN', ontology)
+    && relationshipTypesInclude(subjectEntity, ['creative_work', 'document'], ontology)
+    && relationshipTypesInclude(objectEntity, ['publication', 'document', 'creative_work'], ontology)
+  ) {
+    return 'PUBLISHED_IN'
+  }
+  return predicate
+}
+
 function postProcessExtraction(
   entities: ExtractedEntity[],
   relationships: ExtractedRelationship[],
   content: string,
   entityContext?: EntityContext[],
+  ontology?: CompiledOntology,
 ): ExtractionResult {
   const processed: ExtractedEntity[] = []
   const rawNameToCanonical = new Map<string, string>()
+  const allowedTypes = allowedEntityTypes(ontology)
 
   for (const raw of entities) {
     const entity: ExtractedEntity = {
       name: sanitizeField(raw.name ?? ''),
       type: sanitizeField(raw.type ?? ''),
-      typeCandidates: normalizeTypeCandidates(raw.type, raw.typeCandidates),
+      typeCandidates: normalizeTypeCandidates(raw.type, raw.typeCandidates, ontology),
       description: sanitizeField(raw.description ?? ''),
       aliases: Array.isArray(raw.aliases) ? raw.aliases.map(sanitizeField).filter(Boolean) : [],
     }
-    if (!entity.name || !VALID_ENTITY_TYPES.has(entity.type)) continue
+    if (!entity.name || !allowedTypes.has(entity.type)) continue
 
     if (entity.type === 'person') {
       entity.aliases = entity.aliases.filter(isModeratePersonAlias)
@@ -545,31 +791,41 @@ function postProcessExtraction(
       entity.aliases = entity.aliases.filter(alias => !isBadAliasFragment(alias))
     }
 
-    if (entity.type === 'location') augmentLocationAliases(entity, content)
+    if (entity.type === 'location' || entity.type === 'place') augmentLocationAliases(entity, content)
 
     const promoted = promoteOrRejectEntity(entity)
     if (!promoted) continue
 
-    const matchedContext = contextMatch(promoted, entityContext)
+    const guarded = applyWorkPublicationGuards(promoted, content, ontology)
+    if (!guarded) continue
+
+    const matchedContext = contextMatch(guarded, entityContext, ontology)
     if (matchedContext) {
-      const observedName = promoted.name
-      promoted.name = matchedContext.name
-      promoted.type = matchedContext.type
-      promoted.typeCandidates = normalizeTypeCandidates(matchedContext.type, [
+      const observedName = guarded.name
+      guarded.name = matchedContext.name
+      guarded.type = matchedContext.type
+      guarded.typeCandidates = normalizeTypeCandidates(matchedContext.type, [
         ...(matchedContext.typeCandidates ?? []),
-        ...(promoted.typeCandidates ?? []),
-      ])
-      promoted.description = matchedContext.description ?? promoted.description
-      for (const alias of matchedContext.aliases ?? []) addUniqueAlias(promoted.aliases, alias, promoted.name)
-      addUniqueAlias(promoted.aliases, observedName, promoted.name)
+        ...(guarded.typeCandidates ?? []),
+      ], ontology)
+      guarded.description = matchedContext.description ?? guarded.description
+      for (const alias of matchedContext.aliases ?? []) addUniqueAlias(guarded.aliases, alias, guarded.name)
+      addUniqueAlias(guarded.aliases, observedName, guarded.name)
     }
 
-    promoted.aliases = [...new Map(promoted.aliases.map(a => [normalizeName(a), a])).values()]
-      .filter(alias => normalizeName(alias) !== normalizeName(promoted.name))
+    const finalEntity = applyWorkPublicationGuards(guarded, content, ontology)
+    if (!finalEntity) continue
 
-    processed.push(promoted)
+    finalEntity.aliases = [...new Map(finalEntity.aliases.map(a => [normalizeName(a), a])).values()]
+      .filter(alias => normalizeName(alias) !== normalizeName(finalEntity.name))
+
+    for (const split of splitCoordinateEntity(finalEntity, ontology)) {
+      processed.push(split)
+      const rawName = normalizeName(raw.name ?? '')
+      if (rawName) rawNameToCanonical.set(rawName, split.name)
+    }
     const rawName = normalizeName(raw.name ?? '')
-    if (rawName) rawNameToCanonical.set(rawName, promoted.name)
+    if (rawName) rawNameToCanonical.set(rawName, finalEntity.name)
   }
 
   const personContexts = buildPersonAliasContexts(processed)
@@ -580,8 +836,10 @@ function postProcessExtraction(
   }
 
   const nameMap = new Map<string, string>()
+  const entityByCanonicalName = new Map<string, ExtractedEntity>()
   for (const entity of processed) {
     nameMap.set(normalizeName(entity.name), entity.name)
+    entityByCanonicalName.set(entity.name, entity)
     for (const alias of entity.aliases) nameMap.set(normalizeName(alias), entity.name)
   }
   for (const [rawName, canonicalName] of rawNameToCanonical) {
@@ -592,10 +850,13 @@ function postProcessExtraction(
   for (const rel of relationships) {
     const subject = nameMap.get(normalizeName(rel.subject ?? ''))
     const object = nameMap.get(normalizeName(rel.object ?? ''))
-    const predicate = sanitizeField(rel.predicate ?? '')
+    const rawPredicate = sanitizeField(rel.predicate ?? '')
       .replace(/[\s-]+/g, '_')
       .toUpperCase()
-    if (!subject || !object || !predicate) continue
+    const subjectEntity = subject ? entityByCanonicalName.get(subject) : undefined
+    const objectEntity = object ? entityByCanonicalName.get(object) : undefined
+    if (!subject || !object || !rawPredicate || !subjectEntity || !objectEntity) continue
+    const predicate = canonicalizeRelationshipPredicate(rawPredicate, subjectEntity, objectEntity, ontology)
     sanitizedRelationships.push({
       subject,
       predicate,
@@ -612,24 +873,26 @@ function postProcessExtraction(
   return { entities: processed, relationships: sanitizedRelationships }
 }
 
-function effectiveTypesForExtracted(entity: ExtractedEntity): string[] {
-  return effectiveEntityTypes(entity.type, entity.typeCandidates)
+function effectiveTypesForExtracted(entity: ExtractedEntity, ontology?: CompiledOntology): string[] {
+  return effectiveEntityTypes(entity.type, entity.typeCandidates, 0.6, ontology)
 }
 
 function relationTypingValid(
   relationship: ExtractedRelationship,
   entityByName: Map<string, ExtractedEntity>,
+  ontology?: CompiledOntology,
 ): boolean {
   const subjectEntity = entityByName.get(normalizeName(relationship.subject))
   const objectEntity = entityByName.get(normalizeName(relationship.object))
   if (!subjectEntity || !objectEntity) return false
   if (normalizeName(subjectEntity.name) === normalizeName(objectEntity.name)) return false
-  const normalized = normalizePredicateWithDirection(relationship.predicate)
+  const normalized = normalizePredicateWithDirection(relationship.predicate, ontology)
   if (!normalized.valid) return false
   return validatePredicateEffectiveTypes(
     normalized.predicate,
-    effectiveTypesForExtracted(subjectEntity),
-    effectiveTypesForExtracted(objectEntity),
+    effectiveTypesForExtracted(subjectEntity, ontology),
+    effectiveTypesForExtracted(objectEntity, ontology),
+    ontology,
   ).valid
 }
 
@@ -660,17 +923,19 @@ ${JSON.stringify(triples)}`
 
 // ── Single-pass prompt (default) ──
 
-function buildSinglePassPrompt(content: string, entityContext?: EntityContext[], documentName?: string): string {
+function ontologyGuidelinesSection(ontology?: CompiledOntology): string {
+  const guidelines = getOntologyPromptGuidelines(ontology)
+  return guidelines ? `\nOntology-specific guidance:\n${guidelines}\n` : ''
+}
+
+function buildSinglePassPrompt(content: string, entityContext?: EntityContext[], _documentName?: string, ontology?: CompiledOntology): string {
   const contextSection = entityContext?.length
-    ? `\nPreviously identified entities in this document:\n${entityDisplayContext(entityContext)}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
-    : ''
-  const titleSection = documentName
-    ? `\nThe text string is from a document named: "${documentName}". Entities referenced in the name should be extracted as primary entities using their full formal names.\n`
+    ? `\nPreviously identified entities in this document:\n${entityDisplayContext(entityContext, ontology)}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
     : ''
 
   return `Your task is to extract all named entities, and relationships between them, from a text string.
 
-${contextSection}${titleSection}
+${contextSection}${ontologyGuidelinesSection(ontology)}
 
 ## Step 1: Entity Extraction
 
@@ -685,7 +950,7 @@ For each entity, provide:
   Products: "iPhone 16 Pro Max" not "iPhone"; "Tesla Model 3" not "Model 3"; "GPT-4" not "GPT"
   Documents: "Acme master services agreement" not "MSA"; "Q4 architecture review deck" not "deck"; "SOC2 readiness report" not "report"
   Culture: "Naismith Memorial Basketball Hall of Fame" not "Hall of Fame"; "Academy Award for Best Picture" not "Best Picture"; "The Great Gatsby" not "Gatsby"
-- "type": One of: ${ENTITY_TYPES_LIST}
+- "type": One of: ${getEntityTypesForPrompt(ontology)}
 - "typeCandidates": Ranked likely semantic types for the same entity, primary type first. Include 1-3 candidates with confidence 0.0 to 1.0. Use this when a named platform or brand can be interpreted as organization/product/technology.
 - "description": A one-sentence description of what this entity IS — its defining attributes, NOT its relationships to other entities
 - "aliases": Other proper names, abbreviations, pseudonyms, titles, or stable short references for THIS SAME entity in the text (array of strings). Preserve the exact surface forms that appear in the source text.
@@ -720,6 +985,8 @@ Entity rules:
 - For events, awards, seasons, software versions, product generations, or any time/version-specific entities, ALWAYS include the year, version, or edition in the name. Each distinct occurrence is a SEPARATE entity — e.g., "2023 NBA Finals" and "2024 NBA Finals" are different, "Python 2" and "Python 3" are different, "iPhone 15" and "iPhone 16" are different, "HTTP/1.1" and "HTTP/2" are different, "Michelin Guide 2024" and "Michelin Guide 2025" are different.
 - Different awards are ALWAYS separate entities even when they share words — "NBA Finals MVP" and "NBA MVP" are SEPARATE; "Academy Award for Best Picture" and "Academy Award for Best Director" are SEPARATE; "Nobel Peace Prize" and "Nobel Prize in Physics" are SEPARATE
 - Entities with opposing directional or categorical qualifiers are ALWAYS separate — "Western Conference" and "Eastern Conference" are SEPARATE; "North Atlantic Treaty Organization" and "South Asian Association" are SEPARATE; "Upper Egypt" and "Lower Egypt" are SEPARATE
+- For creative_work/publication/document entities, NEVER extract the current source document, generated source labels, chunk labels, unnamed chapters, structural headings, or storage IDs as entities.
+- For creative_work/publication aliases, do not merge sibling or numbered works: "Elegy XIV" and "Elegy XV" are separate; "Old Testament" and "New Testament" are separate.
 - Profession and role statements should become structured edges when supported by the text. Examples: "Steve Sharp, a pilot by profession" -> Steve Sharp WORKS_AS pilot; "Elsie Inglis was a doctor" -> Elsie Inglis WORKS_AS doctor; "She served as a house surgeon" -> person WORKS_AS house surgeon
 
 CRITICAL — Aliases vs. Relationships:
@@ -738,10 +1005,10 @@ For each relationship between the entities you identified, provide:
 - "confidence": How confident you are (0.0 to 1.0)
 - "description": One standalone sentence describing the relationship as a complete fact. It must be understandable without the source text.
 - "evidenceText": A concise source-backed excerpt or paraphrase that justifies the relationship. Keep it short; do not include full paragraphs.
-- "temporalStatus": Optional. Use "former" for past-tense relationships, "current" for current relationships, "historical" for historical/narrative facts, or "unknown" when unclear.
-- "validFrom" / "validTo": Optional ISO-like date strings only when the text states explicit dates or bounded periods.
+- "temporalStatus": Use "former" for past-tense relationships, "current" for current relationships, "historical" for historical/narrative facts, or "unknown" when unclear.
+- "validFrom" / "validTo": ISO-like date strings only when the text states explicit dates or bounded periods. Use an empty string when not stated.
 
-${getPredicatesForPrompt()}
+${getPredicatesForPrompt(ontology)}
 
 Relationship rules:
 - Subject and object MUST be entities from Step 1 — do not introduce new entities
@@ -758,6 +1025,7 @@ Relationship rules:
 - Extract relationships that are explicitly stated or strongly implied in the text
 - Do not emit self-relationships or alias relationships. Relationships are only for two different entities after alias resolution.
 - Prefer relationship descriptions that preserve the source's important names, dates, places, objects, and negation.
+- Do not use APPEARS_IN for creative_work-to-publication/document facts. Use PUBLISHED_IN when a work appears in a journal, newspaper, magazine, review, almanac, periodical, document, or larger work.
 
 ## Example
 
@@ -781,7 +1049,7 @@ Output:
   {"subject": "Cousin Cæsar", "predicate": "LOCATED_IN", "object": "Paducah, Kentucky", "confidence": 0.85, "description": "Cousin Cæsar later went to Paducah, Kentucky.", "evidenceText": "we find Cousin Cæsar in Paducah, Kentucky"},
   {"subject": "Cousin Cæsar", "predicate": "PARTNERED_WITH", "object": "Steve Sharp", "confidence": 0.95, "description": "Cousin Cæsar and Steve Sharp were partners in a card game.", "evidenceText": "in company with one Steve Sharp; they were partners"},
   {"subject": "Steve Sharp", "predicate": "WORKS_AS", "object": "pilot", "confidence": 0.9, "description": "Steve Sharp worked as a pilot.", "evidenceText": "Sharp, a pilot by profession"},
-  {"subject": "Old Smith", "predicate": "EMPLOYED", "object": "Rob Roy", "confidence": 0.9, "description": "Old Smith employed Rob Roy to cut wood.", "evidenceText": "Rob Roy cut wood for Old Smith"}
+  {"subject": "Rob Roy", "predicate": "WORKS_FOR", "object": "Old Smith", "confidence": 0.9, "description": "Rob Roy worked for Old Smith.", "evidenceText": "Rob Roy cut wood for Old Smith"}
 ]}
 
 ## Self-review
@@ -796,15 +1064,13 @@ ${content}`
 
 // ── Two-pass prompts ──
 
-function buildEntityExtractionPrompt(content: string, entityContext?: EntityContext[], documentName?: string): string {
+function buildEntityExtractionPrompt(content: string, entityContext?: EntityContext[], _documentName?: string, ontology?: CompiledOntology): string {
   const contextSection = entityContext?.length
-    ? `\nPreviously identified entities in the text string:\n${entityDisplayContext(entityContext)}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
-    : ''
-  const titleSection = documentName
-    ? `\nThe text string is from a document named: "${documentName}". Entities referenced in the name should be extracted as primary entities using their full formal and canonical names.\n`
+    ? `\nPreviously identified entities in the text string:\n${entityDisplayContext(entityContext, ontology)}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
     : ''
 
     return `Your task is to extract all named entities from a text string.
+${ontologyGuidelinesSection(ontology)}
 
     <TASK_INSTRUCTIONS>
     
@@ -819,7 +1085,7 @@ function buildEntityExtractionPrompt(content: string, entityContext?: EntityCont
     -- Legal/Science: "General Data Protection Regulation" not "GDPR"; "Clean Air Act of 1970" not "Clean Air Act"; "Hubble Space Telescope" not "Hubble"; "CRISPR-Cas9" not "CRISPR"
     -- Products: "iPhone 16 Pro Max" not "iPhone"; "Tesla Model 3" not "Model 3"; "GPT-4" not "GPT"
     -- Culture: "Naismith Memorial Basketball Hall of Fame" not "Hall of Fame"; "Academy Award for Best Picture" not "Best Picture"; "The Great Gatsby" not "Gatsby"
-    - "type": One of: ${ENTITY_TYPES_LIST}
+    - "type": One of: ${getEntityTypesForPrompt(ontology)}
     - "typeCandidates": Ranked likely semantic types for the same entity, primary type first. Include 1-3 candidates with confidence 0.0 to 1.0. Use this for brands/platforms that can plausibly be organization/product/technology without creating duplicates.
     - "description": A one-sentence description of what this entity IS — its defining attributes, NOT its relationships to other entities
     - "aliases": Other proper names, abbreviations, pseudonyms, titles, or stable short references for THIS SAME entity in the text (array of strings). Preserve the exact surface forms that appear in the source text.
@@ -858,6 +1124,8 @@ function buildEntityExtractionPrompt(content: string, entityContext?: EntityCont
     - For events, awards, seasons, software versions, product generations, or any time/version-specific entities, ALWAYS include the year, version, or edition in the name. Each distinct occurrence is a SEPARATE entity — e.g., "2023 NBA Finals" and "2024 NBA Finals" are different, "Python 2" and "Python 3" are different, "iPhone 15" and "iPhone 16" are different, "HTTP/1.1" and "HTTP/2" are different, "Michelin Guide 2024" and "Michelin Guide 2025" are different.
     - Different awards are ALWAYS separate entities even when they share words — "NBA Finals MVP" and "NBA MVP" are SEPARATE; "Academy Award for Best Picture" and "Academy Award for Best Director" are SEPARATE; "Nobel Peace Prize" and "Nobel Prize in Physics" are SEPARATE
     - Entities with opposing directional or categorical qualifiers are ALWAYS separate — "Western Conference" and "Eastern Conference" are SEPARATE; "North Atlantic Treaty Organization" and "South Asian Association" are SEPARATE; "Upper Egypt" and "Lower Egypt" are SEPARATE
+    - For creative_work/publication/document entities, NEVER extract the current source document, generated source labels, chunk labels, unnamed chapters, structural headings, or storage IDs as entities.
+    - For creative_work/publication aliases, do not merge sibling or numbered works: "Elegy XIV" and "Elegy XV" are separate; "Old Testament" and "New Testament" are separate.
     - Profession and role statements should become structured edges when supported by the text. Examples: "Steve Sharp, a pilot by profession" -> Steve Sharp WORKS_AS pilot; "Elsie Inglis was a doctor" -> Elsie Inglis WORKS_AS doctor; "She served as a house surgeon" -> person WORKS_AS house surgeon
     
     </TASK_RULES>
@@ -945,15 +1213,9 @@ Now, below we are getting into the meat of the current task you are performing.
 
 </PREVIOUSLY_IDENTIFIED_ENTITIES>
 
-<DOCUMENT_TITLE>
-
-  ${titleSection}
-
-</DOCUMENT_TITLE>
-
 <ENTITY_TYPE_LIST>
 
-  ${ENTITY_TYPES_LIST}
+  ${getEntityTypesForPrompt(ontology)}
 
 </ENTITY_TYPE_LIST>
 
@@ -973,8 +1235,9 @@ Extract all named entities from the following text string:
 </THE_TEXT_STRING>`
 }
 
-function buildRelationshipPrompt(entitiesJson: string, content: string): string {
+function buildRelationshipPrompt(entitiesJson: string, content: string, ontology?: CompiledOntology): string {
   return `Your task is to extract all relationships between the entities listed below and the entities in the text string.
+${ontologyGuidelinesSection(ontology)}
 
 <TASK_INSTRUCTIONS>
 
@@ -985,8 +1248,8 @@ For each relationship, provide:
 - "confidence": How confident you are this relationship is stated or strongly implied (0.0 to 1.0)
 - "description": One standalone sentence describing the relationship as a complete fact.
 - "evidenceText": A concise source-backed excerpt or paraphrase that justifies the relationship.
-- "temporalStatus": Optional. Use "former" for past-tense relationships, "current" for current relationships, "historical" for historical/narrative facts, or "unknown" when unclear.
-- "validFrom" / "validTo": Optional ISO-like date strings only when the text states explicit dates or bounded periods.
+- "temporalStatus": Use "former" for past-tense relationships, "current" for current relationships, "historical" for historical/narrative facts, or "unknown" when unclear.
+- "validFrom" / "validTo": ISO-like date strings only when the text states explicit dates or bounded periods. Use an empty string when not stated.
 
 </TASK_INSTRUCTIONS>
 
@@ -1008,6 +1271,7 @@ For each relationship, provide:
 - Do not connect an entity to a generic description or role unless that role was extracted as a specific named entity.
 - When the text directly states a profession, office, or role for a named entity, emit a structured relationship to that role entity. Examples: person WORKS_AS doctor, person WORKS_AS house surgeon, person WORKS_AS physician
 - Preserve important names, dates, places, objects, and negation in relationship descriptions and evidence text.
+- Do not use APPEARS_IN for creative_work-to-publication/document facts. Use PUBLISHED_IN when a work appears in a journal, newspaper, magazine, review, almanac, periodical, document, or larger work.
 - Return an empty array if no clear relationships exist between the entities listed below
 
 </TASK_RULES>
@@ -1046,7 +1310,7 @@ For each relationship, provide:
     {"subject": "Cousin Cæsar", "predicate": "LOCATED_IN", "object": "Paducah, Kentucky", "confidence": 0.85, "description": "Cousin Cæsar later went to Paducah, Kentucky.", "evidenceText": "we find Cousin Cæsar in Paducah, Kentucky"},
     {"subject": "Cousin Cæsar", "predicate": "PARTNERED_WITH", "object": "Steve Sharp", "confidence": 0.95, "description": "Cousin Cæsar and Steve Sharp were partners in a card game.", "evidenceText": "in company with one Steve Sharp; they were partners"},
     {"subject": "Steve Sharp", "predicate": "WORKS_AS", "object": "pilot", "confidence": 0.9, "description": "Steve Sharp worked as a pilot.", "evidenceText": "Sharp, a pilot by profession"},
-    {"subject": "Old Smith", "predicate": "EMPLOYED", "object": "Rob Roy", "confidence": 0.9, "description": "Old Smith employed Rob Roy to cut wood.", "evidenceText": "Rob Roy cut wood for Old Smith"}]
+    {"subject": "Rob Roy", "predicate": "WORKS_FOR", "object": "Old Smith", "confidence": 0.9, "description": "Rob Roy worked for Old Smith.", "evidenceText": "Rob Roy cut wood for Old Smith"}]
 
   </EXAMPLE_OUTPUT>
 
@@ -1056,14 +1320,14 @@ Now, below we are getting into the meat of the current task you are performing.
 
 <TASK_OUTPUT_REQUIREMENTS>
 
-- Return a JSON array: [{"subject": "...", "predicate": "...", "object": "...", "confidence": 0.9, "description": "...", "evidenceText": "..."}, ...]
+- Return a JSON array: [{"subject": "...", "predicate": "...", "object": "...", "confidence": 0.9, "description": "...", "evidenceText": "...", "temporalStatus": "unknown", "validFrom": "", "validTo": ""}, ...]
 - Return an empty array if no relationships exist between the listed entities
 
 </TASK_OUTPUT_REQUIREMENTS>
 
 <PREDICATE_VOCABULARY_TO_USE_FOR_THIS_TASK>
 
-  ${getPredicatesForPrompt()}
+  ${getPredicatesForPrompt(ontology)}
 
 </PREDICATE_VOCABULARY_TO_USE_FOR_THIS_TASK>
 
@@ -1104,19 +1368,19 @@ export class TripleExtractor {
     content: string,
     entityContext?: EntityContext[],
     documentName?: string,
+    ontology?: CompiledOntology,
   ): Promise<ExtractionResult> {
     const cleanContent = sanitizeText(content)
-    const cleanTitle = documentName ? sanitizeField(documentName) : undefined
     const raw = this.twoPass
-      ? await this.extractTwoPass(cleanContent, entityContext, cleanTitle)
-      : await this.extractSinglePass(cleanContent, entityContext, cleanTitle)
-    const processed = postProcessExtraction(raw.entities, raw.relationships, cleanContent, entityContext)
+      ? await this.extractTwoPass(cleanContent, entityContext, undefined, ontology)
+      : await this.extractSinglePass(cleanContent, entityContext, undefined, ontology)
+    const processed = postProcessExtraction(raw.entities, raw.relationships, cleanContent, entityContext, ontology)
     const entityByName = new Map<string, ExtractedEntity>()
     for (const entity of processed.entities) {
       entityByName.set(normalizeName(entity.name), entity)
       for (const alias of entity.aliases) entityByName.set(normalizeName(alias), entity)
     }
-    const typedRelationships = processed.relationships.filter(rel => relationTypingValid(rel, entityByName))
+    const typedRelationships = processed.relationships.filter(rel => relationTypingValid(rel, entityByName, ontology))
     const relationships = await this.reflectRelationships(cleanContent, typedRelationships)
     return { entities: processed.entities, relationships }
   }
@@ -1135,19 +1399,21 @@ export class TripleExtractor {
     documentName?: string,
     identity?: {
       tenantId?: string | undefined
+      organizationId?: string | undefined
       groupId?: string | undefined
       userId?: string | undefined
       agentId?: string | undefined
       threadId?: string | undefined
+      graphId?: string | undefined
     },
     accessScope?: AccessScope,
     chunkId?: string,
+    ontology?: CompiledOntology,
   ): Promise<{ entities: EntityContext[] } | undefined> {
     if (!this.graph.addTriple && !this.graph.addEntityMentions) return { entities: [] }
 
     const cleanContent = sanitizeText(content)
-    const cleanTitle = documentName ? sanitizeField(documentName) : undefined
-    const { entities, relationships } = await this.extractCandidatesFromChunk(cleanContent, entityContext, cleanTitle)
+    const { entities, relationships } = await this.extractCandidatesFromChunk(cleanContent, entityContext, undefined, ontology)
 
     if (this.graph.addEntityMentions && entities.length > 0) {
       await this.graph.addEntityMentions(entities.map(entity => ({
@@ -1161,6 +1427,8 @@ export class TripleExtractor {
         ...(chunkIndex !== undefined ? { chunkIndex } : {}),
         ...(documentId ? { documentId } : {}),
         ...(identity?.tenantId ? { tenantId: identity.tenantId } : {}),
+        ...(identity?.organizationId ? { organizationId: identity.organizationId } : {}),
+        ...(identity?.graphId ? { graphId: identity.graphId } : {}),
         ...(identity?.groupId ? { groupId: identity.groupId } : {}),
         ...(identity?.userId ? { userId: identity.userId } : {}),
         ...(identity?.agentId ? { agentId: identity.agentId } : {}),
@@ -1205,6 +1473,8 @@ export class TripleExtractor {
           ...(chunkIndex !== undefined ? { chunkIndex } : {}),
           ...(documentId ? { documentId } : {}),
           ...(identity?.tenantId ? { tenantId: identity.tenantId } : {}),
+          ...(identity?.organizationId ? { organizationId: identity.organizationId } : {}),
+          ...(identity?.graphId ? { graphId: identity.graphId } : {}),
           ...(identity?.groupId ? { groupId: identity.groupId } : {}),
           ...(identity?.userId ? { userId: identity.userId } : {}),
           ...(identity?.agentId ? { agentId: identity.agentId } : {}),
@@ -1261,8 +1531,9 @@ export class TripleExtractor {
     content: string,
     entityContext?: EntityContext[],
     documentName?: string,
+    ontology?: CompiledOntology,
   ): Promise<ExtractionResult> {
-    const prompt = buildSinglePassPrompt(content, entityContext, documentName)
+    const prompt = buildSinglePassPrompt(content, entityContext, documentName, ontology)
     const result = await this.llm.generateJSON<ExtractionResult>(
       prompt,
       'You are a precise knowledge graph extractor. Preserve complete named surface forms, model pseudonyms as aliases, reject generic one-token entities, and return only valid JSON.',
@@ -1274,7 +1545,7 @@ export class TripleExtractor {
     }
 
     const entities = result.entities.filter(e =>
-      e.name && e.type && VALID_ENTITY_TYPES.has(e.type)
+      e.name && e.type && (ontology?.entityTypes ?? DEFAULT_ONTOLOGY.entityTypes).includes(e.type)
     )
     const relationships = Array.isArray(result.relationships) ? result.relationships : []
 
@@ -1286,10 +1557,11 @@ export class TripleExtractor {
     content: string,
     entityContext?: EntityContext[],
     documentName?: string,
+    ontology?: CompiledOntology,
   ): Promise<ExtractionResult> {
     // Pass 1: Extract entities
     const rawEntities = await this.llm.generateJSON<ExtractedEntity[]>(
-      buildEntityExtractionPrompt(content, entityContext, documentName),
+      buildEntityExtractionPrompt(content, entityContext, documentName, ontology),
       'You are a precise named entity extractor. Preserve complete named surface forms, model pseudonyms as aliases, reject generic one-token entities, and return only valid JSON arrays.',
       { schema: entitySchema },
     )
@@ -1299,7 +1571,7 @@ export class TripleExtractor {
     }
 
     const entities = rawEntities.filter(e =>
-      e.name && e.type && VALID_ENTITY_TYPES.has(e.type)
+      e.name && e.type && (ontology?.entityTypes ?? DEFAULT_ONTOLOGY.entityTypes).includes(e.type)
     )
 
     if (entities.length < 2) {
@@ -1310,10 +1582,10 @@ export class TripleExtractor {
     const entitiesJson = JSON.stringify(entities.map(e => ({
       name: e.name,
       type: e.type,
-      typeCandidates: normalizeTypeCandidates(e.type, e.typeCandidates),
+      typeCandidates: normalizeTypeCandidates(e.type, e.typeCandidates, ontology),
       aliases: e.aliases ?? [],
     })))
-    const prompt = buildRelationshipPrompt(entitiesJson, content)
+    const prompt = buildRelationshipPrompt(entitiesJson, content, ontology)
 
     const rawRelationships = await this.relationshipLlm.generateJSON<ExtractedRelationship[]>(
       prompt,

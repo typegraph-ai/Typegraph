@@ -17,6 +17,7 @@ function mapThreadRow(row: Record<string, unknown>): typegraphThread {
     agentId: (row.agent_id as string) ?? undefined,
     name: row.name as string,
     description: (row.description as string) ?? undefined,
+    url: (row.url as string) ?? undefined,
     metadata: parseJson(row.metadata, {}),
     createdAt: new Date(row.created_at as string),
     updatedAt: new Date(row.updated_at as string),
@@ -33,8 +34,8 @@ export class PgThreadStore {
     const rows = await this.sql(
       `INSERT INTO ${this.tableName}
         (id, tenant_id, graph_id, organization_id, group_id, user_id, agent_id, name, description,
-         metadata, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,NOW())
+         url, metadata, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,NOW())
        ON CONFLICT (tenant_id, id) DO UPDATE SET
          graph_id = EXCLUDED.graph_id,
          organization_id = EXCLUDED.organization_id,
@@ -43,6 +44,7 @@ export class PgThreadStore {
          agent_id = EXCLUDED.agent_id,
          name = EXCLUDED.name,
          description = EXCLUDED.description,
+         url = EXCLUDED.url,
          metadata = EXCLUDED.metadata,
          updated_at = NOW()
        RETURNING *`,
@@ -56,6 +58,7 @@ export class PgThreadStore {
         input.agentId ?? null,
         input.name,
         input.description ?? null,
+        input.url ?? null,
         JSON.stringify(input.metadata ?? {}),
       ],
     )

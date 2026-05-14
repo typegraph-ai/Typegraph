@@ -10,10 +10,14 @@
 import type {
   CompiledOntology,
   OntologyConfig,
+  OntologyEntityConfig,
   OntologyProfile,
+  OntologyPromptConfig,
+  OntologyRelationConfig,
   OntologyResolutionConfig,
   OntologyVocabularyRef,
 } from '../types/ontology.js'
+import { TYPEGRAPH_B2B_SAAS_ONTOLOGY } from './saas-ontology.js'
 
 export const ENTITY_TYPES = [
   'person',
@@ -173,7 +177,8 @@ const role = ['role'] as const
 const authoredWork = ['document', 'creative_work', 'publication', 'contract', 'guideline'] as const
 const publishedWork = ['document', 'creative_work'] as const
 const publishedContainer = ['publication', 'document', 'creative_work'] as const
-const appearsInSubject = ['person', 'character', 'organization', 'location', 'place', 'building', 'artifact'] as const
+const appearsInSubject = ['character'] as const
+const appearsInContainer = ['creative_work', 'publication'] as const
 const workObject = ['document', 'creative_work', 'publication', 'contract', 'guideline', 'product', 'technology', 'concept'] as const
 const productTech = ['product', 'technology', 'feature', 'integration'] as const
 const issueProject = ['issue', 'ticket', 'project'] as const
@@ -351,7 +356,7 @@ export const PREDICATE_SPECS: readonly PredicateSpec[] = [
   { name: 'IMPRISONED_IN', category: 'Historical / narrative', description: 'A person or group was imprisoned, jailed, or detained in a location.', domain: ALL_TYPES, range: loc, aliases: [{ name: 'JAILED_IN' }, { name: 'DETAINED_IN' }, { name: 'HELD_IN' }] },
   { name: 'FOUGHT_IN', category: 'Historical / narrative', description: 'An entity fought, served, or battled in an event or conflict.', domain: ALL_TYPES, range: eventMeeting, aliases: [{ name: 'SERVED_IN' }, { name: 'BATTLED_IN' }] },
   { name: 'CONFLICT_WITH', category: 'Historical / narrative', description: 'Two entities are in war, rivalry, conflict, opposition, or hostility.', domain: ALL_TYPES, range: ALL_TYPES, symmetric: true, aliases: [{ name: 'AT_WAR_WITH' }, { name: 'WAGED_WAR_AGAINST' }, { name: 'FOUGHT_AGAINST' }, { name: 'IN_CONFLICT_WITH' }] },
-  { name: 'APPEARS_IN', category: 'Historical / narrative', description: 'A character, person, organization, place, building, or artifact appears in a creative work, publication, or document.', domain: appearsInSubject, range: authoredWork, aliases: [{ name: 'FEATURED_IN' }] },
+  { name: 'APPEARS_IN', category: 'Historical / narrative', description: 'A fictional or narrative character meaningfully appears in a named creative work or publication.', domain: appearsInSubject, range: appearsInContainer, aliases: [{ name: 'FEATURED_IN' }] },
   { name: 'LIVES_AT', category: 'Historical / narrative', description: 'A person or character lives, stays, resides, or is based at a place or building.', domain: person, range: loc, aliases: [{ name: 'RESIDES_AT' }, { name: 'STAYS_AT' }] },
   { name: 'TRADES_THROUGH', category: 'Historical / narrative', description: 'An entity trades, exchanges, imports, exports, or routes goods through a place or entity.', domain: ALL_TYPES, range: ALL_TYPES, aliases: [{ name: 'TRADES_WITH' }, { name: 'EXPORTS_TO' }, { name: 'IMPORTS_FROM' }] },
 
@@ -781,7 +786,7 @@ const PROFILE_PROMPT_GUIDELINES: Record<OntologyProfile, { entityGuidelines: str
     ],
     relationGuidelines: [
       'Use CONFLICT_WITH for wars, hostilities, rivalries, or named conflicts between two entities.',
-      'Use APPEARS_IN for characters, people, organizations, places, buildings, or artifacts that belong to a named creative work, publication, or document.',
+      'Use APPEARS_IN only for meaningful narrative membership: a character appearing in a named creative work or publication. Do not use it for ordinary document/chunk mentions or for real people, places, organizations, buildings, or artifacts merely mentioned in a work.',
       'Use PUBLISHED_IN when a document or creative work appears in a journal, newspaper, magazine, review, almanac, gazette, periodical, document, or larger work.',
     ],
   },
@@ -797,6 +802,10 @@ const PROFILE_PROMPT_GUIDELINES: Record<OntologyProfile, { entityGuidelines: str
     entityGuidelines: ['Prefer SaaS entities: account, contact, feature, ticket, metric, integration, vendor, product, project, and meeting.'],
     relationGuidelines: ['Use REQUESTED, REPORTED, RENEWING, USES, INTEGRATES_WITH, ASSIGNED_TO, RESOLVES, BLOCKS, and DESCRIBES for customer/product facts.'],
   },
+}
+
+const BUILT_IN_PROFILE_ONTOLOGIES: Partial<Record<OntologyProfile, OntologyConfig>> = {
+  saas: TYPEGRAPH_B2B_SAAS_ONTOLOGY,
 }
 
 function normalizeProfile(value: unknown): OntologyProfile | undefined {
@@ -845,17 +854,106 @@ function dedupeVocabularyRefs(refs: readonly OntologyVocabularyRef[]): OntologyV
   return [...byKey.values()]
 }
 
+function mergeEntityConfigs(
+  base?: Record<string, OntologyEntityConfig> | undefined,
+  override?: Record<string, OntologyEntityConfig> | undefined,
+): Record<string, OntologyEntityConfig> | undefined {
+  const merged = { ...(base ?? {}) }
+  for (const [key, value] of Object.entries(override ?? {})) {
+    merged[key] = { ...(merged[key] ?? {}), ...value }
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined
+}
+
+function mergeRelationConfigs(
+  base?: Record<string, OntologyRelationConfig> | undefined,
+  override?: Record<string, OntologyRelationConfig> | undefined,
+): Record<string, OntologyRelationConfig> | undefined {
+  const merged = { ...(base ?? {}) }
+  for (const [key, value] of Object.entries(override ?? {})) {
+    const existing = merged[key]
+    merged[key] = {
+      ...(existing ?? {}),
+      ...value,
+      ...(existing?.aliases || value.aliases
+        ? { aliases: [...new Set([...(existing?.aliases ?? []), ...(value.aliases ?? [])])] }
+        : {}),
+      ...(existing?.vocabulary || value.vocabulary
+        ? { vocabulary: dedupeVocabularyRefs([...(existing?.vocabulary ?? []), ...(value.vocabulary ?? [])]) }
+        : {}),
+    }
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined
+}
+
+function mergeResolutionConfigs(
+  base?: OntologyResolutionConfig | undefined,
+  override?: OntologyResolutionConfig | undefined,
+): OntologyResolutionConfig | undefined {
+  const merged: OntologyResolutionConfig = {}
+  const mergeList = (key: keyof OntologyResolutionConfig) => {
+    const values = [
+      ...((base?.[key] as string[] | undefined) ?? []),
+      ...((override?.[key] as string[] | undefined) ?? []),
+    ]
+    if (values.length > 0) merged[key] = [...new Set(values)]
+  }
+  mergeList('genericAliasBlocklist')
+  mergeList('coordinateEntityTypes')
+  mergeList('coordinatePeerNames')
+  mergeList('qualifiedPlaceSecondParts')
+  return Object.keys(merged).length > 0 ? merged : undefined
+}
+
+function mergePromptConfigs(
+  base?: OntologyPromptConfig | undefined,
+  override?: OntologyPromptConfig | undefined,
+): OntologyPromptConfig | undefined {
+  const entityGuidelines = [...new Set([...(base?.entityGuidelines ?? []), ...(override?.entityGuidelines ?? [])])]
+  const relationGuidelines = [...new Set([...(base?.relationGuidelines ?? []), ...(override?.relationGuidelines ?? [])])]
+  return {
+    ...(entityGuidelines.length > 0 ? { entityGuidelines } : {}),
+    ...(relationGuidelines.length > 0 ? { relationGuidelines } : {}),
+  }
+}
+
+function mergeOntologyConfigs(base: OntologyConfig, override: OntologyConfig): OntologyConfig {
+  return {
+    version: override.version || base.version,
+    profiles: override.profiles ?? base.profiles,
+    entities: mergeEntityConfigs(base.entities, override.entities),
+    relations: mergeRelationConfigs(base.relations, override.relations),
+    resolution: mergeResolutionConfigs(base.resolution, override.resolution),
+    prompt: mergePromptConfigs(base.prompt, override.prompt),
+    metadata: { ...(base.metadata ?? {}), ...(override.metadata ?? {}) },
+  }
+}
+
+function builtInOntologyForProfiles(profiles: readonly OntologyProfile[]): OntologyConfig | undefined {
+  let merged: OntologyConfig | undefined
+  for (const profile of profiles) {
+    const profileOntology = BUILT_IN_PROFILE_ONTOLOGIES[profile]
+    if (!profileOntology) continue
+    merged = merged ? mergeOntologyConfigs(merged, profileOntology) : profileOntology
+  }
+  return merged
+}
+
 export function compileOntology(config?: OntologyConfig): CompiledOntology {
   const profiles = (config?.profiles ?? ['general'])
     .map(normalizeProfile)
     .filter((profile): profile is OntologyProfile => !!profile)
   const activeProfiles = profiles.length > 0 ? [...new Set(profiles)] : ['general' as const]
+  const builtInConfig = builtInOntologyForProfiles(activeProfiles)
+  const effectiveConfig = builtInConfig && config
+    ? mergeOntologyConfigs(builtInConfig, config)
+    : builtInConfig ?? config
 
   const entityTypes = new Set<string>()
   for (const profile of activeProfiles) {
     for (const type of PROFILE_ENTITY_TYPES[profile]) entityTypes.add(type)
   }
-  for (const [type, entity] of Object.entries(config?.entities ?? {})) {
+  for (const [type, entity] of Object.entries(effectiveConfig?.entities ?? {})) {
     const normalized = type.trim()
     if (!normalized) continue
     entityTypes.add(normalized)
@@ -867,7 +965,7 @@ export function compileOntology(config?: OntologyConfig): CompiledOntology {
   for (const spec of PREDICATE_SPECS) {
     if (categories.has(spec.category)) relationSpecs.set(spec.name, spec)
   }
-  for (const [name, relation] of Object.entries(config?.relations ?? {})) {
+  for (const [name, relation] of Object.entries(effectiveConfig?.relations ?? {})) {
     const normalized = sanitizePredicate(name)
     if (!normalized) continue
     relationSpecs.set(normalized, {
@@ -885,41 +983,41 @@ export function compileOntology(config?: OntologyConfig): CompiledOntology {
   const resolution: Required<OntologyResolutionConfig> = {
     genericAliasBlocklist: [...new Set([
       ...(DEFAULT_RESOLUTION.genericAliasBlocklist ?? []),
-      ...(config?.resolution?.genericAliasBlocklist ?? []),
+      ...(effectiveConfig?.resolution?.genericAliasBlocklist ?? []),
     ].map(normalizeOntologyToken).filter(Boolean))],
     coordinateEntityTypes: [...new Set([
       ...(DEFAULT_RESOLUTION.coordinateEntityTypes ?? []),
-      ...(config?.resolution?.coordinateEntityTypes ?? []),
+      ...(effectiveConfig?.resolution?.coordinateEntityTypes ?? []),
     ].map(normalizeOntologyToken).filter(Boolean))],
     coordinatePeerNames: [...new Set([
       ...(DEFAULT_RESOLUTION.coordinatePeerNames ?? []),
-      ...(config?.resolution?.coordinatePeerNames ?? []),
+      ...(effectiveConfig?.resolution?.coordinatePeerNames ?? []),
     ].map(normalizeOntologyToken).filter(Boolean))],
     qualifiedPlaceSecondParts: [...new Set([
       ...(DEFAULT_RESOLUTION.qualifiedPlaceSecondParts ?? []),
-      ...(config?.resolution?.qualifiedPlaceSecondParts ?? []),
+      ...(effectiveConfig?.resolution?.qualifiedPlaceSecondParts ?? []),
     ].map(normalizeOntologyToken).filter(Boolean))],
   }
 
   const prompt = {
     entityGuidelines: [...new Set([
       ...activeProfiles.flatMap(profile => PROFILE_PROMPT_GUIDELINES[profile].entityGuidelines),
-      ...(config?.prompt?.entityGuidelines ?? []),
+      ...(effectiveConfig?.prompt?.entityGuidelines ?? []),
     ].map(item => item.trim()).filter(Boolean))],
     relationGuidelines: [...new Set([
       ...activeProfiles.flatMap(profile => PROFILE_PROMPT_GUIDELINES[profile].relationGuidelines),
-      ...(config?.prompt?.relationGuidelines ?? []),
+      ...(effectiveConfig?.prompt?.relationGuidelines ?? []),
     ].map(item => item.trim()).filter(Boolean))],
   }
 
   const compiledConfig: OntologyConfig = {
-    version: config?.version ?? activeProfiles.join('+'),
+    version: effectiveConfig?.version ?? activeProfiles.join('+'),
     profiles: activeProfiles,
-    ...(config?.entities ? { entities: config.entities } : {}),
-    ...(config?.relations ? { relations: config.relations } : {}),
-    ...(config?.resolution ? { resolution: config.resolution } : {}),
-    ...(config?.prompt ? { prompt: config.prompt } : {}),
-    ...(config?.metadata ? { metadata: config.metadata } : {}),
+    ...(effectiveConfig?.entities ? { entities: effectiveConfig.entities } : {}),
+    ...(effectiveConfig?.relations ? { relations: effectiveConfig.relations } : {}),
+    ...(effectiveConfig?.resolution ? { resolution: effectiveConfig.resolution } : {}),
+    ...(effectiveConfig?.prompt ? { prompt: effectiveConfig.prompt } : {}),
+    ...(effectiveConfig?.metadata ? { metadata: effectiveConfig.metadata } : {}),
   }
 
   const relationNames = [...relationSpecs.keys()]
@@ -932,7 +1030,7 @@ export function compileOntology(config?: OntologyConfig): CompiledOntology {
   const entityVocabulary: Record<string, OntologyVocabularyRef[]> = {}
   const sortedEntityTypes = [...entityTypes].sort()
   for (const type of sortedEntityTypes) {
-    const custom = config?.entities?.[type]
+    const custom = effectiveConfig?.entities?.[type]
     const inheritedType = custom?.extends?.trim()
     const refs = dedupeVocabularyRefs([
       ...(inheritedType ? BUILT_IN_ENTITY_VOCABULARY[inheritedType] ?? [] : []),
@@ -943,7 +1041,7 @@ export function compileOntology(config?: OntologyConfig): CompiledOntology {
   }
 
   const customRelationsByName = new Map(
-    Object.entries(config?.relations ?? {})
+    Object.entries(effectiveConfig?.relations ?? {})
       .map(([name, relation]) => [sanitizePredicate(name), relation] as const),
   )
   const relationVocabulary: Record<string, OntologyVocabularyRef[]> = {}
@@ -1187,20 +1285,26 @@ function typeAllowed(allowed: readonly string[] | readonly ['*'], type?: string 
 export function getPredicatesForPrompt(ontology?: CompiledOntology): string {
   const byCategory = new Map<string, PredicateSpec[]>()
   for (const spec of ontologyPredicateSpecs(ontology)) {
+    if (spec.name === 'RELATED_TO') continue
     const list = byCategory.get(spec.category) ?? []
     list.push(spec)
     byCategory.set(spec.category, list)
   }
 
+  const formatTypes = (types: readonly string[] | readonly ['*']) =>
+    (types as readonly string[]).includes('*') ? 'any' : (types as readonly string[]).join(' | ')
+
   const lines = [...byCategory.entries()].map(([category, specs]) =>
-    `${category}: ${specs.map(spec => spec.name).join(', ')}`
+    `${category}:\n${specs.map(spec =>
+      `- ${spec.name}: ${spec.description} Subject: ${formatTypes(spec.domain)}. Object: ${formatTypes(spec.range)}.`
+    ).join('\n')}`
   )
 
-  return `Predicate vocabulary (choose from this canonical list when applicable):
+  return `Predicate vocabulary (choose from these canonical predicate cards only when a specific fact is supported):
 
 ${lines.join('\n')}
 
-Use ONLY predicates from this vocabulary. Do not invent new predicate names. Use aliases only to understand source phrasing, not as output predicate names.`
+Use ONLY predicates from this vocabulary. Do not invent new predicate names. Use aliases only to understand source phrasing, not as output predicate names. If no card fits, omit the relationship.`
 }
 
 export function getEntityTypesForPrompt(ontology?: CompiledOntology): string {

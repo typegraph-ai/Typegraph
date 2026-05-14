@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { EmbeddedChunk } from '@typegraph-ai/sdk'
 import { PgVectorAdapter } from '../src/adapter.js'
+import { PgEventStore } from '../src/event-store.js'
+import { PgThreadStore } from '../src/thread-store.js'
 
 describe('PgVectorAdapter graph records', () => {
   it('maps public graph access when Postgres returns a jsonb scalar as a string', async () => {
@@ -27,6 +29,92 @@ describe('PgVectorAdapter graph records', () => {
 
     expect(graph.access).toBe('public')
     expect(sql.mock.calls[0]?.[1]?.[5]).toBe('"public"')
+  })
+
+  it('round-trips business event URLs through the event store', async () => {
+    let capturedQuery = ''
+    let capturedParams: unknown[] | undefined
+    const sql = vi.fn(async (query: string, params?: unknown[]) => {
+      capturedQuery = query
+      capturedParams = params
+      return [{
+        id: params?.[0],
+        tenant_id: params?.[1],
+        graph_id: params?.[2],
+        organization_id: params?.[3],
+        group_id: params?.[4],
+        user_id: params?.[5],
+        agent_id: params?.[6],
+        thread_id: params?.[7],
+        name: params?.[8],
+        description: params?.[9],
+        url: params?.[10],
+        occurred_at: params?.[11],
+        participants: params?.[12],
+        content: params?.[14],
+        metadata: params?.[15],
+        created_at: '2026-05-13T00:00:00.000Z',
+        updated_at: '2026-05-13T00:00:00.000Z',
+      }]
+    })
+    const store = new PgEventStore(sql, 'typegraph_events')
+
+    const event = await store.upsert({
+      id: 'evt_1',
+      tenantId: 'tenant_1',
+      graphId: 'public',
+      name: 'Linked event',
+      description: 'Event with a canonical URL',
+      url: 'https://example.com/events/evt_1',
+      occurredAt: new Date('2026-05-13T00:00:00.000Z'),
+      participants: [],
+      metadata: {},
+    })
+
+    expect(capturedQuery).toContain('url')
+    expect(capturedQuery).toContain('url = EXCLUDED.url')
+    expect(capturedParams?.[10]).toBe('https://example.com/events/evt_1')
+    expect(event.url).toBe('https://example.com/events/evt_1')
+  })
+
+  it('round-trips thread URLs through the thread store', async () => {
+    let capturedQuery = ''
+    let capturedParams: unknown[] | undefined
+    const sql = vi.fn(async (query: string, params?: unknown[]) => {
+      capturedQuery = query
+      capturedParams = params
+      return [{
+        id: params?.[0],
+        tenant_id: params?.[1],
+        graph_id: params?.[2],
+        organization_id: params?.[3],
+        group_id: params?.[4],
+        user_id: params?.[5],
+        agent_id: params?.[6],
+        name: params?.[7],
+        description: params?.[8],
+        url: params?.[9],
+        metadata: params?.[10],
+        created_at: '2026-05-13T00:00:00.000Z',
+        updated_at: '2026-05-13T00:00:00.000Z',
+      }]
+    })
+    const store = new PgThreadStore(sql, 'typegraph_threads')
+
+    const thread = await store.upsert({
+      id: 'thr_1',
+      tenantId: 'tenant_1',
+      graphId: 'public',
+      name: 'Linked thread',
+      description: 'Thread with a canonical URL',
+      url: 'https://example.com/threads/thr_1',
+      metadata: {},
+    })
+
+    expect(capturedQuery).toContain('url')
+    expect(capturedQuery).toContain('url = EXCLUDED.url')
+    expect(capturedParams?.[9]).toBe('https://example.com/threads/thr_1')
+    expect(thread.url).toBe('https://example.com/threads/thr_1')
   })
 
   it('scopes bucket writes and reads by tenant id', async () => {

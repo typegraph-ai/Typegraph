@@ -50,6 +50,28 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     }
   }
 
+  function normalizeEventInput(input: EventInput): EventInput {
+    return {
+      ...input,
+      url: input.url ?? undefined,
+      documents: input.documents?.map(normalizeDocumentInput),
+    }
+  }
+
+  function normalizeThreadInput(input: ThreadInput): ThreadInput {
+    return {
+      ...input,
+      url: input.url ?? undefined,
+    }
+  }
+
+  function normalizeThreadTurnInput(input: ThreadTurnInput): ThreadTurnInput {
+    return {
+      ...input,
+      url: input.url ?? undefined,
+    }
+  }
+
 
   const bucket: BucketsApi = {
     async create(input: CreateBucketInput): Promise<Bucket> {
@@ -124,7 +146,8 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
   const event: EventsApi = {
     async ingest(input: EventInput | EventInput[], opts?: (RequestOptions & { bucketId?: string | undefined }) | null) {
       const { identity, rest } = splitContextOpts(opts, 'event.ingest')
-      return client.post('/v1/events/ingest', { event: input, identity, ...rest })
+      const eventInput = Array.isArray(input) ? input.map(normalizeEventInput) : normalizeEventInput(input)
+      return client.post('/v1/events/ingest', { event: eventInput, identity, ...rest })
     },
     async get(id: string): Promise<typegraphEventRecord | null> {
       return client.get<typegraphEventRecord | null>(`/v1/events/${e(tenantId)}/${e(id)}`)
@@ -137,7 +160,7 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
   const thread: ThreadsApi = {
     async upsert(input: ThreadInput, opts?: TypeGraphWriteOptions | null): Promise<typegraphThread> {
       const { identity } = splitContextOpts(opts, 'thread.upsert')
-      return client.post<typegraphThread>('/v1/threads', { thread: input, identity })
+      return client.post<typegraphThread>('/v1/threads', { thread: normalizeThreadInput(input), identity })
     },
     async get(id: string): Promise<typegraphThread | null> {
       return client.get<typegraphThread | null>(`/v1/threads/${e(tenantId)}/${e(id)}`)
@@ -147,7 +170,7 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     },
     async addTurn(threadId: string, turn: ThreadTurnInput, opts?: TypeGraphWriteOptions | null): Promise<GraphThreadTurnResult> {
       const { identity, rest } = splitContextOpts(opts, 'thread.addTurn')
-      return client.post<GraphThreadTurnResult>(`/v1/threads/${e(threadId)}/turns`, { turn, identity, ...rest })
+      return client.post<GraphThreadTurnResult>(`/v1/threads/${e(threadId)}/turns`, { turn: normalizeThreadTurnInput(turn), identity, ...rest })
     },
   }
 

@@ -15,6 +15,14 @@ import {
   typesShareAffinity,
   validatePredicateEffectiveTypes,
 } from './ontology.js'
+import {
+  canonicalizeEntityName,
+  hasOcrEditorialNoise,
+  isCoordinateListAlias,
+  isUnsafeEntityAlias,
+  sanitizeEntityAliases,
+  sanitizeEntityBatch,
+} from './entity-canonicalization.js'
 
 export interface TripleExtractorConfig {
   /** LLM for entity extraction (Pass 1 in two-pass mode) or the single combined call. */
@@ -52,6 +60,8 @@ interface ExtractionResult {
   entities: ExtractedEntity[]
   relationships: ExtractedRelationship[]
 }
+
+const MIN_RELATIONSHIP_CONFIDENCE = 0.6
 
 /** Lightweight entity context passed between chunks for cross-chunk resolution. */
 export interface EntityContext {
@@ -155,7 +165,7 @@ function typeFamilyKey(type: string | undefined, ontology?: CompiledOntology): s
 
 function entityDisplayContext(entityContext?: EntityContext[], ontology?: CompiledOntology): string {
   if (!entityContext?.length) return ''
-  return entityContext.map(entity => {
+  return sanitizeEntityBatch(entityContext, ontology).map(entity => {
     const aliases = (entity.aliases ?? []).length > 0 ? ` aliases: ${(entity.aliases ?? []).join(', ')}` : ''
     const types = effectiveEntityTypes(entity.type, entity.typeCandidates, 0.6, ontology).join('/')
     return `- ${entity.name} (${types})${aliases}`
@@ -671,14 +681,17 @@ function splitCoordinateEntity(entity: ExtractedEntity, ontology?: CompiledOntol
     || /\band\b/i.test(entity.name)
   if (!shouldSplit) return [entity]
 
-  return parts.map(part => ({
+  return parts.map(part => sanitizeEntityAliases({
     ...entity,
     name: part,
     description: entity.description
       ? entity.description.replace(entity.name, part)
       : entity.description,
-    aliases: (entity.aliases ?? []).filter(alias => !parts.some(other => normalizeName(alias) === normalizeName(other))),
-  }))
+    aliases: (entity.aliases ?? []).filter(alias =>
+      !parts.some(other => normalizeName(alias) === normalizeName(other))
+      && !isCoordinateListAlias(alias, entity.type, ontology)
+    ),
+  }, [], ontology))
 }
 
 function promoteOrRejectEntity(entity: ExtractedEntity): ExtractedEntity | undefined {
@@ -764,6 +777,33 @@ function canonicalizeRelationshipPredicate(
   return predicate
 }
 
+function isBlockedExtractionPredicate(predicate: string): boolean {
+  return predicate === 'RELATED_TO'
+}
+
+function looksLikeDocumentProvenanceRelation(rel: ExtractedRelationship): boolean {
+  const text = `${rel.description ?? ''} ${rel.evidenceText ?? ''}`.toLowerCase()
+  return /\b(?:appears?|featured|mentioned|found|contained)\s+in\s+(?:the\s+)?(?:document|text|passage|source|chunk|excerpt)\b/.test(text)
+    || /\b(?:current|source)\s+(?:document|text|passage|excerpt)\b/.test(text)
+}
+
+function isWeakExtractionRelationship(
+  predicate: string,
+  subjectEntity: ExtractedEntity,
+  objectEntity: ExtractedEntity,
+  rel: ExtractedRelationship,
+  ontology?: CompiledOntology,
+): boolean {
+  if (isBlockedExtractionPredicate(predicate)) return true
+  if (predicate !== 'APPEARS_IN') return false
+  if (looksLikeDocumentProvenanceRelation(rel)) return true
+  const subjectTypes = effectiveTypesForExtracted(subjectEntity, ontology)
+  const objectTypes = effectiveTypesForExtracted(objectEntity, ontology)
+  if (!subjectTypes.includes('character')) return true
+  if (!objectTypes.some(type => type === 'creative_work' || type === 'publication')) return true
+  return false
+}
+
 function postProcessExtraction(
   entities: ExtractedEntity[],
   relationships: ExtractedRelationship[],
@@ -771,24 +811,35 @@ function postProcessExtraction(
   entityContext?: EntityContext[],
   ontology?: CompiledOntology,
 ): ExtractionResult {
+  const cleanEntityContext = sanitizeEntityBatch(entityContext ?? [], ontology)
   const processed: ExtractedEntity[] = []
   const rawNameToCanonical = new Map<string, string>()
   const allowedTypes = allowedEntityTypes(ontology)
 
   for (const raw of entities) {
-    const entity: ExtractedEntity = {
+    const canonicalRaw = canonicalizeEntityName({
       name: sanitizeField(raw.name ?? ''),
       type: sanitizeField(raw.type ?? ''),
       typeCandidates: normalizeTypeCandidates(raw.type, raw.typeCandidates, ontology),
       description: sanitizeField(raw.description ?? ''),
       aliases: Array.isArray(raw.aliases) ? raw.aliases.map(sanitizeField).filter(Boolean) : [],
-    }
+    })
+    if (!canonicalRaw) continue
+    const entity: ExtractedEntity = canonicalRaw
     if (!entity.name || !allowedTypes.has(entity.type)) continue
 
     if (entity.type === 'person') {
-      entity.aliases = entity.aliases.filter(isModeratePersonAlias)
+      entity.aliases = entity.aliases.filter(alias =>
+        isModeratePersonAlias(alias)
+        && !hasOcrEditorialNoise(alias)
+        && !isCoordinateListAlias(alias, entity.type, ontology)
+      )
     } else {
-      entity.aliases = entity.aliases.filter(alias => !isBadAliasFragment(alias))
+      entity.aliases = entity.aliases.filter(alias =>
+        !isBadAliasFragment(alias)
+        && !hasOcrEditorialNoise(alias)
+        && !isCoordinateListAlias(alias, entity.type, ontology)
+      )
     }
 
     if (entity.type === 'location' || entity.type === 'place') augmentLocationAliases(entity, content)
@@ -799,7 +850,7 @@ function postProcessExtraction(
     const guarded = applyWorkPublicationGuards(promoted, content, ontology)
     if (!guarded) continue
 
-    const matchedContext = contextMatch(guarded, entityContext, ontology)
+    const matchedContext = contextMatch(guarded, cleanEntityContext, ontology)
     if (matchedContext) {
       const observedName = guarded.name
       guarded.name = matchedContext.name
@@ -810,7 +861,7 @@ function postProcessExtraction(
       ], ontology)
       guarded.description = matchedContext.description ?? guarded.description
       for (const alias of matchedContext.aliases ?? []) addUniqueAlias(guarded.aliases, alias, guarded.name)
-      addUniqueAlias(guarded.aliases, observedName, guarded.name)
+      if (!isUnsafeEntityAlias(observedName, guarded, [], ontology)) addUniqueAlias(guarded.aliases, observedName, guarded.name)
     }
 
     const finalEntity = applyWorkPublicationGuards(guarded, content, ontology)
@@ -819,25 +870,28 @@ function postProcessExtraction(
     finalEntity.aliases = [...new Map(finalEntity.aliases.map(a => [normalizeName(a), a])).values()]
       .filter(alias => normalizeName(alias) !== normalizeName(finalEntity.name))
 
-    for (const split of splitCoordinateEntity(finalEntity, ontology)) {
+    const splits = splitCoordinateEntity(finalEntity, ontology)
+    for (const split of splits) {
       processed.push(split)
       const rawName = normalizeName(raw.name ?? '')
-      if (rawName) rawNameToCanonical.set(rawName, split.name)
+      if (rawName && splits.length === 1) rawNameToCanonical.set(rawName, split.name)
     }
     const rawName = normalizeName(raw.name ?? '')
-    if (rawName) rawNameToCanonical.set(rawName, finalEntity.name)
+    if (rawName && splits.length === 1) rawNameToCanonical.set(rawName, finalEntity.name)
   }
 
-  const personContexts = buildPersonAliasContexts(processed)
-  for (const entity of processed) {
+  const sanitizedProcessed = sanitizeEntityBatch(processed, ontology)
+  const personContexts = buildPersonAliasContexts(sanitizedProcessed)
+  for (const entity of sanitizedProcessed) {
     if (entity.type !== 'person') continue
     entity.aliases = refinePersonAliases(entity, personContexts, content)
       .filter(alias => normalizeName(alias) !== normalizeName(entity.name))
   }
+  const finalEntities = sanitizeEntityBatch(sanitizedProcessed, ontology)
 
   const nameMap = new Map<string, string>()
   const entityByCanonicalName = new Map<string, ExtractedEntity>()
-  for (const entity of processed) {
+  for (const entity of finalEntities) {
     nameMap.set(normalizeName(entity.name), entity.name)
     entityByCanonicalName.set(entity.name, entity)
     for (const alias of entity.aliases) nameMap.set(normalizeName(alias), entity.name)
@@ -848,29 +902,36 @@ function postProcessExtraction(
 
   const sanitizedRelationships: ExtractedRelationship[] = []
   for (const rel of relationships) {
-    const subject = nameMap.get(normalizeName(rel.subject ?? ''))
-    const object = nameMap.get(normalizeName(rel.object ?? ''))
     const rawPredicate = sanitizeField(rel.predicate ?? '')
       .replace(/[\s-]+/g, '_')
       .toUpperCase()
+    const normalized = normalizePredicateWithDirection(rawPredicate, ontology)
+    if (!normalized.valid || isBlockedExtractionPredicate(normalized.predicate)) continue
+    const rawSubject = nameMap.get(normalizeName(rel.subject ?? ''))
+    const rawObject = nameMap.get(normalizeName(rel.object ?? ''))
+    const subject = normalized.swapSubjectObject ? rawObject : rawSubject
+    const object = normalized.swapSubjectObject ? rawSubject : rawObject
     const subjectEntity = subject ? entityByCanonicalName.get(subject) : undefined
     const objectEntity = object ? entityByCanonicalName.get(object) : undefined
     if (!subject || !object || !rawPredicate || !subjectEntity || !objectEntity) continue
-    const predicate = canonicalizeRelationshipPredicate(rawPredicate, subjectEntity, objectEntity, ontology)
+    const predicate = canonicalizeRelationshipPredicate(normalized.predicate, subjectEntity, objectEntity, ontology)
+    const confidence = typeof rel.confidence === 'number' ? Math.max(0, Math.min(1, rel.confidence)) : 1
+    if (confidence < MIN_RELATIONSHIP_CONFIDENCE) continue
+    if (isWeakExtractionRelationship(predicate, subjectEntity, objectEntity, rel, ontology)) continue
     sanitizedRelationships.push({
       subject,
       predicate,
       object,
-      confidence: typeof rel.confidence === 'number' ? rel.confidence : 1,
+      confidence,
       description: sanitizeField(rel.description ?? ''),
       evidenceText: sanitizeField(rel.evidenceText ?? ''),
-      temporalStatus: rel.temporalStatus,
+      temporalStatus: normalized.temporalStatus ?? rel.temporalStatus,
       validFrom: rel.validFrom ? sanitizeField(rel.validFrom) : undefined,
       validTo: rel.validTo ? sanitizeField(rel.validTo) : undefined,
     })
   }
 
-  return { entities: processed, relationships: sanitizedRelationships }
+  return { entities: finalEntities, relationships: sanitizedRelationships }
 }
 
 function effectiveTypesForExtracted(entity: ExtractedEntity, ontology?: CompiledOntology): string[] {
@@ -888,10 +949,11 @@ function relationTypingValid(
   if (normalizeName(subjectEntity.name) === normalizeName(objectEntity.name)) return false
   const normalized = normalizePredicateWithDirection(relationship.predicate, ontology)
   if (!normalized.valid) return false
+  if (isBlockedExtractionPredicate(normalized.predicate)) return false
   return validatePredicateEffectiveTypes(
     normalized.predicate,
-    effectiveTypesForExtracted(subjectEntity, ontology),
-    effectiveTypesForExtracted(objectEntity, ontology),
+    effectiveTypesForExtracted(normalized.swapSubjectObject ? objectEntity : subjectEntity, ontology),
+    effectiveTypesForExtracted(normalized.swapSubjectObject ? subjectEntity : objectEntity, ontology),
     ontology,
   ).valid
 }
@@ -928,14 +990,18 @@ function ontologyGuidelinesSection(ontology?: CompiledOntology): string {
   return guidelines ? `\nOntology-specific guidance:\n${guidelines}\n` : ''
 }
 
+function canonicalizationGuardSection(): string {
+  return `\nCanonicalization guard:\n- Comma, slash, semicolon, ampersand, or "and" separated peer place lists are not aliases. "Mexico, Guatemala" means two countries. "Uxmal, Mayapan, and Chichen-Itza" means three sites.\n- Qualified places can be one entity when the second part is a location qualifier: "Cairo, Egypt" is one place and may use "Cairo" as an alias.\n- Never put one country, city, site, or place into another place's aliases.\n- Ignore transcriber notes, OCR/editorial markers, and bracketed cleanup notes such as "[TN-3]" when forming names or aliases.\n- Citation phrases are not entity names. Use "Landa", not "according to Landa"; use "Bancroft", not "as described by Bancroft".\n`
+}
+
 function buildSinglePassPrompt(content: string, entityContext?: EntityContext[], _documentName?: string, ontology?: CompiledOntology): string {
   const contextSection = entityContext?.length
-    ? `\nPreviously identified entities in this document:\n${entityDisplayContext(entityContext, ontology)}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
+    ? `\nPreviously identified entities in this document:\n${entityDisplayContext(entityContext, ontology)}\n\nUse these names as canonical entities when the text clearly refers to the same entity by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve newly observed surface forms as aliases only when they are true names for the same entity.\n`
     : ''
 
   return `Your task is to extract all named entities, and relationships between them, from a text string.
 
-${contextSection}${ontologyGuidelinesSection(ontology)}
+${contextSection}${ontologyGuidelinesSection(ontology)}${canonicalizationGuardSection()}
 
 ## Step 1: Entity Extraction
 
@@ -1023,9 +1089,12 @@ Relationship rules:
 - Never create compound predicates (e.g., "MENTIONED_COOKING_IN")
 - Use the most specific predicate that accurately captures the relationship
 - Extract relationships that are explicitly stated or strongly implied in the text
+- Only emit relationships with confidence 0.6 or higher. Omit lower-confidence relationships.
 - Do not emit self-relationships or alias relationships. Relationships are only for two different entities after alias resolution.
 - Prefer relationship descriptions that preserve the source's important names, dates, places, objects, and negation.
 - Do not use APPEARS_IN for creative_work-to-publication/document facts. Use PUBLISHED_IN when a work appears in a journal, newspaper, magazine, review, almanac, periodical, document, or larger work.
+- Do not use RELATED_TO. If no specific predicate fits, omit the relationship.
+- Do not use APPEARS_IN to say that an entity is merely mentioned in this document, source text, passage, chunk, or excerpt. Mentions are stored separately.
 
 ## Example
 
@@ -1066,11 +1135,11 @@ ${content}`
 
 function buildEntityExtractionPrompt(content: string, entityContext?: EntityContext[], _documentName?: string, ontology?: CompiledOntology): string {
   const contextSection = entityContext?.length
-    ? `\nPreviously identified entities in the text string:\n${entityDisplayContext(entityContext, ontology)}\n\nUse these names as canonical entities when the text refers to them by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve any newly observed surface form as an alias instead of creating a duplicate entity.\n`
+    ? `\nPreviously identified entities in the text string:\n${entityDisplayContext(entityContext, ontology)}\n\nUse these names as canonical entities when the text clearly refers to the same entity by pronoun, abbreviation, surname, title, epithet, or pseudonym. Preserve newly observed surface forms as aliases only when they are true names for the same entity.\n`
     : ''
 
     return `Your task is to extract all named entities from a text string.
-${ontologyGuidelinesSection(ontology)}
+${ontologyGuidelinesSection(ontology)}${canonicalizationGuardSection()}
 
     <TASK_INSTRUCTIONS>
     
@@ -1126,6 +1195,9 @@ ${ontologyGuidelinesSection(ontology)}
     - Entities with opposing directional or categorical qualifiers are ALWAYS separate — "Western Conference" and "Eastern Conference" are SEPARATE; "North Atlantic Treaty Organization" and "South Asian Association" are SEPARATE; "Upper Egypt" and "Lower Egypt" are SEPARATE
     - For creative_work/publication/document entities, NEVER extract the current source document, generated source labels, chunk labels, unnamed chapters, structural headings, or storage IDs as entities.
     - For creative_work/publication aliases, do not merge sibling or numbered works: "Elegy XIV" and "Elegy XV" are separate; "Old Testament" and "New Testament" are separate.
+    - Peer place lists are separate entities, not aliases: "Mexico, Guatemala" should produce "Mexico" and "Guatemala"; neither country is an alias of the other.
+    - Ignore OCR/transcriber/editorial bracket notes such as "[TN-3]" when forming names or aliases.
+    - Canonicalize citation phrases: "according to Landa" should be "Landa".
     - Profession and role statements should become structured edges when supported by the text. Examples: "Steve Sharp, a pilot by profession" -> Steve Sharp WORKS_AS pilot; "Elsie Inglis was a doctor" -> Elsie Inglis WORKS_AS doctor; "She served as a house surgeon" -> person WORKS_AS house surgeon
     
     </TASK_RULES>
@@ -1266,12 +1338,15 @@ For each relationship, provide:
 - Do not emit inverse predicates that are not in the vocabulary, such as KILLED_BY, FOUNDED_BY, WRITTEN_BY, OWNED_BY, or DESIGNED_BY. Swap subject and object instead.
 - Never create compound predicates (e.g., "MENTIONED_COOKING_IN")
 - Use the most specific predicate that accurately captures the relationship
+- If no specific predicate fits, omit the relationship. Do not emit RELATED_TO or any other weak fallback relation.
 - Extract relationships that are explicitly stated or strongly implied in the text
+- Only emit relationships with confidence 0.6 or higher. Omit lower-confidence relationships.
 - Do not emit self-relationships or alias relationships. If two names refer to the same entity, they belong in aliases from the entity step, not in the relationships array.
 - Do not connect an entity to a generic description or role unless that role was extracted as a specific named entity.
 - When the text directly states a profession, office, or role for a named entity, emit a structured relationship to that role entity. Examples: person WORKS_AS doctor, person WORKS_AS house surgeon, person WORKS_AS physician
 - Preserve important names, dates, places, objects, and negation in relationship descriptions and evidence text.
 - Do not use APPEARS_IN for creative_work-to-publication/document facts. Use PUBLISHED_IN when a work appears in a journal, newspaper, magazine, review, almanac, periodical, document, or larger work.
+- Do not use APPEARS_IN to say that an entity is merely mentioned in this document, source text, passage, chunk, or excerpt. Mentions are stored separately.
 - Return an empty array if no clear relationships exist between the entities listed below
 
 </TASK_RULES>
@@ -1355,7 +1430,7 @@ export class TripleExtractor {
   private relationshipLlm: LLMProvider
   private graph: KnowledgeGraphBridge
   private twoPass: boolean
-  private readonly reflectionThreshold = 0.3
+  private readonly reflectionThreshold = 0.72
 
   constructor(config: TripleExtractorConfig) {
     this.llm = config.llm
@@ -1497,6 +1572,7 @@ export class TripleExtractor {
   }
 
   private async reflectRelationships(content: string, relationships: ExtractedRelationship[]): Promise<ExtractedRelationship[]> {
+    relationships = relationships.filter(rel => !isBlockedExtractionPredicate(rel.predicate))
     if (relationships.length === 0) return []
     const kept: ExtractedRelationship[] = []
     const batchSize = 10

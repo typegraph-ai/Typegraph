@@ -228,6 +228,7 @@ await tg.document.ingest(
     id: 'gong:transcript:123',
     name: 'Acme discovery call transcript',
     description: 'Transcript from the Acme discovery call.',
+    url: 'https://gong.example.com/calls/123/transcript',
     content: transcriptText,
     metadata: { provider: 'gong' },
   },
@@ -252,6 +253,7 @@ await tg.event.ingest(
     id: 'gong:meeting:123:signal:sso-redirect-loop',
     name: 'Acme reports SSO redirect loop',
     description: 'Acme is blocked by a SAML redirect loop during SSO rollout.',
+    url: 'https://gong.example.com/calls/123',
     occurredAt: new Date(),
     participants: [
       entityRef('organization', 'org_acme'),
@@ -288,7 +290,7 @@ If a customer portal user should see only public knowledge, search graph
 knowledge plus internal customer activity.
 
 Threads are ordered containers. `thread.addTurn()` stores the turn as an event
-and links the event back to the thread. A turn has only role, content,
+and links the event back to the thread. A turn has only role, content, URL,
 timestamp, and metadata.
 
 ```ts
@@ -297,6 +299,7 @@ await tg.thread.addTurn(
   {
     role: 'user',
     content: 'Can you send the SOC2 report?',
+    url: 'https://slack.example.com/archives/C123/p456',
     timestamp: new Date(),
     metadata: { channel: 'slack' },
   },

@@ -41,6 +41,14 @@ describe('EntityResolver', () => {
       expect(isValidAlias('Both Adarsh')).toBe(false)
       expect(isValidAlias('Adarsh Tadimari')).toBe(true)
     })
+
+    it('rejects OCR/editorial noise and citation phrase aliases', () => {
+      expect(isValidAlias('Egpptian[TN-3]')).toBe(false)
+      expect(isValidAlias('[TN-3] Landa')).toBe(false)
+      expect(isValidAlias('according to Landa')).toBe(false)
+      expect(isValidAlias('as described by Bancroft')).toBe(false)
+      expect(isValidAlias('Landa')).toBe(true)
+    })
   })
 
   describe('resolve', () => {

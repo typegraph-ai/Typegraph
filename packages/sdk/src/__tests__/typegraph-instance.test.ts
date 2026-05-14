@@ -7,6 +7,7 @@ import { createTestDocument, createTestDocuments } from './helpers/mock-connecto
 import type { typegraphInstance } from '../typegraph.js'
 import type { Bucket } from '../types/bucket.js'
 import type { Embedder } from '../embedding/provider.js'
+import type { typegraphEventRecord } from '../types/event.js'
 import type { EntityDetail, EntityResult, GraphExploreResult, KnowledgeGraphBridge } from '../types/graph-bridge.js'
 
 /** Register a pre-built Bucket + embedding on an instance (bypasses buckets.create UUID generation). */
@@ -546,6 +547,76 @@ describe('typegraphInit', () => {
       await inst.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
       await inst.search('test')
       expect(onQueryResults).toHaveBeenCalledOnce()
+    })
+  })
+
+  describe('event and thread URLs', () => {
+    it('persists event URL as a top-level field', async () => {
+      const event = await instance.event.ingest({
+        id: 'evt_url',
+        name: 'Linked event',
+        url: 'https://example.com/events/evt_url',
+        occurredAt: new Date('2026-05-13T12:00:00.000Z'),
+        content: 'Event content',
+      }, { bucketId: DEFAULT_BUCKET_ID }) as typegraphEventRecord
+
+      expect(event).toMatchObject({
+        id: 'evt_url',
+        url: 'https://example.com/events/evt_url',
+      })
+      expect(adapter.calls.find(c => c.method === 'upsertEvent')?.args[0]).toEqual(expect.objectContaining({
+        url: 'https://example.com/events/evt_url',
+      }))
+    })
+
+    it('normalizes event url=null to no URL', async () => {
+      const event = await instance.event.ingest({
+        id: 'evt_null_url',
+        name: 'Null URL event',
+        url: null,
+        occurredAt: new Date('2026-05-13T12:00:00.000Z'),
+      }, { bucketId: DEFAULT_BUCKET_ID }) as typegraphEventRecord
+
+      expect(event.url).toBeUndefined()
+      expect(adapter.calls.find(c => c.method === 'upsertEvent')?.args[0]).toEqual(expect.objectContaining({
+        url: undefined,
+      }))
+    })
+
+    it('persists thread URL as a top-level field', async () => {
+      const thread = await instance.thread.upsert({
+        id: 'thread_url',
+        name: 'Linked thread',
+        url: 'https://example.com/threads/thread_url',
+      }, { bucketId: DEFAULT_BUCKET_ID })
+
+      expect(thread).toMatchObject({
+        id: 'thread_url',
+        url: 'https://example.com/threads/thread_url',
+      })
+      expect(adapter.calls.find(c => c.method === 'upsertThread')?.args[0]).toEqual(expect.objectContaining({
+        url: 'https://example.com/threads/thread_url',
+      }))
+    })
+
+    it('stores thread turn URL on the generated event', async () => {
+      const result = await instance.thread.addTurn('thread_turn_url', {
+        role: 'user',
+        content: 'A linked message',
+        url: 'https://example.com/messages/msg_1',
+      }, {
+        bucketId: DEFAULT_BUCKET_ID,
+        context: { threadId: 'thread_turn_url' },
+      })
+
+      expect(result.event).toMatchObject({
+        threadId: 'thread_turn_url',
+        url: 'https://example.com/messages/msg_1',
+      })
+      expect(adapter.calls.filter(c => c.method === 'upsertEvent').at(-1)?.args[0]).toEqual(expect.objectContaining({
+        threadId: 'thread_turn_url',
+        url: 'https://example.com/messages/msg_1',
+      }))
     })
   })
 

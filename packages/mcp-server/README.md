@@ -31,7 +31,7 @@ const result = await executeTool(memory, 'typegraph_remember', {
 | `typegraph_recall_facts` | Search specifically for semantic facts |
 | `typegraph_forget` | Invalidate a memory by ID |
 | `typegraph_correct` | Apply a natural language correction |
-| `typegraph_add_conversation` | Ingest conversation messages into memory |
+| `typegraph_thread_add_turn` | Store a thread turn as a linked event with optional canonical `url` |
 
 ## API
 

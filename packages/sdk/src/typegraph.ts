@@ -695,6 +695,7 @@ class TypegraphImpl implements typegraphInstance {
         agentId: identity.agentId,
         name: input.name,
         description: input.description,
+        url: input.url ?? undefined,
         metadata: input.metadata ?? {},
       })
       this.emitEvent('thread.upsert', thread.id, { name: thread.name }, telemetry)
@@ -730,10 +731,12 @@ class TypegraphImpl implements typegraphInstance {
         id: threadId,
         name: existingThread?.name ?? threadId,
         description: existingThread?.description,
+        url: existingThread?.url,
         metadata: { ...(existingThread?.metadata ?? {}), threadId, ...(turn.metadata ?? {}) },
       }, opts)
       const event = await this.ingestSingleEvent({
         name: `${turn.role} turn`,
+        url: turn.url ?? undefined,
         occurredAt: turn.timestamp ?? new Date(),
         content: turn.content,
         metadata: { role: turn.role, ...(turn.metadata ?? {}) },
@@ -1271,6 +1274,7 @@ class TypegraphImpl implements typegraphInstance {
       threadId: identity.threadId,
       name: input.name,
       description: input.description,
+      url: input.url ?? undefined,
       occurredAt: input.occurredAt,
       participants: input.participants ?? [],
       content: input.content,
@@ -1290,6 +1294,7 @@ class TypegraphImpl implements typegraphInstance {
         id: `${record.id}:content`,
         name: `${input.name} content`,
         description: input.description,
+        url: input.url ?? undefined,
         content: input.content,
         metadata: { eventId: record.id, eventContent: true },
       })

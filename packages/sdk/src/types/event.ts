@@ -5,6 +5,7 @@ export interface EventInput<TMeta extends Record<string, unknown> = Record<strin
   id?: string | undefined
   name: string
   description?: string | undefined
+  url?: string | null | undefined
   occurredAt: Date
   participants?: EntityRef[] | undefined
   documents?: DocumentInput[] | undefined
@@ -23,6 +24,7 @@ export interface typegraphEventRecord {
   graphId: string
   name: string
   description?: string | undefined
+  url?: string | undefined
   occurredAt: Date
   participants: EntityRef[]
   documents?: typegraphDocument[] | undefined

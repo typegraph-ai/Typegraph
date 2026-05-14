@@ -7,6 +7,12 @@ import type { CompiledOntology } from '../../types/ontology.js'
 import { createTemporal } from '../temporal.js'
 import { generateId } from '../../utils/id.js'
 import { normalizeTypeCandidates, type TypeCandidate, typesShareAffinity } from '../../index-engine/ontology.js'
+import {
+  canonicalizePhrasePrefixName,
+  hasOcrEditorialNoise,
+  isCoordinateListAlias,
+  normalizeEntityText,
+} from '../../index-engine/entity-canonicalization.js'
 
 // ── Alias validation ──
 
@@ -97,6 +103,8 @@ export function isValidAlias(alias: string, ontology?: CompiledOntology): boolea
   }
   if (/['’]s\b/i.test(trimmed)) return false
   if (/https?:\/\/|www\.|@.+\..+/.test(trimmed)) return false
+  if (hasOcrEditorialNoise(trimmed)) return false
+  if (canonicalizePhrasePrefixName(trimmed) !== trimmed) return false
 
   // Reject pronouns — only when original is all-lowercase (preserves "US", "IT" as abbreviations)
   if (trimmed === lower && PRONOUN_BLOCKLIST.has(lower)) return false
@@ -146,6 +154,7 @@ function hasSentenceBoundaryInsideAlias(value: string): boolean {
 
 function isDisplayAliasSafe(alias: string, entityType: string, ontology?: CompiledOntology): boolean {
   if (!isValidAlias(alias, ontology)) return false
+  if (isCoordinateListAlias(alias, entityType, ontology)) return false
   if (entityType !== 'person') return true
   if (hasSentenceBoundaryInsideAlias(alias)) return false
   const tokens = nameTokens(alias)
@@ -196,7 +205,19 @@ function isStrongAliasForMerge(
   ontology?: CompiledOntology,
 ): boolean {
   if (!isDisplayAliasSafe(alias, entityType, ontology)) return false
-  if (entityType !== 'person') return true
+  if (entityType !== 'person') {
+    const aliasTokens = nameTokens(alias)
+    const ownerTokens = nameTokens(ownerName)
+    if (aliasTokens.length === 1 && ownerTokens.length === 1 && aliasTokens[0] !== ownerTokens[0]) return false
+    if (
+      (typesShareAffinity(entityType, 'location', ontology) || typesShareAffinity(entityType, 'place', ontology))
+      && !aliasTokens.some(token => ownerTokens.includes(token))
+      && normalizeEntityText(alias).length > 3
+    ) {
+      return false
+    }
+    return true
+  }
 
   const aliasTokens = nameTokens(alias)
   const ownerTokens = nameTokens(ownerName)

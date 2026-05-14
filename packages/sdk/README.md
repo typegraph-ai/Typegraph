@@ -216,6 +216,7 @@ Document inputs use the standard primary fields:
   id?: string
   name: string
   description?: string
+  url?: string | null
   content: string
   metadata?: Record<string, unknown>
 }
@@ -233,6 +234,7 @@ await tg.event.ingest(
     id: 'gong:meeting:123',
     name: 'Acme discovery call',
     description: 'Acme reported an SSO redirect loop blocking enterprise rollout.',
+    url: 'https://gong.example.com/calls/123',
     occurredAt: new Date('2026-05-08T17:00:00Z'),
     participants: [
       entityRef('organization', 'org_acme'),
@@ -245,6 +247,7 @@ await tg.event.ingest(
         id: 'gong:transcript:123',
         name: 'Acme discovery call transcript',
         description: 'Transcript from the Acme discovery call.',
+        url: 'https://gong.example.com/calls/123/transcript',
         content: transcriptText,
         metadata: { provider: 'gong' },
       },
@@ -279,6 +282,7 @@ await tg.thread.upsert(
     id: 'thread_123',
     name: 'Acme renewal workflow',
     description: 'Working thread for Acme renewal risk and next steps.',
+    url: 'https://slack.example.com/archives/C123',
     metadata: { crmAccountId: '001-acme' },
   },
   { bucketId: 'gong', context: { groupId: GroupId('success') } },
@@ -289,6 +293,7 @@ await tg.thread.addTurn(
   {
     role: 'user',
     content: 'Acme needs a workaround for the SSO redirect loop before Friday.',
+    url: 'https://slack.example.com/archives/C123/p456',
     timestamp: new Date(),
     metadata: { source: 'slack' },
   },

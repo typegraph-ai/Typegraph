@@ -4,6 +4,7 @@ export interface ThreadInput<TMeta extends Record<string, unknown> = Record<stri
   id?: string | undefined
   name: string
   description?: string | undefined
+  url?: string | null | undefined
   metadata?: TMeta | undefined
 }
 
@@ -17,6 +18,7 @@ export interface typegraphThread {
   graphId: string
   name: string
   description?: string | undefined
+  url?: string | undefined
   metadata: Record<string, unknown>
   createdAt: Date
   updatedAt: Date
@@ -25,6 +27,7 @@ export interface typegraphThread {
 export interface ThreadTurnInput<TMeta extends Record<string, unknown> = Record<string, unknown>> {
   role: string
   content: string
+  url?: string | null | undefined
   timestamp?: Date | undefined
   metadata?: TMeta | undefined
 }

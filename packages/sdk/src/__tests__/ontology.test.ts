@@ -142,4 +142,38 @@ describe('ontology registry', () => {
       expect.objectContaining({ vocabulary: 'CRM demo ontology', id: 'hasRisk' }),
     ]))
   })
+
+  it('uses the curated B2B SaaS ontology for the saas profile', () => {
+    const ontology = compileOntology({ version: 'saas-test', profiles: ['saas'] })
+    expect(ontology.entityTypes).toEqual(expect.arrayContaining([
+      'company',
+      'account',
+      'opportunity',
+      'feature_request',
+      'security_control',
+      'signal',
+      'message',
+      'renewal',
+    ]))
+    expect(ontology.relationNames).toEqual(expect.arrayContaining([
+      'CHAMPIONS',
+      'ECONOMIC_BUYER_FOR',
+      'BLOCKS_RENEWAL',
+      'WORKS_AT',
+      'DISCUSSED_IN',
+      'DOCUMENTED_BY',
+    ]))
+    expect(normalizePredicateWithDirection('economic_buyer_for', ontology)).toEqual(expect.objectContaining({
+      predicate: 'ECONOMIC_BUYER_FOR',
+      valid: true,
+    }))
+    expect(validatePredicateTypes('BLOCKS_RENEWAL', 'ticket', 'renewal', ontology).valid).toBe(true)
+    expect(validatePredicateTypes('BLOCKS_RENEWAL', 'product', 'renewal', ontology).valid).toBe(false)
+    expect(ontology.resolution.genericAliasBlocklist).toEqual(expect.arrayContaining([
+      'the customer',
+      'the cto',
+      'eoq',
+    ]))
+    expect(ontology.prompt.entityGuidelines.join('\n')).toContain('Distinguish company as the legal organization from account')
+  })
 })

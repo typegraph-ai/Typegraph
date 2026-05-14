@@ -117,10 +117,68 @@ describe('TripleExtractor', () => {
     )
 
     expect(graph.addTriple).toHaveBeenCalledWith(expect.objectContaining({
-      predicate: 'AT_WAR_WITH',
+      predicate: 'CONFLICT_WITH',
       subject: 'Mexico',
       object: 'Guatemala',
     }))
+  })
+
+  it('removes coordinate-list, cross-entity, OCR, and phrase-prefix aliases before graph writes', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          {
+            name: 'Mexico, Guatemala',
+            type: 'place',
+            description: 'Two countries discussed together.',
+            aliases: ['Mexico', 'Guatemala', 'Mexico, Guatemala', 'Egpptian[TN-3]'],
+          },
+          {
+            name: 'according to Landa',
+            type: 'person',
+            description: 'A cited source.',
+            aliases: ['as described by Landa', '[TN-3] Landa'],
+          },
+          {
+            name: 'Cairo, Egypt',
+            type: 'place',
+            description: 'A city in Egypt.',
+            aliases: ['Cairo'],
+          },
+        ],
+        relationships: [],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'According to Landa, Mexico, Guatemala, and Cairo, Egypt are discussed. Egpptian[TN-3] is an OCR note.',
+      'bucket-1',
+      0,
+      'source-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'chunk-1',
+      compileOntology({ version: 'literary-test', profiles: ['literary'] }),
+    )
+
+    const mentions = vi.mocked(graph.addEntityMentions).mock.calls[0]![0]
+    const mexico = mentions.find(m => m.name === 'Mexico')!
+    const guatemala = mentions.find(m => m.name === 'Guatemala')!
+    const landa = mentions.find(m => m.name === 'Landa')!
+    const cairo = mentions.find(m => m.name === 'Cairo, Egypt')!
+    expect(mexico.aliases).not.toEqual(expect.arrayContaining(['Guatemala', 'Mexico, Guatemala', 'Egpptian[TN-3]']))
+    expect(guatemala.aliases).not.toEqual(expect.arrayContaining(['Mexico', 'Mexico, Guatemala']))
+    expect(landa.aliases).toEqual([])
+    expect(cairo.aliases).toContain('Cairo')
   })
 
   it('classifies periodicals as publications and preserves standalone creative works', async () => {
@@ -378,6 +436,160 @@ describe('TripleExtractor', () => {
       object: 'Morgenblatt',
       objectType: 'publication',
     }))
+  })
+
+  it('drops weak RELATED_TO facts and generic document APPEARS_IN facts', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          { name: 'Mexico', type: 'place', description: 'A country.', aliases: [] },
+          { name: 'Guatemala', type: 'place', description: 'A country.', aliases: [] },
+          { name: 'Novel-30752', type: 'document', description: 'The source document.', aliases: [] },
+        ],
+        relationships: [
+          {
+            subject: 'Mexico',
+            predicate: 'RELATED_TO',
+            object: 'Guatemala',
+            confidence: 0.9,
+            description: 'Mexico is related to Guatemala.',
+            evidenceText: 'Mexico, Guatemala',
+          },
+          {
+            subject: 'Mexico',
+            predicate: 'APPEARS_IN',
+            object: 'Novel-30752',
+            confidence: 0.9,
+            description: 'Mexico appears in the source document.',
+            evidenceText: 'Mexico appears in the passage',
+          },
+        ],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'Mexico and Guatemala are mentioned in the passage.',
+      'bucket-1',
+      0,
+      'source-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'chunk-1',
+      compileOntology({ version: 'literary-test', profiles: ['literary'] }),
+    )
+
+    expect(graph.addTriple).not.toHaveBeenCalled()
+  })
+
+  it('keeps APPEARS_IN only for character membership in named works', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          { name: 'Elizabeth Bennet', type: 'character', description: 'A fictional character.', aliases: [] },
+          { name: 'Jane Austen', type: 'person', description: 'A real author.', aliases: [] },
+          { name: 'Pemberley', type: 'place', description: 'A named estate.', aliases: [] },
+          { name: 'Pride and Prejudice', type: 'creative_work', description: 'A novel.', aliases: [] },
+        ],
+        relationships: [
+          {
+            subject: 'Elizabeth Bennet',
+            predicate: 'APPEARS_IN',
+            object: 'Pride and Prejudice',
+            confidence: 0.9,
+            description: 'Elizabeth Bennet appears in Pride and Prejudice.',
+            evidenceText: 'Elizabeth Bennet appears in Pride and Prejudice',
+          },
+          {
+            subject: 'Jane Austen',
+            predicate: 'APPEARS_IN',
+            object: 'Pride and Prejudice',
+            confidence: 0.9,
+            description: 'Jane Austen is mentioned in Pride and Prejudice.',
+            evidenceText: 'Jane Austen is mentioned in the work',
+          },
+          {
+            subject: 'Pemberley',
+            predicate: 'APPEARS_IN',
+            object: 'Pride and Prejudice',
+            confidence: 0.9,
+            description: 'Pemberley is mentioned in Pride and Prejudice.',
+            evidenceText: 'Pemberley is mentioned in the work',
+          },
+        ],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'Elizabeth Bennet appears in Pride and Prejudice. Jane Austen and Pemberley are also discussed.',
+      'bucket-1',
+      0,
+      'source-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'chunk-1',
+      compileOntology({ version: 'literary-test', profiles: ['literary'] }),
+    )
+
+    expect(graph.addTriple).toHaveBeenCalledTimes(1)
+    expect(graph.addTriple).toHaveBeenCalledWith(expect.objectContaining({
+      subject: 'Elizabeth Bennet',
+      predicate: 'APPEARS_IN',
+      object: 'Pride and Prejudice',
+    }))
+  })
+
+  it('drops low-confidence relationships before graph writes', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          { name: 'Augustus Le Plongeon', type: 'person', description: 'An author.', aliases: [] },
+          { name: 'Member of the American Antiquarian Society of Worcester, Mass.', type: 'role', description: 'A membership role.', aliases: [] },
+        ],
+        relationships: [
+          {
+            subject: 'Augustus Le Plongeon',
+            predicate: 'WORKS_AS',
+            object: 'Member of the American Antiquarian Society of Worcester, Mass.',
+            confidence: 0.2,
+            description: 'Augustus Le Plongeon served as a member of the American Antiquarian Society.',
+            evidenceText: 'Member of the American Antiquarian Society of Worcester, Mass.',
+          },
+        ],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'Augustus Le Plongeon, M.D., Member of the American Antiquarian Society of Worcester, Mass.',
+      'bucket-1',
+      0,
+      'source-1',
+    )
+
+    expect(graph.addTriple).not.toHaveBeenCalled()
   })
 
   it('allows custom ontology users to model structural sections explicitly', async () => {

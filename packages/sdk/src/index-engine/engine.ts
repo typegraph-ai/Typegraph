@@ -16,6 +16,8 @@ import type { ExtractionCoreferenceCache, Extractor, ExtractedEntity, ExtractedR
 import type { CompiledOntology } from '../types/ontology.js'
 import { optionalCompactObject } from '../utils/input.js'
 import { ConfigError } from '../types/errors.js'
+import { CoreferenceContextManager } from './coreference-context.js'
+import { sanitizeEntityBatch } from './entity-canonicalization.js'
 
 /** Race a promise against a timeout. Resolves to undefined on timeout (never rejects). */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
@@ -26,7 +28,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined>
 }
 
 const TRIPLE_EXTRACTION_TIMEOUT_MS = 360_000 // 6 minutes per chunk
-const ENTITY_CONTEXT_LIMIT = 100
 
 type GraphExtractionRunner = Pick<TripleExtractor, 'extractFromChunk'>
 
@@ -159,8 +160,10 @@ class ConfiguredExtractorRunner implements GraphExtractionRunner {
       },
     })
 
-    if (this.graph.addEntityMentions && result.entities.length > 0) {
-      await this.graph.addEntityMentions(result.entities.map(entity => ({
+    const cleanEntities = sanitizeEntityBatch(result.entities, ontology)
+
+    if (this.graph.addEntityMentions && cleanEntities.length > 0) {
+      await this.graph.addEntityMentions(cleanEntities.map(entity => ({
         name: entity.name,
         type: entity.type,
         typeCandidates: entity.typeCandidates,
@@ -184,7 +187,7 @@ class ConfiguredExtractorRunner implements GraphExtractionRunner {
 
     if (this.graph.addTriple && result.relations.length > 0) {
       const entityByRef = new Map<string, ExtractedEntity>()
-      for (const entity of result.entities) {
+      for (const entity of cleanEntities) {
         entityByRef.set(entity.name, entity)
         if (entity.id) {
           entityByRef.set(entity.id, entity)
@@ -228,7 +231,7 @@ class ConfiguredExtractorRunner implements GraphExtractionRunner {
     }
 
     return {
-      entities: result.entities.map(entity => ({
+      entities: cleanEntities.map(entity => ({
         name: entity.name,
         type: entity.type,
         typeCandidates: entity.typeCandidates,
@@ -771,8 +774,8 @@ export class IndexEngine {
     accessScope?: AccessScope,
     initialEntityContext: EntityContext[] = [],
   ): Promise<{ succeeded: number; failed: number; failedChunks?: ExtractionFailure[] }> {
-    let entityContext: EntityContext[] = [...initialEntityContext]
     const ontology = this.resolveOntology?.(identity?.graphId)
+    const contextManager = new CoreferenceContextManager(initialEntityContext, { ontology })
     const cacheKey = {
       tenantId: identity?.tenantId,
       organizationId: identity?.organizationId,
@@ -790,12 +793,7 @@ export class IndexEngine {
     if (this.extractionCoreferenceCache) {
       try {
         const cachedEntities = await this.extractionCoreferenceCache.load(cacheKey)
-        for (const cached of cacheEntitiesToContext(cachedEntities)) {
-          if (entityContext.length >= ENTITY_CONTEXT_LIMIT) break
-          if (!entityContext.some(ec => ec.name.toLowerCase() === cached.name.toLowerCase())) {
-            entityContext.push(cached)
-          }
-        }
+        contextManager.update(cacheEntitiesToContext(cachedEntities), -1)
       } catch (err) {
         this.logger?.warn?.('[typegraph] Coreference cache load failed', {
           bucketId,
@@ -810,9 +808,7 @@ export class IndexEngine {
 
     for (const chunk of chunks) {
       try {
-        const contextForChunk = entityContext.length > 0
-          ? entityContext.map(e => ({ ...e }))
-          : undefined
+        const contextForChunk = contextManager.activeContextForChunk(chunk.content, chunk.chunkIndex)
 
         const extractionResult = await withTimeout(
           this.tripleExtractor!.extractFromChunk(
@@ -839,12 +835,7 @@ export class IndexEngine {
         }
 
         succeeded++
-        for (const e of extractionResult.entities) {
-          if (entityContext.length >= ENTITY_CONTEXT_LIMIT) break
-          if (!entityContext.some(ec => ec.name.toLowerCase() === e.name.toLowerCase())) {
-            entityContext.push(e)
-          }
-        }
+        contextManager.update(extractionResult.entities, chunk.chunkIndex)
       } catch (err) {
         failed++
         const msg = err instanceof Error ? err.message : String(err)
@@ -853,9 +844,10 @@ export class IndexEngine {
       }
     }
 
-    if (this.extractionCoreferenceCache && entityContext.length > 0) {
+    const cleanCacheContext = contextManager.toCacheEntities()
+    if (this.extractionCoreferenceCache && cleanCacheContext.length > 0) {
       try {
-        await this.extractionCoreferenceCache.save(cacheKey, contextToCacheEntities(entityContext))
+        await this.extractionCoreferenceCache.save(cacheKey, contextToCacheEntities(cleanCacheContext))
       } catch (err) {
         this.logger?.warn?.('[typegraph] Coreference cache save failed', {
           bucketId,

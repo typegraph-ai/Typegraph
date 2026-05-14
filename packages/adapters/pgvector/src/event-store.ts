@@ -20,6 +20,7 @@ export function mapEventRow(row: Record<string, unknown>): typegraphEventRecord 
     threadId: (row.thread_id as string) ?? undefined,
     name: row.name as string,
     description: (row.description as string) ?? undefined,
+    url: (row.url as string) ?? undefined,
     occurredAt: new Date(row.occurred_at as string),
     participants: parseJson(row.participants, []),
     content: (row.content as string) ?? undefined,
@@ -39,8 +40,8 @@ export class PgEventStore {
     const rows = await this.sql(
       `INSERT INTO ${this.tableName}
         (id, tenant_id, graph_id, organization_id, group_id, user_id, agent_id, thread_id, name, description,
-         occurred_at, participants, participant_ids, content, metadata, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::text[],$14,$15::jsonb,NOW())
+         url, occurred_at, participants, participant_ids, content, metadata, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::text[],$15,$16::jsonb,NOW())
        ON CONFLICT (tenant_id, id) DO UPDATE SET
          graph_id = EXCLUDED.graph_id,
          organization_id = EXCLUDED.organization_id,
@@ -50,6 +51,7 @@ export class PgEventStore {
          thread_id = EXCLUDED.thread_id,
          name = EXCLUDED.name,
          description = EXCLUDED.description,
+         url = EXCLUDED.url,
          occurred_at = EXCLUDED.occurred_at,
          participants = EXCLUDED.participants,
          participant_ids = EXCLUDED.participant_ids,
@@ -68,6 +70,7 @@ export class PgEventStore {
         input.threadId ?? null,
         input.name,
         input.description ?? null,
+        input.url ?? null,
         input.occurredAt.toISOString(),
         JSON.stringify(input.participants ?? []),
         (input.participants ?? []).map(entityRefKey),

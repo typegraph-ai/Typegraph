@@ -308,6 +308,7 @@ export const BUSINESS_EVENTS_TABLE_SQL = (eventsTable: string) => {
     thread_id        TEXT,
     name             TEXT NOT NULL,
     description      TEXT,
+    url              TEXT,
     occurred_at      TIMESTAMPTZ NOT NULL,
     participants     JSONB NOT NULL DEFAULT '[]',
     participant_ids  TEXT[] NOT NULL DEFAULT '{}',
@@ -317,6 +318,9 @@ export const BUSINESS_EVENTS_TABLE_SQL = (eventsTable: string) => {
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (tenant_id, id)
   );
+
+  ALTER TABLE ${eventsTable}
+    ADD COLUMN IF NOT EXISTS url TEXT;
 
   CREATE INDEX IF NOT EXISTS ${idx('tenant_time_idx')}
     ON ${eventsTable} (tenant_id, occurred_at DESC);
@@ -348,11 +352,15 @@ export const THREADS_TABLE_SQL = (threadsTable: string) => {
     agent_id         TEXT,
     name             TEXT NOT NULL,
     description      TEXT,
+    url              TEXT,
     metadata         JSONB NOT NULL DEFAULT '{}',
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (tenant_id, id)
   );
+
+  ALTER TABLE ${threadsTable}
+    ADD COLUMN IF NOT EXISTS url TEXT;
 
   CREATE INDEX IF NOT EXISTS ${idx('tenant_updated_idx')}
     ON ${threadsTable} (tenant_id, updated_at DESC);

@@ -1,7 +1,9 @@
 import type { VectorStoreAdapter, HashStoreAdapter, SearchOpts, HashRecord, UndeployResult, ScoredChunkWithDocument } from '../../types/adapter.js'
 import type { EmbeddedChunk, ChunkFilter, ScoredChunk } from '../../types/chunk.js'
 import type { DocumentFilter, DocumentStatus, typegraphDocument, UpsertDocumentInput, UpsertedDocumentRecord } from '../../types/document.js'
+import type { EventStorageFilter, typegraphEventRecord, UpsertEventInput } from '../../types/event.js'
 import type { TypeGraphGraphRecord } from '../../types/graph.js'
+import type { ThreadStorageFilter, typegraphThread, UpsertThreadInput } from '../../types/thread.js'
 import { createHash } from 'crypto'
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -61,6 +63,31 @@ function matchesDocumentFilter(document: typegraphDocument, filter: DocumentFilt
     const statuses = Array.isArray(filter.status) ? filter.status : [filter.status]
     if (!statuses.includes(document.status)) return false
   }
+  return true
+}
+
+function matchesEventFilter(event: typegraphEventRecord, filter: EventStorageFilter | null | undefined): boolean {
+  if (!filter) return true
+  if (filter.tenantId && event.tenantId !== filter.tenantId) return false
+  if (filter.organizationId && event.organizationId !== filter.organizationId) return false
+  if (filter.groupId && event.groupId !== filter.groupId) return false
+  if (filter.userId && event.userId !== filter.userId) return false
+  if (filter.agentId && event.agentId !== filter.agentId) return false
+  if (filter.threadId && event.threadId !== filter.threadId) return false
+  if (filter.graphIds && filter.graphIds.length > 0 && !filter.graphIds.includes(event.graphId ?? 'public')) return false
+  if (filter.eventIds && !filter.eventIds.includes(event.id)) return false
+  return true
+}
+
+function matchesThreadFilter(thread: typegraphThread, filter: ThreadStorageFilter | null | undefined): boolean {
+  if (!filter) return true
+  if (filter.tenantId && thread.tenantId !== filter.tenantId) return false
+  if (filter.organizationId && thread.organizationId !== filter.organizationId) return false
+  if (filter.groupId && thread.groupId !== filter.groupId) return false
+  if (filter.userId && thread.userId !== filter.userId) return false
+  if (filter.agentId && thread.agentId !== filter.agentId) return false
+  if (filter.graphIds && filter.graphIds.length > 0 && !filter.graphIds.includes(thread.graphId ?? 'public')) return false
+  if (filter.threadIds && !filter.threadIds.includes(thread.id)) return false
   return true
 }
 
@@ -137,10 +164,14 @@ export function createMockAdapter(): VectorStoreAdapter & {
   calls: MockAdapterCall[]
   _chunks: Map<string, EmbeddedChunk[]>
   _documents: Map<string, typegraphDocument>
+  _events: Map<string, typegraphEventRecord>
+  _threads: Map<string, typegraphThread>
   _graphs: Map<string, TypeGraphGraphRecord>
 } {
   const chunks = new Map<string, EmbeddedChunk[]>()
   const documents = new Map<string, typegraphDocument>()
+  const events = new Map<string, typegraphEventRecord>()
+  const threads = new Map<string, typegraphThread>()
   const graphs = new Map<string, TypeGraphGraphRecord>()
   const calls: MockAdapterCall[] = []
   const hashStore = createMockHashStore()
@@ -199,11 +230,15 @@ export function createMockAdapter(): VectorStoreAdapter & {
     calls: MockAdapterCall[]
     _chunks: Map<string, EmbeddedChunk[]>
     _documents: Map<string, typegraphDocument>
+    _events: Map<string, typegraphEventRecord>
+    _threads: Map<string, typegraphThread>
     _graphs: Map<string, TypeGraphGraphRecord>
   } = {
     calls,
     _chunks: chunks,
     _documents: documents,
+    _events: events,
+    _threads: threads,
     _graphs: graphs,
     hashStore,
 
@@ -352,6 +387,78 @@ export function createMockAdapter(): VectorStoreAdapter & {
       if (!document) throw new Error(`Document ${id} not found`)
       Object.assign(document, input, { updatedAt: new Date() })
       return document
+    },
+
+    async upsertEvent(input: UpsertEventInput): Promise<typegraphEventRecord> {
+      calls.push({ method: 'upsertEvent', args: [input] })
+      const key = documentKey(input.tenantId, input.id)
+      const existing = events.get(key)
+      const now = new Date()
+      const event: typegraphEventRecord = {
+        id: input.id,
+        tenantId: input.tenantId,
+        graphId: input.graphId ?? 'public',
+        organizationId: input.organizationId,
+        groupId: input.groupId,
+        userId: input.userId,
+        agentId: input.agentId,
+        threadId: input.threadId,
+        name: input.name,
+        description: input.description,
+        url: input.url,
+        occurredAt: input.occurredAt,
+        participants: input.participants ?? [],
+        content: input.content,
+        metadata: input.metadata ?? {},
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      }
+      events.set(key, event)
+      return event
+    },
+
+    async getEvent(tenantId: string, id: string): Promise<typegraphEventRecord | null> {
+      calls.push({ method: 'getEvent', args: [tenantId, id] })
+      return events.get(documentKey(tenantId, id)) ?? null
+    },
+
+    async listEvents(filter?: EventStorageFilter | null): Promise<typegraphEventRecord[]> {
+      calls.push({ method: 'listEvents', args: [filter] })
+      return [...events.values()].filter(event => matchesEventFilter(event, filter))
+    },
+
+    async upsertThread(input: UpsertThreadInput): Promise<typegraphThread> {
+      calls.push({ method: 'upsertThread', args: [input] })
+      const key = documentKey(input.tenantId, input.id)
+      const existing = threads.get(key)
+      const now = new Date()
+      const thread: typegraphThread = {
+        id: input.id,
+        tenantId: input.tenantId,
+        graphId: input.graphId ?? 'public',
+        organizationId: input.organizationId,
+        groupId: input.groupId,
+        userId: input.userId,
+        agentId: input.agentId,
+        name: input.name,
+        description: input.description,
+        url: input.url,
+        metadata: input.metadata ?? {},
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      }
+      threads.set(key, thread)
+      return thread
+    },
+
+    async getThread(tenantId: string, id: string): Promise<typegraphThread | null> {
+      calls.push({ method: 'getThread', args: [tenantId, id] })
+      return threads.get(documentKey(tenantId, id)) ?? null
+    },
+
+    async listThreads(filter?: ThreadStorageFilter | null): Promise<typegraphThread[]> {
+      calls.push({ method: 'listThreads', args: [filter] })
+      return [...threads.values()].filter(thread => matchesThreadFilter(thread, filter))
     },
 
     async upsertGraphRecord(input: TypeGraphGraphRecord): Promise<TypeGraphGraphRecord> {

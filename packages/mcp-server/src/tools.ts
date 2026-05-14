@@ -80,6 +80,7 @@ export function getToolDefinitions(): MCPToolDefinition[] {
           threadId: { type: 'string', description: 'Thread identifier' },
           role: { type: 'string', enum: ['user', 'assistant', 'system', 'tool'] },
           content: { type: 'string' },
+          url: { type: 'string', description: 'Canonical URL for the source turn or message' },
           timestamp: { type: 'string', description: 'Optional ISO timestamp' },
           metadata: { type: 'object', additionalProperties: true },
           graphExtraction: { type: 'boolean', description: 'Run configured graph extraction for this turn' },
@@ -180,6 +181,7 @@ export async function executeTool(
           {
             role: args['role'] as string,
             content: args['content'] as string,
+            ...(args['url'] ? { url: args['url'] as string } : {}),
             ...(args['timestamp'] ? { timestamp: new Date(args['timestamp'] as string) } : {}),
             ...(args['metadata'] ? { metadata: args['metadata'] as Record<string, unknown> } : {}),
           },

@@ -167,6 +167,7 @@ await tg.event.ingest(
     id: 'zendesk:ticket:4242',
     name: 'Acme SSO redirect loop ticket',
     description: 'Acme reported a redirect loop after SAML setup.',
+    url: 'https://zendesk.example.com/tickets/4242',
     occurredAt: new Date(),
     participants: [
       entityRef('organization', 'org_acme'),
@@ -178,6 +179,7 @@ await tg.event.ingest(
         id: 'zendesk:ticket:4242:body',
         name: 'Acme SSO ticket body',
         description: 'Support ticket details and troubleshooting notes.',
+        url: 'https://zendesk.example.com/tickets/4242',
         content: ticketBody,
         metadata: { provider: 'zendesk' },
       },

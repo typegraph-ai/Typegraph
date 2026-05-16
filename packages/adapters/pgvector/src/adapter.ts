@@ -67,6 +67,26 @@ function parseGraphAccess(value: unknown): TypeGraphGraphRecord['access'] {
   return parseJson<TypeGraphGraphRecord['access'] | null>(value, null) ?? undefined
 }
 
+function isUndefinedTableError(error: unknown): boolean {
+  const maybe = error as { code?: unknown; message?: unknown }
+  return maybe.code === '42P01' || String(maybe.message ?? '').includes('does not exist')
+}
+
+interface DeleteDocumentTarget {
+  tenantId: string
+  bucketId: string
+  graphId: string
+  id: string
+}
+
+interface DeleteChunkTarget {
+  tenantId: string
+  bucketId: string
+  documentId: string
+  id: string
+  idempotencyKey?: string | undefined
+}
+
 function buildRelaxedKeywordQuery(query: string): string {
   const terms: string[] = []
   const seen = new Set<string>()
@@ -129,6 +149,9 @@ export class PgVectorAdapter implements VectorStoreAdapter {
   private telemetryTable: string
   private policiesTable: string
   private jobsTable: string
+  private edgesTable: string
+  private chunkMentionsTable: string
+  private factRecordsTable: string
 
   /** model key → table name */
   private modelTables = new Map<string, string>()
@@ -152,6 +175,9 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     this.telemetryTable = `${prefix}typegraph_telemetry`
     this.policiesTable = `${prefix}typegraph_policies`
     this.jobsTable = config.jobsTable ?? `${prefix}typegraph_jobs`
+    this.edgesTable = `${prefix}typegraph_graph_edges`
+    this.chunkMentionsTable = `${prefix}typegraph_entity_chunk_mentions`
+    this.factRecordsTable = `${prefix}typegraph_fact_records`
     this.registryTable = `${this.tablePrefix}_registry`
     this.hashStore = new PgHashStore(this.sql, this.hashesTable)
     this.documentStore = new PgDocumentStore(this.sql, this.documentsTable)
@@ -609,15 +635,36 @@ export class PgVectorAdapter implements VectorStoreAdapter {
   }
 
   async deleteDocuments(filter: DocumentStorageFilter | null): Promise<number> {
-    const { count, documents } = await this.documentStore.delete(filter)
+    if (this.transaction) {
+      return this.transaction((sql) => this.deleteDocumentsWithSql(sql, filter)) as Promise<number>
+    }
+    return this.deleteDocumentsWithSql(this.sql, filter)
+  }
+
+  private async deleteDocumentsWithSql(sql: SqlExecutor, filter: DocumentStorageFilter | null): Promise<number> {
+    const { where, params } = buildDocumentWhere(filter, 'd')
+    if (!where) throw new ConfigError('documents.delete requires at least one filter field.')
+
+    const documentRows = await sql(
+      `SELECT d.tenant_id, d.bucket_id, d.graph_id, d.id
+       FROM ${this.documentsTable} d
+       WHERE ${where}`,
+      params
+    )
+    const documents: DeleteDocumentTarget[] = documentRows.map(row => ({
+      tenantId: row.tenant_id as string,
+      bucketId: row.bucket_id as string,
+      graphId: (row.graph_id as string) ?? 'public',
+      id: row.id as string,
+    }))
     if (documents.length === 0) return 0
 
-    // Cascade: delete chunks from all registered model tables
-    let totalChunksDeleted = 0
-    for (const table of this.modelTables.values()) {
-      // Collect idempotency keys before deleting chunks (for hash cleanup)
-      const ikeyRows = await this.sql(
-        `SELECT DISTINCT idempotency_key, bucket_id, tenant_id FROM ${table}
+    const tables = await this.loadRegisteredChunkTables(sql)
+    const chunks: DeleteChunkTarget[] = []
+    for (const table of tables) {
+      const rows = await this.queryOptionalTable(sql,
+        `SELECT id, idempotency_key, bucket_id, tenant_id, document_id
+         FROM ${table}
          WHERE (tenant_id, bucket_id, document_id) IN (
            SELECT * FROM unnest($1::text[], $2::text[], $3::text[])
          )`,
@@ -627,30 +674,204 @@ export class PgVectorAdapter implements VectorStoreAdapter {
           documents.map(doc => doc.id),
         ]
       )
-      const chunkRows = await this.sql(
+      chunks.push(...rows.map(row => ({
+        tenantId: row.tenant_id as string,
+        bucketId: row.bucket_id as string,
+        documentId: row.document_id as string,
+        id: row.id as string,
+        idempotencyKey: (row.idempotency_key as string) ?? undefined,
+      })))
+    }
+
+    await this.deleteDocumentLinks(sql, documents)
+    await this.deleteChunkMentions(sql, documents)
+    const deletedEdgeIds = await this.deleteDocumentGraphEdges(sql, documents, chunks)
+    await this.deleteDocumentFactRecords(sql, documents, chunks.map(chunk => chunk.id), deletedEdgeIds)
+
+    for (const table of tables) {
+      await this.queryOptionalTable(sql,
         `DELETE FROM ${table}
           WHERE (tenant_id, bucket_id, document_id) IN (
             SELECT * FROM unnest($1::text[], $2::text[], $3::text[])
-          )
-        RETURNING id`,
+          )`,
         [
           documents.map(doc => doc.tenantId),
           documents.map(doc => doc.bucketId),
           documents.map(doc => doc.id),
         ]
       )
-      totalChunksDeleted += chunkRows.length
-
-      // Cascade: delete hash entries by idempotency keys
-      for (const row of ikeyRows) {
-        const ikey = row.idempotency_key as string
-        const bucketId = row.bucket_id as string
-        const tenantId = (row.tenant_id as string) ?? undefined
-        await this.hashStore.deleteByIdempotencyKeys([ikey], bucketId, tenantId)
-      }
     }
 
-    return count
+    await this.deleteHashesForChunks(sql, chunks)
+
+    const deletedDocumentRows = await sql(
+      `DELETE FROM ${this.documentsTable} d
+       WHERE (d.tenant_id, d.bucket_id, d.id) IN (
+         SELECT * FROM unnest($1::text[], $2::text[], $3::text[])
+       )
+       RETURNING d.id`,
+      [
+        documents.map(doc => doc.tenantId),
+        documents.map(doc => doc.bucketId),
+        documents.map(doc => doc.id),
+      ]
+    )
+    return deletedDocumentRows.length
+  }
+
+  private async loadRegisteredChunkTables(sql: SqlExecutor): Promise<string[]> {
+    const tables = new Set(this.modelTables.values())
+    try {
+      const rows = await sql(`SELECT model_key, table_name FROM ${this.registryTable}`)
+      for (const row of rows) {
+        if (row.model_key != null && row.table_name != null) {
+          this.modelTables.set(row.model_key as string, row.table_name as string)
+        }
+        if (row.table_name != null) tables.add(row.table_name as string)
+      }
+    } catch (error) {
+      if (!isUndefinedTableError(error)) throw error
+    }
+    return [...tables]
+  }
+
+  private async queryOptionalTable(sql: SqlExecutor, query: string, params?: unknown[]): Promise<Record<string, unknown>[]> {
+    try {
+      return await sql(query, params)
+    } catch (error) {
+      if (isUndefinedTableError(error)) return []
+      throw error
+    }
+  }
+
+  private async deleteDocumentLinks(sql: SqlExecutor, documents: DeleteDocumentTarget[]): Promise<void> {
+    await this.queryOptionalTable(sql,
+      `WITH docs AS (
+         SELECT * FROM unnest($1::text[], $2::text[], $3::text[]) AS d(tenant_id, graph_id, document_id)
+       )
+       DELETE FROM ${this.linksTable} l
+       USING docs d
+       WHERE l.tenant_id = d.tenant_id
+         AND l.graph_id = d.graph_id
+         AND (
+           (l.from_kind = 'document' AND l.from_id = d.document_id)
+           OR (l.to_kind = 'document' AND l.to_id = d.document_id)
+         )`,
+      [
+        documents.map(doc => doc.tenantId),
+        documents.map(doc => doc.graphId),
+        documents.map(doc => doc.id),
+      ]
+    )
+  }
+
+  private async deleteChunkMentions(sql: SqlExecutor, documents: DeleteDocumentTarget[]): Promise<void> {
+    await this.queryOptionalTable(sql,
+      `WITH docs AS (
+         SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) AS d(tenant_id, graph_id, bucket_id, document_id)
+       )
+       DELETE FROM ${this.chunkMentionsTable} m
+       USING docs d
+       WHERE m.tenant_id = d.tenant_id
+         AND m.graph_id = d.graph_id
+         AND m.bucket_id = d.bucket_id
+         AND m.document_id = d.document_id`,
+      [
+        documents.map(doc => doc.tenantId),
+        documents.map(doc => doc.graphId),
+        documents.map(doc => doc.bucketId),
+        documents.map(doc => doc.id),
+      ]
+    )
+  }
+
+  private async deleteDocumentGraphEdges(sql: SqlExecutor, documents: DeleteDocumentTarget[], chunks: DeleteChunkTarget[]): Promise<string[]> {
+    const rows = await this.queryOptionalTable(sql,
+      `WITH docs AS (
+         SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) AS d(tenant_id, graph_id, bucket_id, document_id)
+       )
+       DELETE FROM ${this.edgesTable} e
+       WHERE EXISTS (
+         SELECT 1
+         FROM docs d
+         WHERE e.tenant_id = d.tenant_id
+           AND e.graph_id = d.graph_id
+           AND (
+             (e.from_bucket_id = d.bucket_id AND e.from_document_id = d.document_id)
+             OR (e.to_bucket_id = d.bucket_id AND e.to_document_id = d.document_id)
+           )
+       )
+       OR (
+         e.tenant_id = ANY($5::text[])
+         AND e.graph_id = ANY($6::text[])
+         AND (
+           e.from_chunk_id = ANY($7::text[])
+           OR e.to_chunk_id = ANY($7::text[])
+           OR (e.source_type = 'chunk' AND e.source_id = ANY($7::text[]))
+           OR (e.target_type = 'chunk' AND e.target_id = ANY($7::text[]))
+           OR e.properties->>'chunkId' = ANY($7::text[])
+         )
+       )
+       RETURNING e.id`,
+      [
+        documents.map(doc => doc.tenantId),
+        documents.map(doc => doc.graphId),
+        documents.map(doc => doc.bucketId),
+        documents.map(doc => doc.id),
+        [...new Set(documents.map(doc => doc.tenantId))],
+        [...new Set(documents.map(doc => doc.graphId))],
+        [...new Set(chunks.map(chunk => chunk.id))],
+      ]
+    )
+    return rows.map(row => row.id as string)
+  }
+
+  private async deleteDocumentFactRecords(sql: SqlExecutor, documents: DeleteDocumentTarget[], chunkIds: string[], edgeIds: string[]): Promise<void> {
+    await this.queryOptionalTable(sql,
+      `DELETE FROM ${this.factRecordsTable} f
+       WHERE f.tenant_id = ANY($1::text[])
+         AND f.graph_id = ANY($2::text[])
+         AND (
+           f.from_chunk_id = ANY($3::text[])
+           OR f.edge_id = ANY($4::text[])
+         )`,
+      [
+        [...new Set(documents.map(doc => doc.tenantId))],
+        [...new Set(documents.map(doc => doc.graphId))],
+        [...new Set(chunkIds)],
+        [...new Set(edgeIds)],
+      ]
+    )
+  }
+
+  private async deleteHashesForChunks(sql: SqlExecutor, chunks: DeleteChunkTarget[]): Promise<void> {
+    const keysByTuple = new Map<string, { idempotencyKey: string; bucketId: string; tenantId: string }>()
+    for (const chunk of chunks) {
+      if (!chunk.idempotencyKey) continue
+      const key = `${chunk.tenantId}\0${chunk.bucketId}\0${chunk.idempotencyKey}`
+      keysByTuple.set(key, {
+        idempotencyKey: chunk.idempotencyKey,
+        bucketId: chunk.bucketId,
+        tenantId: chunk.tenantId,
+      })
+    }
+    const hashKeys = [...keysByTuple.values()]
+    if (hashKeys.length === 0) return
+    await sql(
+      `WITH keys AS (
+         SELECT * FROM unnest($1::text[], $2::text[], $3::text[]) AS k(idempotency_key, bucket_id, tenant_id)
+       )
+       DELETE FROM ${this.hashesTable} h
+       USING keys k
+       WHERE h.idempotency_key = k.idempotency_key
+         AND h.bucket_id = k.bucket_id
+         AND h.tenant_id = k.tenant_id`,
+      [
+        hashKeys.map(row => row.idempotencyKey),
+        hashKeys.map(row => row.bucketId),
+        hashKeys.map(row => row.tenantId),
+      ]
+    )
   }
 
   async updateDocument(tenantId: string, id: string, input: Partial<Pick<typegraphDocument, 'name' | 'description' | 'url' | 'metadata'>>): Promise<typegraphDocument> {
@@ -675,6 +896,38 @@ export class PgVectorAdapter implements VectorStoreAdapter {
 
   async listEvents(filter?: EventStorageFilter | null): Promise<typegraphEventRecord[]> {
     return this.eventStore.list(filter)
+  }
+
+  async deleteEvents(filter: EventStorageFilter | null): Promise<number> {
+    const run = async (sql: SqlExecutor): Promise<number> => {
+      const store = new PgEventStore(sql, this.eventsTable)
+      const { count, events } = await store.delete(filter)
+      if (events.length === 0) return 0
+      await this.queryOptionalTable(sql,
+        `WITH events AS (
+           SELECT * FROM unnest($1::text[], $2::text[], $3::text[]) AS e(tenant_id, graph_id, event_id)
+         )
+         DELETE FROM ${this.linksTable} l
+         USING events e
+         WHERE l.tenant_id = e.tenant_id
+           AND l.graph_id = e.graph_id
+           AND (
+             (l.from_kind = 'event' AND l.from_id = e.event_id)
+             OR (l.to_kind = 'event' AND l.to_id = e.event_id)
+           )`,
+        [
+          events.map(event => event.tenantId),
+          events.map(event => event.graphId),
+          events.map(event => event.id),
+        ]
+      )
+      return count
+    }
+
+    if (this.transaction) {
+      return this.transaction(run) as Promise<number>
+    }
+    return run(this.sql)
   }
 
   async upsertThread(input: UpsertThreadInput): Promise<typegraphThread> {

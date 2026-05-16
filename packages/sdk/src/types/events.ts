@@ -32,6 +32,7 @@ export type typegraphEventType =
   | 'document.delete'
   // Business event lifecycle
   | 'event.ingest'
+  | 'event.delete'
   | 'thread.upsert'
   // Governance
   | 'policy.create'

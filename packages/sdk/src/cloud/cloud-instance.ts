@@ -155,6 +155,11 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     async list(filter?: EventFilter | null): Promise<typegraphEventRecord[]> {
       return client.post<typegraphEventRecord[]>('/v1/events/list', optionalCompactObject<EventFilter>(filter, 'event.list', 'filter'))
     },
+    async delete(filter: EventFilter | null): Promise<number> {
+      const normalizedFilter = optionalCompactObject<EventFilter>(filter, 'event.delete', 'filter') as EventFilter
+      assertHasMeaningfulFilter(normalizedFilter, 'event.delete')
+      return client.delete<number>('/v1/events', normalizedFilter)
+    },
   }
 
   const thread: ThreadsApi = {

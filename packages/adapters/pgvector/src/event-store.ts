@@ -1,4 +1,4 @@
-import { generateId } from '@typegraph-ai/sdk'
+import { ConfigError, generateId } from '@typegraph-ai/sdk'
 import type { EventStorageFilter, typegraphEventRecord, UpsertEventInput, UpsertLinkInput } from '@typegraph-ai/sdk'
 import type { SqlExecutor } from './adapter.js'
 import { entityRefKey } from './identity.js'
@@ -90,6 +90,20 @@ export class PgEventStore {
     const { where, params } = buildEventWhere(filter)
     const rows = await this.sql(`SELECT * FROM ${this.tableName} ${where ? `WHERE ${where}` : ''} ORDER BY occurred_at DESC`, params)
     return rows.map(mapEventRow)
+  }
+
+  async delete(filter: EventStorageFilter | null): Promise<{ count: number; events: Array<{ tenantId: string; graphId: string; id: string }> }> {
+    const { where, params } = buildEventWhere(filter)
+    if (!where) throw new ConfigError('event.delete requires at least one filter field.')
+    const rows = await this.sql(`DELETE FROM ${this.tableName} WHERE ${where} RETURNING tenant_id, graph_id, id`, params)
+    return {
+      count: rows.length,
+      events: rows.map(row => ({
+        tenantId: row.tenant_id as string,
+        graphId: (row.graph_id as string) ?? 'public',
+        id: row.id as string,
+      })),
+    }
   }
 }
 

@@ -427,6 +427,18 @@ export function createMockAdapter(): VectorStoreAdapter & {
       return [...events.values()].filter(event => matchesEventFilter(event, filter))
     },
 
+    async deleteEvents(filter: EventStorageFilter | null): Promise<number> {
+      calls.push({ method: 'deleteEvents', args: [filter] })
+      let count = 0
+      for (const [key, event] of events) {
+        if (matchesEventFilter(event, filter)) {
+          events.delete(key)
+          count++
+        }
+      }
+      return count
+    },
+
     async upsertThread(input: UpsertThreadInput): Promise<typegraphThread> {
       calls.push({ method: 'upsertThread', args: [input] })
       const key = documentKey(input.tenantId, input.id)

@@ -11,6 +11,7 @@ export type PolicyAction =
   | 'memory.read'
   | 'memory.delete'
   | 'document.delete'
+  | 'event.delete'
   | 'bucket.delete'
 
 export interface PolicyRule {

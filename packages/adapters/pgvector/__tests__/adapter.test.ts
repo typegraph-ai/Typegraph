@@ -202,4 +202,80 @@ describe('PgVectorAdapter graph records', () => {
     expect(capturedQuery).toContain('ON CONFLICT (tenant_id, bucket_id, idempotency_key, chunk_index)')
     expect(capturedParams?.[16]).toEqual(['{}'])
   })
+
+  it('deletes document-scoped graph evidence before deleting documents', async () => {
+    const queries: string[] = []
+    const sql = vi.fn(async (query: string) => {
+      queries.push(query)
+      if (query.includes('SELECT d.tenant_id') && query.includes('FROM typegraph_documents d')) {
+        return [{
+          tenant_id: 'tenant_1',
+          bucket_id: 'bucket_1',
+          graph_id: 'public',
+          id: 'doc_1',
+        }]
+      }
+      if (query.includes('SELECT model_key, table_name FROM typegraph_document_chunks_registry')) {
+        return [{ model_key: 'mock', table_name: 'typegraph_document_chunks_mock' }]
+      }
+      if (query.includes('SELECT id, idempotency_key') && query.includes('FROM typegraph_document_chunks_mock')) {
+        return [{
+          id: 'chunk_1',
+          idempotency_key: 'idem_1',
+          bucket_id: 'bucket_1',
+          tenant_id: 'tenant_1',
+          document_id: 'doc_1',
+        }]
+      }
+      if (query.includes('DELETE FROM typegraph_graph_edges')) {
+        return [{ id: 'edge_1' }]
+      }
+      if (query.includes('DELETE FROM typegraph_documents')) {
+        return [{ id: 'doc_1' }]
+      }
+      return []
+    })
+    const adapter = new PgVectorAdapter({ sql })
+
+    const count = await adapter.deleteDocuments({
+      tenantId: 'tenant_1',
+      bucketId: 'bucket_1',
+      documentIds: ['doc_1'],
+    })
+
+    const combined = queries.join('\n')
+    expect(count).toBe(1)
+    expect(combined).toContain('DELETE FROM typegraph_links')
+    expect(combined).toContain('DELETE FROM typegraph_entity_chunk_mentions')
+    expect(combined).toContain('DELETE FROM typegraph_graph_edges')
+    expect(combined).toContain('DELETE FROM typegraph_fact_records')
+    expect(combined).toContain('DELETE FROM typegraph_document_chunks_mock')
+    expect(combined).toContain('DELETE FROM typegraph_hashes')
+    expect(combined).toContain('DELETE FROM typegraph_documents')
+    expect(combined).toContain("e.properties->>'chunkId'")
+  })
+
+  it('deletes event rows and event links together', async () => {
+    const queries: string[] = []
+    const sql = vi.fn(async (query: string) => {
+      queries.push(query)
+      if (query.includes('DELETE FROM typegraph_events')) {
+        return [{ tenant_id: 'tenant_1', graph_id: 'public', id: 'evt_1' }]
+      }
+      return []
+    })
+    const adapter = new PgVectorAdapter({ sql })
+
+    const count = await adapter.deleteEvents({
+      tenantId: 'tenant_1',
+      eventIds: ['evt_1'],
+    })
+
+    const combined = queries.join('\n')
+    expect(count).toBe(1)
+    expect(combined).toContain('DELETE FROM typegraph_events')
+    expect(combined).toContain('DELETE FROM typegraph_links')
+    expect(combined).toContain("l.from_kind = 'event'")
+    expect(combined).toContain("l.to_kind = 'event'")
+  })
 })

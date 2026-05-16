@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { typegraphInit } from '../typegraph.js'
-import { GroupId } from '../types/identity.js'
+import { GroupId, OrganizationId } from '../types/identity.js'
 import { createMockAdapter } from './helpers/mock-adapter.js'
 import { createMockEmbedding } from './helpers/mock-embedding.js'
 import { createMockBucket } from './helpers/mock-document.js'
@@ -8,12 +8,34 @@ import { createTestDocument, createTestDocuments } from './helpers/mock-connecto
 import type { typegraphInstance } from '../typegraph.js'
 import type { Bucket } from '../types/bucket.js'
 import type { Embedder } from '../embedding/provider.js'
+import type { VectorStoreAdapter } from '../types/adapter.js'
+import type { BucketStorageFilter } from '../types/bucket.js'
 
 /** Register a pre-built Bucket + embedding on an instance (bypasses buckets.create UUID generation). */
 function registerTestBucket(instance: typegraphInstance, bucket: Bucket, embedding: Embedder) {
   const impl = instance as any
   impl._buckets.set(bucket.id, bucket)
   impl.bucketEmbeddings.set(bucket.id, embedding)
+}
+
+function withBucketStorage(adapter: ReturnType<typeof createMockAdapter>): ReturnType<typeof createMockAdapter> & Pick<VectorStoreAdapter, 'upsertBucket' | 'getBucket' | 'listBuckets'> {
+  const buckets = new Map<string, Bucket>()
+  return Object.assign(adapter, {
+    async upsertBucket(bucket: Bucket): Promise<Bucket> {
+      const stored = { ...bucket }
+      buckets.set(`${stored.tenantId}:${stored.id}`, stored)
+      return stored
+    },
+    async getBucket(id: string, tenantId?: string): Promise<Bucket | null> {
+      return buckets.get(`${tenantId}:${id}`) ?? null
+    },
+    async listBuckets(filter?: BucketStorageFilter): Promise<Bucket[]> {
+      return [...buckets.values()].filter(bucket =>
+        (!filter?.tenantId || bucket.tenantId === filter.tenantId) &&
+        (!filter?.name || bucket.name === filter.name)
+      )
+    },
+  })
 }
 
 describe('integration', () => {
@@ -291,6 +313,131 @@ describe('integration', () => {
       expect(storedDocument.bucketId).toBe('public')
       expect(storedDocument.graphId).toBe('public')
       expect([...adapter._chunks.values()][0]![0]!.graphId).toBe('public')
+    })
+
+    it('adapter-backed employee buckets resolve with document ingest context', async () => {
+      const adapter = withBucketStorage(createMockAdapter())
+      const embedding = createMockEmbedding()
+      const instance = await typegraphInit({
+        vectorStore: adapter,
+        embedding,
+        tenantId,
+        graphs: {
+          public: { access: 'public' },
+          employee: {
+            extends: ['public'],
+            access: {
+              read: { organizations: [OrganizationId('org-1')] },
+              write: { organizations: [OrganizationId('org-1')] },
+            },
+          },
+        },
+        buckets: {
+          'employee_integration_google-drive': {
+            name: 'Google Drive',
+            graph: 'employee',
+          },
+        },
+      })
+
+      await expect(instance.document.ingest(createTestDocuments(1, 'ScopedDoc'), {
+        bucketId: 'employee_integration_google-drive',
+      })).rejects.toThrow('not found')
+
+      const result = await instance.document.ingest(createTestDocuments(1, 'ScopedDoc'), {
+        bucketId: 'employee_integration_google-drive',
+        context: { organizationId: 'org-1' },
+      })
+
+      expect(result.status).toBe('complete')
+      const storedDocument = [...adapter._documents.values()][0]!
+      expect(storedDocument.bucketId).toBe('employee_integration_google-drive')
+      expect(storedDocument.graphId).toBe('employee')
+    })
+
+    it('adapter-backed employee buckets resolve with pre-chunked ingest context', async () => {
+      const adapter = withBucketStorage(createMockAdapter())
+      const embedding = createMockEmbedding()
+      const instance = await typegraphInit({
+        vectorStore: adapter,
+        embedding,
+        tenantId,
+        graphs: {
+          public: { access: 'public' },
+          employee: {
+            extends: ['public'],
+            access: {
+              read: { organizations: [OrganizationId('org-1')] },
+              write: { organizations: [OrganizationId('org-1')] },
+            },
+          },
+        },
+        buckets: {
+          employee_docs: {
+            name: 'Employee Docs',
+            graph: 'employee',
+          },
+        },
+      })
+
+      const result = await instance.document.ingestPreChunked(
+        createTestDocument({ id: 'pre-chunked-doc', content: 'Original content' }),
+        [{ content: 'Pre chunked employee content', chunkIndex: 0 }],
+        {
+          bucketId: 'employee_docs',
+          context: { organizationId: 'org-1' },
+        }
+      )
+
+      expect(result.status).toBe('complete')
+      const storedDocument = [...adapter._documents.values()][0]!
+      expect(storedDocument.bucketId).toBe('employee_docs')
+      expect(storedDocument.graphId).toBe('employee')
+    })
+
+    it('event ingest passes scoped context through to linked documents', async () => {
+      const adapter = withBucketStorage(createMockAdapter())
+      const embedding = createMockEmbedding()
+      const instance = await typegraphInit({
+        vectorStore: adapter,
+        embedding,
+        tenantId,
+        graphs: {
+          public: { access: 'public' },
+          employee: {
+            extends: ['public'],
+            access: {
+              read: { organizations: [OrganizationId('org-1')] },
+              write: { organizations: [OrganizationId('org-1')] },
+            },
+          },
+        },
+        buckets: {
+          employee_events: {
+            name: 'Employee Events',
+            graph: 'employee',
+          },
+        },
+      })
+
+      await instance.event.ingest({
+        id: 'evt-employee-1',
+        name: 'Employee event',
+        occurredAt: new Date('2026-05-16T00:00:00Z'),
+        documents: [
+          createTestDocument({ id: 'evt-doc-1', content: 'Linked employee document' }),
+        ],
+      }, {
+        bucketId: 'employee_events',
+        context: { organizationId: 'org-1' },
+      })
+
+      const storedEvent = [...adapter._events.values()][0]!
+      const storedDocument = [...adapter._documents.values()][0]!
+      expect(storedEvent.graphId).toBe('employee')
+      expect(storedDocument.bucketId).toBe('employee_events')
+      expect(storedDocument.graphId).toBe('employee')
+      expect(storedDocument.metadata.eventId).toBe('evt-employee-1')
     })
   })
 

@@ -97,6 +97,7 @@ export interface VectorStoreAdapter {
   upsertEvent?(input: UpsertEventInput): Promise<typegraphEventRecord>
   getEvent?(tenantId: string, id: string): Promise<typegraphEventRecord | null>
   listEvents?(filter?: EventStorageFilter | null): Promise<typegraphEventRecord[]>
+  deleteEvents?(filter: EventStorageFilter | null): Promise<number>
   upsertThread?(input: UpsertThreadInput): Promise<typegraphThread>
   getThread?(tenantId: string, id: string): Promise<typegraphThread | null>
   listThreads?(filter?: ThreadStorageFilter | null): Promise<typegraphThread[]>

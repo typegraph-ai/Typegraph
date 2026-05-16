@@ -247,6 +247,7 @@ export interface EventsApi {
   ingest(input: EventInput | EventInput[], opts: EventIngestOptions): Promise<typegraphEventRecord | EventBatchIngestResult>
   get(id: string, opts?: TypeGraphOptions | null): Promise<typegraphEventRecord | null>
   list(filter?: EventFilter | null, opts?: TypeGraphOptions | null): Promise<typegraphEventRecord[]>
+  delete(filter: EventFilter | null, opts?: TypeGraphOptions | null): Promise<number>
 }
 
 export interface ThreadsApi {
@@ -471,19 +472,7 @@ class TypegraphImpl implements typegraphInstance {
 
     get: async (bucketId: string, opts?: TypeGraphOptions | null): Promise<Bucket | undefined> => {
       const { identity } = this.resolvePublicOptions(opts, 'bucket.get')
-      if (this.adapter.getBucket) {
-        const bucket = await this.adapter.getBucket(bucketId, identity.tenantId)
-        if (bucket && bucket.tenantId !== identity.tenantId) return undefined
-        if (bucket && !this.canAccessGraph(this.bucketGraph(bucket), identity, 'read')) return undefined
-        if (bucket) {
-          this._buckets.set(bucket.id, bucket)
-          if (!this.bucketEmbeddings.has(bucket.id)) {
-            this.resolveBucketEmbeddings(bucket)
-          }
-        }
-        return bucket ?? undefined
-      }
-      return this._buckets.get(bucketId)
+      return this.getBucketForIdentity(bucketId, identity)
     },
 
     list: async (filter?: BucketListFilter | null, opts?: TypeGraphOptions | null, pagination?: PaginationOpts | null): Promise<Bucket[] | PaginatedResult<Bucket>> => {
@@ -667,6 +656,23 @@ class TypegraphImpl implements typegraphInstance {
         tenantId: identity.tenantId,
         graphIds,
       } as EventStorageFilter)
+    },
+
+    delete: async (filter: EventFilter | null, opts?: TypeGraphOptions | null): Promise<number> => {
+      this.assertConfigured()
+      const { identity, telemetry } = this.resolvePublicOptions(opts, 'event.delete')
+      if (!this.adapter.deleteEvents) {
+        throw new ConfigError('Adapter does not support event delete operations.')
+      }
+      const normalizedFilter = optionalCompactObject<EventFilter>(filter, 'event.delete', 'filter') as EventFilter
+      assertHasMeaningfulFilter(normalizedFilter, 'event.delete')
+      await this.enforcePolicy('event.delete', identity)
+      const graphIds = this.requireReadableGraph(DEFAULT_GRAPH_ID, identity)
+      const count = await this.adapter.deleteEvents({ ...normalizedFilter, tenantId: identity.tenantId, graphIds } as EventStorageFilter)
+      if (count > 0) {
+        this.emitEvent('event.delete', undefined, { count, filter: normalizedFilter }, telemetry)
+      }
+      return count
     },
   }
 
@@ -1153,6 +1159,32 @@ class TypegraphImpl implements typegraphInstance {
     return bucket?.graph ?? DEFAULT_GRAPH_ID
   }
 
+  private async getBucketForIdentity(bucketId: string, identity: typegraphIdentity & { tenantId: string }): Promise<Bucket | undefined> {
+    const bucket = this.adapter.getBucket
+      ? await this.adapter.getBucket(bucketId, identity.tenantId)
+      : this._buckets.get(bucketId)
+    if (!bucket) return undefined
+    if (this.adapter.getBucket && bucket.tenantId !== identity.tenantId) return undefined
+    if (!this.canAccessGraph(this.bucketGraph(bucket), identity, 'read')) return undefined
+
+    this._buckets.set(bucket.id, bucket)
+    if (!this.bucketEmbeddings.has(bucket.id)) {
+      this.resolveBucketEmbeddings(bucket)
+    }
+    return bucket
+  }
+
+  private ingestIdentity(opts: IngestOptions): typegraphIdentity & { tenantId: string } {
+    return {
+      tenantId: opts.tenantId ?? this.config.tenantId,
+      organizationId: opts.organizationId,
+      groupId: opts.groupId,
+      userId: opts.userId,
+      agentId: opts.agentId,
+      threadId: opts.threadId,
+    }
+  }
+
   private memoryGraphForIdentity(identity: typegraphIdentity): { graphId: string; identity: typegraphIdentity } {
     const principal =
       identity.userId ? { kind: 'user' as const, id: identity.userId }
@@ -1590,11 +1622,13 @@ class TypegraphImpl implements typegraphInstance {
     return this.bucketSearchEmbeddings.get(bucketId) ?? this.getEmbeddingForBucket(bucketId)
   }
 
-  private async resolveEmbeddingForBucket(bucketId: string): Promise<Embedder> {
+  private async resolveEmbeddingForBucket(bucketId: string, identity?: typegraphIdentity & { tenantId: string }): Promise<Embedder> {
     await this.ensureBucketsLoaded()
     const cached = this.bucketEmbeddings.get(bucketId)
     if (cached) return cached
-    const bucket = await this.bucket.get(bucketId)
+    const bucket = identity
+      ? await this.getBucketForIdentity(bucketId, identity)
+      : await this.bucket.get(bucketId)
     if (!bucket) throw new NotFoundError('Bucket', bucketId)
     return this.bucketEmbeddings.get(bucketId) ?? this.defaultEmbedding
   }
@@ -1659,18 +1693,19 @@ class TypegraphImpl implements typegraphInstance {
     await this.ensureBucketsLoaded()
     const normalizedOpts = this.resolveDocumentIngestOptions(opts, 'document.ingest')
     const resolvedBucketId = normalizedOpts.bucketId || DEFAULT_BUCKET_ID
-    await this.enforcePolicy('index', { tenantId: this.config.tenantId }, resolvedBucketId)
-    const bucket = await this.bucket.get(resolvedBucketId)
+    const identity = this.ingestIdentity(normalizedOpts)
+    await this.enforcePolicy('index', identity, resolvedBucketId)
+    const bucket = await this.getBucketForIdentity(resolvedBucketId, identity)
     if (!bucket) throw new NotFoundError('Bucket', resolvedBucketId)
     const graphId = this.bucketGraph(bucket)
-    this.requireWritableGraph(graphId, { tenantId: this.config.tenantId, organizationId: normalizedOpts.organizationId, groupId: normalizedOpts.groupId, userId: normalizedOpts.userId, agentId: normalizedOpts.agentId, threadId: normalizedOpts.threadId })
+    this.requireWritableGraph(graphId, identity)
     const resolvedOpts = this.resolveIngestOptions(normalizedOpts, bucket)
     resolvedOpts.graphId = graphId
     const chunkSize = resolvedOpts.chunkSize ?? 512
     const chunkOverlap = resolvedOpts.chunkOverlap ?? 64
     const normalizedDocuments = documents.map(document => normalizeDocumentInput(document))
     const items = await Promise.all(normalizedDocuments.map(async document => ({ document, chunks: await defaultChunker(document, { chunkSize, chunkOverlap }) })))
-    const embedding = await this.resolveEmbeddingForBucket(resolvedBucketId)
+    const embedding = await this.resolveEmbeddingForBucket(resolvedBucketId, identity)
     const engine = this.createIndexEngine(embedding)
     this.logger?.info('Ingesting documents', { bucketId: resolvedBucketId, count: documents.length })
     await this.config.hooks?.onIndexStart?.(resolvedBucketId, resolvedOpts)
@@ -1692,14 +1727,15 @@ class TypegraphImpl implements typegraphInstance {
     await this.ensureBucketsLoaded()
     const normalizedOpts = this.resolveDocumentIngestOptions(opts, 'document.ingestPreChunked')
     const resolvedBucketId = normalizedOpts.bucketId || DEFAULT_BUCKET_ID
-    await this.enforcePolicy('index', { tenantId: this.config.tenantId }, resolvedBucketId)
-    const bucket = await this.bucket.get(resolvedBucketId)
+    const identity = this.ingestIdentity(normalizedOpts)
+    await this.enforcePolicy('index', identity, resolvedBucketId)
+    const bucket = await this.getBucketForIdentity(resolvedBucketId, identity)
     if (!bucket) throw new NotFoundError('Bucket', resolvedBucketId)
     const graphId = this.bucketGraph(bucket)
-    this.requireWritableGraph(graphId, { tenantId: this.config.tenantId, organizationId: normalizedOpts.organizationId, groupId: normalizedOpts.groupId, userId: normalizedOpts.userId, agentId: normalizedOpts.agentId, threadId: normalizedOpts.threadId })
+    this.requireWritableGraph(graphId, identity)
     const resolvedOpts = this.resolveIngestOptions(normalizedOpts, bucket)
     resolvedOpts.graphId = graphId
-    const embedding = await this.resolveEmbeddingForBucket(resolvedBucketId)
+    const embedding = await this.resolveEmbeddingForBucket(resolvedBucketId, identity)
     const engine = this.createIndexEngine(embedding)
 
     await this.config.hooks?.onIndexStart?.(resolvedBucketId, resolvedOpts)

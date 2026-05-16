@@ -460,6 +460,10 @@ describe('typegraphInit', () => {
     it('rejects null destructive document filters with a ConfigError', async () => {
       await expect(instance.document.delete(null)).rejects.toThrow('document.delete requires at least one filter field')
     })
+
+    it('rejects null destructive event filters with a ConfigError', async () => {
+      await expect(instance.event.delete(null)).rejects.toThrow('event.delete requires at least one filter field')
+    })
   })
 
   describe('query', () => {
@@ -551,6 +555,24 @@ describe('typegraphInit', () => {
   })
 
   describe('event and thread URLs', () => {
+    it('deletes events through the adapter delete primitive', async () => {
+      await instance.event.ingest({
+        id: 'evt_delete',
+        name: 'Delete me',
+        occurredAt: new Date('2026-05-13T12:00:00.000Z'),
+      }, { bucketId: DEFAULT_BUCKET_ID }) as typegraphEventRecord
+
+      const count = await instance.event.delete({ eventIds: ['evt_delete'] })
+
+      expect(count).toBe(1)
+      await expect(instance.event.get('evt_delete')).resolves.toBeNull()
+      expect(adapter.calls.find(c => c.method === 'deleteEvents')?.args[0]).toEqual(expect.objectContaining({
+        tenantId: 'tenant-1',
+        eventIds: ['evt_delete'],
+        graphIds: ['public'],
+      }))
+    })
+
     it('persists event URL as a top-level field', async () => {
       const event = await instance.event.ingest({
         id: 'evt_url',

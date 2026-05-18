@@ -584,6 +584,9 @@ export class QueryPlanner {
           retrieval: switches,
           entityScope: normalizedOpts.entityScope,
           resolvedEntityIds: scopedEntityIds,
+          asOf: normalizedOpts.asOf,
+          validBetween: normalizedOpts.validBetween,
+          includeInvalidated: normalizedOpts.includeInvalidated,
         })
         graphFacts = direct.facts
         graphEntities = direct.entities
@@ -597,6 +600,9 @@ export class QueryPlanner {
       const graphRun = await withTimeout(
         new GraphRunner(this.knowledgeGraph!).run(text, identity, count, activeBucketIds, {
           ...normalizedOpts.graphOptions,
+          asOf: normalizedOpts.asOf,
+          validBetween: normalizedOpts.validBetween,
+          includeInvalidated: normalizedOpts.includeInvalidated,
           ...(normalizedOpts.entityScope ? { entityScope: normalizedOpts.entityScope, resolvedEntityIds: scopedEntityIds } : {}),
         })
           .catch((err) => { this.logger?.warn(`GraphRunner failed: ${err instanceof Error ? err.message : err}`); warnings.push(`Graph search failed: ${err instanceof Error ? err.message : String(err)}`); return { results: [], facts: [], entities: [] } as GraphRunResult }),

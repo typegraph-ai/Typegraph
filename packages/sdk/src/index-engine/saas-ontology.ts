@@ -1,6 +1,6 @@
 import type { OntologyConfig, OntologyEntityConfig, OntologyRelationConfig } from '../types/ontology.js'
 
-export const TYPEGRAPH_B2B_SAAS_ONTOLOGY_VERSION = 'typegraph-b2b-saas-2026-05-13-v2'
+export const TYPEGRAPH_B2B_SAAS_ONTOLOGY_VERSION = 'typegraph-b2b-saas-2026-05-16-v3'
 
 const entities: Record<string, OntologyEntityConfig> = {
   company: {
@@ -22,9 +22,8 @@ const entities: Record<string, OntologyEntityConfig> = {
   person: {
     description: 'A named individual identified by full name plus a disambiguator such as email, company affiliation, role title, or phone.',
   },
-  persona: {
-    extends: 'role',
-    description: 'A buyer, stakeholder, evaluator, user role, team role, or audience segment. Use person for named individuals.',
+  role: {
+    description: 'An abstract job title, buyer role, stakeholder role, user function, team function, or audience segment. Use person for named individuals.',
   },
   team: {
     extends: 'organization',
@@ -43,7 +42,7 @@ const entities: Record<string, OntologyEntityConfig> = {
   vulnerability_disclosure: { extends: 'issue', description: 'A disclosed security vulnerability, CVE, or coordinated disclosure with severity and remediation status.' },
   opportunity: { extends: 'project', description: 'A specific potential or in-flight deal with stage, amount, close date, owner, and primary account.' },
   deal_stage: { extends: 'concept', description: 'A named pipeline stage such as Prospecting, Discovery, Demo, Evaluation, Negotiation, Closed-Won, or Closed-Lost. Extract only when explicitly named.' },
-  lifecycle_stage: { extends: 'concept', description: 'An account or contact lifecycle stage such as Subscriber, Lead, MQL, SQL, Opportunity, Customer, or Evangelist.' },
+  lifecycle_stage: { extends: 'concept', description: 'An account or person lifecycle stage such as Subscriber, Lead, MQL, SQL, Opportunity, Customer, or Evangelist.' },
   poc: { extends: 'project', description: 'A proof-of-concept engagement with scope, criteria, timeline, and outcome.' },
   pilot: { extends: 'project', description: 'A paid or unpaid pilot deployment with limited scope and explicit success criteria.' },
   demo: { extends: 'meeting', description: 'A product demonstration session, often captured as a meeting with an associated recording.' },
@@ -95,7 +94,7 @@ const relations: Record<string, OntologyRelationConfig> = {
   requires: relation('A requirement, questionnaire, or use case requires a capability, control, integration, or deployment model.', ['requirement', 'questionnaire', 'use_case'], ['feature', 'security_control', 'integration', 'deployment_model']),
   answers: relation('A proposal, content asset, feature, control, support policy, or message directly answers a requirement, questionnaire, or objection.', ['proposal', 'content_asset', 'feature', 'security_control', 'support_policy', 'message'], ['requirement', 'questionnaire', 'objection']),
   differentiates_from: relation('A company, product, or feature is differentiated from a competitor, product, or feature.', ['company', 'product', 'feature'], ['competitor', 'product', 'feature']),
-  targets: relation('A company, product, or feature targets a persona, use case, company, industry, or vertical.', ['company', 'product', 'feature'], ['persona', 'use_case', 'company', 'industry', 'vertical']),
+  targets: relation('A company, product, or feature targets a role, use case, company, industry, or vertical.', ['company', 'product', 'feature'], ['role', 'use_case', 'company', 'industry', 'vertical']),
   blocks: relation('A risk, objection, requirement, ticket, or escalation blocks a use case, proposal, deployment model, opportunity, or renewal.', ['risk', 'objection', 'requirement', 'ticket', 'escalation'], ['use_case', 'proposal', 'deployment_model', 'opportunity', 'renewal']),
   mitigates: relation('A feature, security control, or support policy mitigates a risk, objection, or requirement.', ['feature', 'security_control', 'support_policy'], ['risk', 'objection', 'requirement']),
   priced_as: relation('A product or feature is packaged or priced as a pricing plan.', ['product', 'feature'], ['pricing_plan']),
@@ -173,7 +172,7 @@ export const TYPEGRAPH_B2B_SAAS_ONTOLOGY: OntologyConfig = {
     ],
     coordinateEntityTypes: [
       'company', 'product', 'feature', 'integration', 'compliance_framework',
-      'person', 'account', 'persona', 'team', 'use_case', 'feature_request',
+      'person', 'account', 'role', 'team', 'use_case', 'feature_request',
       'industry', 'vertical', 'geography', 'deal_stage', 'lifecycle_stage',
       'roadmap_item', 'content_asset', 'partner', 'campaign', 'security_control',
       'risk', 'objection',
@@ -182,8 +181,8 @@ export const TYPEGRAPH_B2B_SAAS_ONTOLOGY: OntologyConfig = {
   prompt: {
     entityGuidelines: [
       'Prefer specific named products, companies, accounts, features, integrations, controls, regions, buyer roles, requirements, risks, objections, and commercial objects over generic nouns.',
-      'Never extract pronouns or generic role references such as "they", "the customer", or "their CTO" as entities. Wait for a named person, named account, named team, or named role/persona.',
-      'Use person for named individuals only. Champion, Economic Buyer, Evaluator, and Sponsor are relations to opportunities or accounts, not entity subtypes.',
+      'Never extract pronouns or generic role references such as "they", "the customer", or "their CTO" as entities. Wait for a named person, named account, named team, or named role.',
+      'Use person for named individuals only. Use role for abstract titles, buyer roles, user functions, and audience segments. Champion, Economic Buyer, Evaluator, and Sponsor are relations to opportunities or accounts, not entity subtypes.',
       'Distinguish company as the legal organization from account as the CRM/customer relationship. If the text is about a customer relationship, default to account.',
       'Distinguish competitor from partner by the relationship in context. The same company can be both across different facts.',
       'Extract tickets, incidents, and feature requests only when there is an identifier, status, or clearly bounded scope. Generic complaints become signal, risk, or objection entities.',

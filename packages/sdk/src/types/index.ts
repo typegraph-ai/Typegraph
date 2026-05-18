@@ -153,6 +153,8 @@ export type {
   UpsertGraphEntityInput,
   UpsertGraphEdgeInput,
   UpsertGraphFactInput,
+  GraphInvalidationOptions,
+  GraphTemporalQueryOptions,
   MergeGraphEntitiesInput,
   MergeGraphEntitiesResult,
   DeleteGraphEntityOpts,

@@ -60,7 +60,6 @@ export const ENTITY_TYPES = [
   'permission',
   'prohibition',
   'account',
-  'contact',
   'feature',
   'ticket',
   'metric',
@@ -121,7 +120,7 @@ export interface TypeCandidate {
 const ALL_TYPES = ['*'] as const
 
 export const ENTITY_TYPE_SPECS: readonly EntityTypeSpec[] = [
-  { name: 'person', description: 'A specific individual or named human persona.', examples: ['Ada Lovelace', 'Pat Smith'] },
+  { name: 'person', description: 'A specific named human individual.', examples: ['Ada Lovelace', 'Pat Smith'] },
   { name: 'organization', description: 'A company, institution, agency, team, department, or formal group.', examples: ['OpenAI', 'Platform team'] },
   { name: 'location', description: 'A place, region, address, market, or jurisdiction.', examples: ['San Francisco', 'European Union'] },
   { name: 'product', description: 'A commercial product, service, package, SKU, or productized capability.', examples: ['Stripe Billing', 'iPhone 16'] },
@@ -132,7 +131,7 @@ export const ENTITY_TYPE_SPECS: readonly EntityTypeSpec[] = [
   { name: 'document', description: 'An authored business material distinct from TypeGraph storage sources.', examples: ['RFP', 'contract', 'architecture spec'] },
   { name: 'project', description: 'A bounded initiative, deal, opportunity, migration, program, or body of work.', examples: ['SOC2 rollout', 'Acme renewal'] },
   { name: 'issue', description: 'A ticket, bug, request, story, incident, task, or blocker.', examples: ['AUTH-123', 'billing bug'] },
-  { name: 'role', description: 'A title, job, office, function, responsibility, or persona.', examples: ['CTO', 'account owner'] },
+  { name: 'role', description: 'An abstract title, job, office, function, responsibility, audience, or stakeholder role.', examples: ['CTO', 'account owner'] },
   { name: 'law_regulation', description: 'A statute, policy, regulation, contract clause, or formal rule.', examples: ['GDPR', 'SOC2 policy'] },
   { name: 'time_period', description: 'A named period, fiscal window, era, version interval, or date range.', examples: ['Q1 2026', 'Series B stage'] },
   { name: 'creative_work', description: 'A standalone named artistic or intellectual work such as a novel, play, poem, song, film, artwork, essay, sermon, or titled collection.', examples: ['Fear and Loathing in Las Vegas', 'Moby Dick'] },
@@ -161,7 +160,6 @@ export const ENTITY_TYPE_SPECS: readonly EntityTypeSpec[] = [
   { name: 'permission', description: 'A permitted right, authorization, license, or entitlement.', examples: ['redistribution right'] },
   { name: 'prohibition', description: 'A ban, restriction, exclusion, or forbidden action.', examples: ['reverse engineering restriction'] },
   { name: 'account', description: 'A customer account, workspace, tenant, opportunity, or CRM account.', examples: ['Acme account'] },
-  { name: 'contact', description: 'A named business contact, stakeholder, or external person profile.', examples: ['Dana at Acme'] },
   { name: 'feature', description: 'A product feature, capability, module, or workflow.', examples: ['SSO', 'audit logs'] },
   { name: 'ticket', description: 'A support ticket, issue, bug, request, incident, or case.', examples: ['AUTH-123'] },
   { name: 'metric', description: 'A named business, product, or operational metric.', examples: ['ARR', 'churn rate'] },
@@ -377,8 +375,8 @@ export const PREDICATE_SPECS: readonly PredicateSpec[] = [
   { name: 'GRANTS_PERMISSION', category: 'Legal', description: 'A legal instrument grants, licenses, permits, or authorizes a right or permission.', domain: legal, range: ['permission', 'party', 'person', 'organization'], aliases: [{ name: 'LICENSES' }, { name: 'AUTHORIZES' }] },
 
   // SaaS / customer operations
-  { name: 'REQUESTED', category: 'SaaS', description: 'A customer, user, contact, account, or organization requested a feature, support action, or change.', domain: ['account', 'contact', 'organization', 'person'], range: ['feature', 'ticket', 'project', 'product', 'technology'], aliases: [{ name: 'ASKED_FOR' }] },
-  { name: 'REPORTED', category: 'SaaS', description: 'A customer, user, contact, account, or organization reported an issue, ticket, symptom, or event.', domain: ['account', 'contact', 'organization', 'person'], range: ['ticket', 'issue', 'event'], aliases: [{ name: 'FILED' }] },
+  { name: 'REQUESTED', category: 'SaaS', description: 'A customer, user, account, organization, or named person requested a feature, support action, or change.', domain: ['account', 'organization', 'person'], range: ['feature', 'ticket', 'project', 'product', 'technology'], aliases: [{ name: 'ASKED_FOR' }] },
+  { name: 'REPORTED', category: 'SaaS', description: 'A customer, user, account, organization, or named person reported an issue, ticket, symptom, or event.', domain: ['account', 'organization', 'person'], range: ['ticket', 'issue', 'event'], aliases: [{ name: 'FILED' }] },
   { name: 'RENEWING', category: 'SaaS', description: 'An account, customer, or organization is renewing, expanding, or contracting for a product or service.', domain: ['account', 'organization'], range: ['product', 'project', 'contract'], aliases: [{ name: 'RENEWS' }, { name: 'EXPANDING' }] },
 ]
 
@@ -423,7 +421,7 @@ const TYPE_AFFINITY_GROUPS: readonly (readonly EntityType[])[] = [
   ['location', 'place', 'building', 'jurisdiction'],
   ['law_regulation', 'statute', 'regulation', 'contract', 'clause', 'obligation', 'permission', 'prohibition'],
   ['condition', 'symptom', 'medication', 'procedure', 'test', 'anatomy', 'guideline', 'recommendation'],
-  ['person', 'character', 'contact'],
+  ['person', 'character'],
 ]
 
 export const ONTOLOGY_PROFILES = ['general', 'literary', 'medical', 'legal', 'saas'] as const satisfies readonly OntologyProfile[]
@@ -589,10 +587,6 @@ export const BUILT_IN_ENTITY_VOCABULARY: Record<string, readonly OntologyVocabul
     vocab('schema.org', 'Organization', 'Organization', 'https://schema.org/Organization', 'close'),
     vocab('TM Forum SID', 'Customer', 'Customer / customer account', undefined, 'close'),
   ],
-  contact: [
-    vocab('schema.org', 'Person', 'Person', 'https://schema.org/Person', 'close'),
-    vocab('TM Forum SID', 'CustomerContact', 'Customer contact', undefined, 'close'),
-  ],
   feature: [
     vocab('schema.org', 'SoftwareApplication', 'SoftwareApplication', 'https://schema.org/SoftwareApplication', 'related'),
   ],
@@ -718,7 +712,7 @@ const PROFILE_ENTITY_TYPES: Record<OntologyProfile, readonly string[]> = {
     'permission', 'prohibition', 'concept', 'time_period',
   ],
   saas: [
-    'person', 'organization', 'account', 'contact', 'product', 'technology', 'feature',
+    'person', 'organization', 'account', 'role', 'product', 'technology', 'feature',
     'ticket', 'issue', 'project', 'meeting', 'document', 'contract', 'metric', 'integration',
     'vendor', 'concept', 'time_period',
   ],
@@ -799,7 +793,7 @@ const PROFILE_PROMPT_GUIDELINES: Record<OntologyProfile, { entityGuidelines: str
     relationGuidelines: ['Use APPLIES_TO, ASSIGNS_OBLIGATION_TO, HAS_CLAUSE, GRANTS_PERMISSION, PROHIBITS, PERMITS, AMENDS, and REPEALS for legal facts.'],
   },
   saas: {
-    entityGuidelines: ['Prefer SaaS entities: account, contact, feature, ticket, metric, integration, vendor, product, project, and meeting.'],
+    entityGuidelines: ['Prefer SaaS entities: account, person, role, feature, ticket, metric, integration, vendor, product, project, and meeting.'],
     relationGuidelines: ['Use REQUESTED, REPORTED, RENEWING, USES, INTEGRATES_WITH, ASSIGNED_TO, RESOLVES, BLOCKS, and DESCRIBES for customer/product facts.'],
   },
 }
@@ -920,6 +914,7 @@ function mergePromptConfigs(
 function mergeOntologyConfigs(base: OntologyConfig, override: OntologyConfig): OntologyConfig {
   return {
     version: override.version || base.version,
+    mode: override.mode ?? base.mode,
     profiles: override.profiles ?? base.profiles,
     entities: mergeEntityConfigs(base.entities, override.entities),
     relations: mergeRelationConfigs(base.relations, override.relations),
@@ -940,27 +935,30 @@ function builtInOntologyForProfiles(profiles: readonly OntologyProfile[]): Ontol
 }
 
 export function compileOntology(config?: OntologyConfig): CompiledOntology {
+  const strict = config?.mode === 'strict'
   const profiles = (config?.profiles ?? ['general'])
     .map(normalizeProfile)
     .filter((profile): profile is OntologyProfile => !!profile)
   const activeProfiles = profiles.length > 0 ? [...new Set(profiles)] : ['general' as const]
-  const builtInConfig = builtInOntologyForProfiles(activeProfiles)
+  const builtInConfig = strict ? undefined : builtInOntologyForProfiles(activeProfiles)
   const effectiveConfig = builtInConfig && config
     ? mergeOntologyConfigs(builtInConfig, config)
     : builtInConfig ?? config
 
   const entityTypes = new Set<string>()
-  for (const profile of activeProfiles) {
-    for (const type of PROFILE_ENTITY_TYPES[profile]) entityTypes.add(type)
+  if (!strict) {
+    for (const profile of activeProfiles) {
+      for (const type of PROFILE_ENTITY_TYPES[profile]) entityTypes.add(type)
+    }
   }
   for (const [type, entity] of Object.entries(effectiveConfig?.entities ?? {})) {
     const normalized = type.trim()
     if (!normalized) continue
     entityTypes.add(normalized)
-    if (entity.extends) entityTypes.add(entity.extends)
+    if (!strict && entity.extends) entityTypes.add(entity.extends)
   }
 
-  const categories = new Set(activeProfiles.flatMap(profile => PROFILE_PREDICATE_CATEGORIES[profile]))
+  const categories = new Set(strict ? [] : activeProfiles.flatMap(profile => PROFILE_PREDICATE_CATEGORIES[profile]))
   const relationSpecs = new Map<string, PredicateSpec>()
   for (const spec of PREDICATE_SPECS) {
     if (categories.has(spec.category)) relationSpecs.set(spec.name, spec)
@@ -1001,17 +999,18 @@ export function compileOntology(config?: OntologyConfig): CompiledOntology {
 
   const prompt = {
     entityGuidelines: [...new Set([
-      ...activeProfiles.flatMap(profile => PROFILE_PROMPT_GUIDELINES[profile].entityGuidelines),
+      ...(strict ? [] : activeProfiles.flatMap(profile => PROFILE_PROMPT_GUIDELINES[profile].entityGuidelines)),
       ...(effectiveConfig?.prompt?.entityGuidelines ?? []),
     ].map(item => item.trim()).filter(Boolean))],
     relationGuidelines: [...new Set([
-      ...activeProfiles.flatMap(profile => PROFILE_PROMPT_GUIDELINES[profile].relationGuidelines),
+      ...(strict ? [] : activeProfiles.flatMap(profile => PROFILE_PROMPT_GUIDELINES[profile].relationGuidelines)),
       ...(effectiveConfig?.prompt?.relationGuidelines ?? []),
     ].map(item => item.trim()).filter(Boolean))],
   }
 
   const compiledConfig: OntologyConfig = {
     version: effectiveConfig?.version ?? activeProfiles.join('+'),
+    ...(effectiveConfig?.mode ? { mode: effectiveConfig.mode } : {}),
     profiles: activeProfiles,
     ...(effectiveConfig?.entities ? { entities: effectiveConfig.entities } : {}),
     ...(effectiveConfig?.relations ? { relations: effectiveConfig.relations } : {}),
@@ -1072,6 +1071,44 @@ export function compileOntology(config?: OntologyConfig): CompiledOntology {
     prompt,
     compiledAt: new Date(),
   }
+}
+
+export function validateOntologyConfig(config: OntologyConfig): CompiledOntology {
+  const issues: string[] = []
+  if (!config || typeof config !== 'object') {
+    issues.push('ontology config must be an object')
+  }
+  if (!config?.version?.trim()) {
+    issues.push('ontology.version is required')
+  }
+  if (config?.mode && !['extend', 'strict'].includes(config.mode)) {
+    issues.push('ontology.mode must be "extend" or "strict"')
+  }
+  if (config?.mode === 'strict' && Object.keys(config.entities ?? {}).length === 0) {
+    issues.push('strict ontology requires at least one entity type')
+  }
+
+  const compiled = compileOntology(config)
+  const entityTypes = new Set(compiled.entityTypes)
+  for (const [relationName, relation] of Object.entries(config?.relations ?? {})) {
+    const normalized = sanitizePredicate(relationName)
+    if (!normalized) {
+      issues.push(`relation "${relationName}" has an empty canonical name`)
+    }
+    for (const direction of ['from', 'to'] as const) {
+      for (const type of relation[direction] ?? []) {
+        if (type === '*') continue
+        if (!entityTypes.has(type)) {
+          issues.push(`relation "${relationName}" ${direction} references unknown entity type "${type}"`)
+        }
+      }
+    }
+  }
+
+  if (issues.length > 0) {
+    throw new Error(`Invalid ontology config: ${issues.join('; ')}`)
+  }
+  return compiled
 }
 
 export const DEFAULT_ONTOLOGY = compileOntology()

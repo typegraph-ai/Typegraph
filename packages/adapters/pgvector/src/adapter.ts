@@ -790,7 +790,10 @@ export class PgVectorAdapter implements VectorStoreAdapter {
       `WITH docs AS (
          SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) AS d(tenant_id, graph_id, bucket_id, document_id)
        )
-       DELETE FROM ${this.edgesTable} e
+       UPDATE ${this.edgesTable} e
+       SET invalid_at = COALESCE(e.invalid_at, NOW()),
+           expired_at = COALESCE(e.expired_at, NOW()),
+           updated_at = NOW()
        WHERE EXISTS (
          SELECT 1
          FROM docs d
@@ -828,7 +831,10 @@ export class PgVectorAdapter implements VectorStoreAdapter {
 
   private async deleteDocumentFactRecords(sql: SqlExecutor, documents: DeleteDocumentTarget[], chunkIds: string[], edgeIds: string[]): Promise<void> {
     await this.queryOptionalTable(sql,
-      `DELETE FROM ${this.factRecordsTable} f
+      `UPDATE ${this.factRecordsTable} f
+       SET invalid_at = COALESCE(f.invalid_at, NOW()),
+           expired_at = COALESCE(f.expired_at, NOW()),
+           updated_at = NOW()
        WHERE f.tenant_id = ANY($1::text[])
          AND f.graph_id = ANY($2::text[])
          AND (
@@ -1303,11 +1309,11 @@ function buildWhere(filter?: ChunkFilter | null, alias?: string): { where: strin
     if (filter.chunkRefs.length === 0) {
       conditions.push('FALSE')
     } else {
-      params.push(filter.chunkRefs.map(ref => ref.bucketId))
+      params.push(filter.chunkRefs.map((ref: NonNullable<ChunkFilter['chunkRefs']>[number]) => ref.bucketId))
       const bucketParam = `$${params.length}`
-      params.push(filter.chunkRefs.map(ref => ref.documentId))
+      params.push(filter.chunkRefs.map((ref: NonNullable<ChunkFilter['chunkRefs']>[number]) => ref.documentId))
       const documentParam = `$${params.length}`
-      params.push(filter.chunkRefs.map(ref => ref.chunkIndex))
+      params.push(filter.chunkRefs.map((ref: NonNullable<ChunkFilter['chunkRefs']>[number]) => ref.chunkIndex))
       const chunkParam = `$${params.length}`
       conditions.push(
         `(${col('bucket_id')}, ${col('document_id')}, ${col('chunk_index')}) IN (` +

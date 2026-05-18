@@ -14,7 +14,7 @@ import type {
   KnowledgeGraphBridge,
   EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchTrace, ChunkResult,
   SubgraphOpts, SubgraphResult, GraphStats, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput,
-  MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult,
+  MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult, GraphInvalidationOptions,
   RememberOpts, ForgetOpts, CorrectOpts,
   RecallOpts, HealthCheckOpts,
 } from './types/graph-bridge.js'
@@ -28,7 +28,7 @@ import type { typegraphLogger } from './types/logger.js'
 import type { Job, JobFilter, UpsertJobInput, JobStatusPatch } from './types/job.js'
 import type { PaginationOpts, PaginatedResult } from './types/pagination.js'
 import type { CompiledOntology, OntologyConfig } from './types/ontology.js'
-import { compileOntology } from './index-engine/ontology.js'
+import { DEFAULT_ENTITY_TYPE, compileOntology } from './index-engine/ontology.js'
 import type { GraphAccessPrincipals, GraphConfig, TypeGraphGraphRecord } from './types/graph.js'
 import { PolicyEngine, PolicyViolationError } from './governance/policy-engine.js'
 import type { AISDKLLMInput } from './llm/ai-sdk-adapter.js'
@@ -293,6 +293,8 @@ export interface GraphApi {
   upsertEdges(inputs: UpsertGraphEdgeInput[], opts?: TypeGraphGraphOptions | null): Promise<EdgeResult[]>
   upsertFact(input: UpsertGraphFactInput, opts?: TypeGraphGraphOptions | null): Promise<FactResult>
   upsertFacts(inputs: UpsertGraphFactInput[], opts?: TypeGraphGraphOptions | null): Promise<FactResult[]>
+  invalidateFact(id: string, opts?: (GraphInvalidationOptions & TypeGraphGraphOptions) | null): Promise<void>
+  invalidateEdge(id: string, opts?: (GraphInvalidationOptions & TypeGraphGraphOptions) | null): Promise<void>
   searchEntities(query: string, opts?: ({
     limit?: number
     entityType?: string
@@ -303,12 +305,18 @@ export interface GraphApi {
     direction?: 'in' | 'out' | 'both'
     relation?: string
     limit?: number
+    asOf?: Date | 'now' | undefined
+    validBetween?: [Date, Date] | undefined
+    includeInvalidated?: boolean | undefined
   } & TypeGraphGraphOptions) | null): Promise<EdgeResult[]>
   searchFacts(query: string, opts?: (FactSearchOpts & TypeGraphGraphOptions) | null): Promise<FactResult[]>
   explore(query: string, opts?: (GraphExploreOpts & TypeGraphGraphOptions) | null): Promise<GraphExploreResult>
   getChunksForEntity(entityId: string, opts?: ({
     bucketIds?: string[] | undefined
     limit?: number | undefined
+    asOf?: Date | 'now' | undefined
+    validBetween?: [Date, Date] | undefined
+    includeInvalidated?: boolean | undefined
   } & TypeGraphGraphOptions) | null): Promise<ChunkResult[]>
   explainQuery(query: string, opts?: (GraphExplainOpts & TypeGraphGraphOptions) | null): Promise<GraphSearchTrace>
   backfill(opts?: (GraphBackfillOpts & TypeGraphGraphOptions) | null): Promise<GraphBackfillResult>
@@ -391,6 +399,22 @@ class TypegraphImpl implements typegraphInstance {
     return this.compiledOntologies.get(graphId ?? DEFAULT_GRAPH_ID)
       ?? this.compiledOntologies.get(DEFAULT_GRAPH_ID)
       ?? compileOntology(this.config?.ontology)
+  }
+
+  private assertAllowedSeedEntityTypes(inputs: UpsertGraphEntityInput[], graphId: string): void {
+    const ontology = this.resolveOntology(graphId)
+    const allowedTypes = new Set(ontology.entityTypes)
+    for (const input of inputs) {
+      const entityType = input.entityType?.trim() || DEFAULT_ENTITY_TYPE
+      if (!allowedTypes.has(entityType)) {
+        throw new ConfigError(`Entity type "${entityType}" is not allowed by ontology "${ontology.version}" for graph "${graphId}". Allowed entity types: ${ontology.entityTypes.join(', ')}.`)
+      }
+      for (const candidate of input.typeCandidates ?? []) {
+        if (candidate.type && !allowedTypes.has(candidate.type)) {
+          throw new ConfigError(`Entity type candidate "${candidate.type}" for "${input.name}" is not allowed by ontology "${ontology.version}" for graph "${graphId}". Allowed entity types: ${ontology.entityTypes.join(', ')}.`)
+        }
+      }
+    }
   }
 
   private emitEvent(
@@ -806,7 +830,8 @@ class TypegraphImpl implements typegraphInstance {
     upsertEntity: async (input: UpsertGraphEntityInput, opts?: TypeGraphGraphOptions | null): Promise<EntityDetail> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.upsertEntity) throw new ConfigError('Graph storage does not support entity seeding.')
-      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.upsertEntity', 'write')
+      const { graphId, identity, telemetry } = this.resolveGraphOptions(opts, 'graph.upsertEntity', 'write')
+      this.assertAllowedSeedEntityTypes([input], graphId)
       const result = await kg.upsertEntity({ ...input, ...identity } as UpsertGraphEntityInput)
       this.emitEvent('graph.entity.upsert' as typegraphEventType, result.id, { name: result.name }, telemetry)
       return result
@@ -815,7 +840,8 @@ class TypegraphImpl implements typegraphInstance {
     upsertEntities: async (inputs: UpsertGraphEntityInput[], opts?: TypeGraphGraphOptions | null): Promise<EntityDetail[]> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.upsertEntities) throw new ConfigError('Graph storage does not support entity seeding.')
-      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.upsertEntities', 'write')
+      const { graphId, identity, telemetry } = this.resolveGraphOptions(opts, 'graph.upsertEntities', 'write')
+      this.assertAllowedSeedEntityTypes(inputs, graphId)
       const results = await kg.upsertEntities(inputs.map(input => ({ ...input, ...identity } as UpsertGraphEntityInput)))
       this.emitEvent('graph.entity.upsert' as typegraphEventType, undefined, { count: results.length }, telemetry)
       return results
@@ -907,6 +933,30 @@ class TypegraphImpl implements typegraphInstance {
       return results
     },
 
+    invalidateFact: async (id: string, opts?: (GraphInvalidationOptions & TypeGraphGraphOptions) | null): Promise<void> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.invalidateFact) throw new ConfigError('Graph storage does not support fact invalidation.')
+      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.invalidateFact', 'write')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<GraphInvalidationOptions & TypeGraphGraphOptions>(
+        opts,
+        'graph.invalidateFact',
+      ) as GraphInvalidationOptions & TypeGraphGraphOptions
+      await kg.invalidateFact(id, { ...normalizedOpts, ...identity })
+      this.emitEvent('graph.fact.invalidate' as typegraphEventType, id, { reason: normalizedOpts.reason }, telemetry)
+    },
+
+    invalidateEdge: async (id: string, opts?: (GraphInvalidationOptions & TypeGraphGraphOptions) | null): Promise<void> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.invalidateEdge) throw new ConfigError('Graph storage does not support edge invalidation.')
+      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.invalidateEdge', 'write')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<GraphInvalidationOptions & TypeGraphGraphOptions>(
+        opts,
+        'graph.invalidateEdge',
+      ) as GraphInvalidationOptions & TypeGraphGraphOptions
+      await kg.invalidateEdge(id, { ...normalizedOpts, ...identity })
+      this.emitEvent('graph.edge.invalidate' as typegraphEventType, id, { reason: normalizedOpts.reason }, telemetry)
+    },
+
     searchEntities: async (query: string, opts?: ({
       limit?: number
       entityType?: string
@@ -946,6 +996,9 @@ class TypegraphImpl implements typegraphInstance {
       direction?: 'in' | 'out' | 'both'
       relation?: string
       limit?: number
+      asOf?: Date | 'now' | undefined
+      validBetween?: [Date, Date] | undefined
+      includeInvalidated?: boolean | undefined
     } & TypeGraphGraphOptions) | null): Promise<EdgeResult[]> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.getEdges) throw new ConfigError('Graph storage does not support edge queries.')
@@ -954,10 +1007,16 @@ class TypegraphImpl implements typegraphInstance {
         direction?: 'in' | 'out' | 'both'
         relation?: string
         limit?: number
+        asOf?: Date | 'now' | undefined
+        validBetween?: [Date, Date] | undefined
+        includeInvalidated?: boolean | undefined
       } & TypeGraphGraphOptions>(opts, 'graph.getEdges') as {
         direction?: 'in' | 'out' | 'both'
         relation?: string
         limit?: number
+        asOf?: Date | 'now' | undefined
+        validBetween?: [Date, Date] | undefined
+        includeInvalidated?: boolean | undefined
       }
       return kg.getEdges(entityId, { ...normalizedOpts, ...identity })
     },
@@ -987,6 +1046,9 @@ class TypegraphImpl implements typegraphInstance {
     getChunksForEntity: async (entityId: string, opts?: ({
       bucketIds?: string[] | undefined
       limit?: number | undefined
+      asOf?: Date | 'now' | undefined
+      validBetween?: [Date, Date] | undefined
+      includeInvalidated?: boolean | undefined
     } & TypeGraphGraphOptions) | null): Promise<ChunkResult[]> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.getChunksForEntity) throw new ConfigError('Graph storage does not support chunk lookup.')
@@ -994,9 +1056,15 @@ class TypegraphImpl implements typegraphInstance {
       const normalizedOpts = optionalCompactObject<{
         bucketIds?: string[] | undefined
         limit?: number | undefined
+        asOf?: Date | 'now' | undefined
+        validBetween?: [Date, Date] | undefined
+        includeInvalidated?: boolean | undefined
       } & TypeGraphGraphOptions>(opts, 'graph.getChunksForEntity') as {
         bucketIds?: string[] | undefined
         limit?: number | undefined
+        asOf?: Date | 'now' | undefined
+        validBetween?: [Date, Date] | undefined
+        includeInvalidated?: boolean | undefined
       }
       return kg.getChunksForEntity(entityId, { ...normalizedOpts, ...identity })
     },

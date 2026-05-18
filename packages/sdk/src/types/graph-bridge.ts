@@ -5,7 +5,6 @@ import type { ChunkRef } from './chunk.js'
 import type { QueryEntityScope, RetrievalSwitches } from './query.js'
 import type { PaginationOpts } from './pagination.js'
 import type { TelemetryOpts } from './events.js'
-import type { PredicateTemporalStatus } from '../index-engine/ontology.js'
 import type { TypeCandidate } from '../index-engine/ontology.js'
 
 export interface RememberOpts extends TypeGraphOptions {
@@ -76,6 +75,37 @@ export interface UpsertGraphEntityInput {
   externalIds?: ExternalId[] | undefined
 }
 
+export interface GraphTemporalInput {
+  /** Real-world time when this graph assertion became true. Defaults to now. */
+  validAt?: Date | string | undefined
+  /** Real-world time when this graph assertion stopped being true. */
+  invalidAt?: Date | string | undefined
+  /** System time when this graph assertion should be treated as expired/tombstoned. */
+  expiredAt?: Date | string | undefined
+}
+
+export interface GraphSupersessionInput {
+  /** Stable timeline key for mutable facts/edges, for example "hubspot:deal:123:stage". */
+  supersessionKey?: string | undefined
+  /** IDs that this fact/edge explicitly supersedes. */
+  supersedes?: string[] | undefined
+}
+
+export interface GraphInvalidationOptions {
+  invalidAt?: Date | string | undefined
+  expiredAt?: Date | string | undefined
+  reason?: string | undefined
+}
+
+export type GraphTemporalQueryOptions = {
+  /** Return facts/edges active at this real-world time. Defaults to now unless includeInvalidated is true. */
+  asOf?: Date | 'now' | undefined
+  /** Return facts/edges whose real-world validity windows overlap this range. */
+  validBetween?: [Date, Date] | undefined
+  /** Return inactive/superseded/expired graph rows too. Default: false. */
+  includeInvalidated?: boolean | undefined
+}
+
 export interface UpsertGraphEdgeInput {
   /** Entity ref. A bare string reuses an existing entity ID when found, otherwise seeds by name. */
   source: GraphEntityRef | string
@@ -86,9 +116,11 @@ export interface UpsertGraphEdgeInput {
   metadata?: Record<string, unknown> | undefined
   description?: string | undefined
   evidenceText?: string | undefined
-  temporalStatus?: PredicateTemporalStatus | undefined
-  validFrom?: string | undefined
-  validTo?: string | undefined
+  validAt?: Date | string | undefined
+  invalidAt?: Date | string | undefined
+  expiredAt?: Date | string | undefined
+  supersessionKey?: string | undefined
+  supersedes?: string[] | undefined
   chunkId?: string | undefined
 }
 
@@ -100,9 +132,11 @@ export interface UpsertGraphFactInput {
   relation: string
   description?: string | undefined
   evidenceText?: string | undefined
-  temporalStatus?: PredicateTemporalStatus | undefined
-  validFrom?: string | undefined
-  validTo?: string | undefined
+  validAt?: Date | string | undefined
+  invalidAt?: Date | string | undefined
+  expiredAt?: Date | string | undefined
+  supersessionKey?: string | undefined
+  supersedes?: string[] | undefined
   chunkId?: string | undefined
   confidence?: number | undefined
   metadata?: Record<string, unknown> | undefined
@@ -164,9 +198,11 @@ export interface KnowledgeGraphBridge {
     objectDescription?: string | undefined
     relationshipDescription?: string | undefined
     evidenceText?: string | undefined
-    temporalStatus?: PredicateTemporalStatus | undefined
-    validFrom?: string | undefined
-    validTo?: string | undefined
+    validAt?: Date | string | undefined
+    invalidAt?: Date | string | undefined
+    expiredAt?: Date | string | undefined
+    supersessionKey?: string | undefined
+    supersedes?: string[] | undefined
     chunkId?: string | undefined
     confidence?: number | undefined
     content: string
@@ -213,6 +249,12 @@ export interface KnowledgeGraphBridge {
 
   /** Create or update many developer-seeded facts. */
   upsertFacts?(inputs: UpsertGraphFactInput[]): Promise<FactResult[]>
+
+  /** Mark a fact as invalid at a real-world time while preserving it for history. */
+  invalidateFact?(id: string, opts?: GraphInvalidationOptions | null): Promise<void>
+
+  /** Mark an edge as invalid at a real-world time while preserving it for history. */
+  invalidateEdge?(id: string, opts?: GraphInvalidationOptions | null): Promise<void>
 
   /** Store extracted entities and their source mentions even when no relationship was found. */
   addEntityMentions?(mentions: Array<{
@@ -328,6 +370,13 @@ export interface EdgeResult {
   relation: string
   weight: number
   metadata?: Record<string, unknown> | undefined
+  validAt?: Date | undefined
+  invalidAt?: Date | undefined
+  createdAt?: Date | undefined
+  expiredAt?: Date | undefined
+  supersessionKey?: string | undefined
+  supersededById?: string | undefined
+  supersededAt?: Date | undefined
 }
 
 export interface FactResult {
@@ -344,17 +393,28 @@ export interface FactResult {
   weight: number
   similarity?: number | undefined
   metadata?: Record<string, unknown> | undefined
+  validAt?: Date | undefined
+  invalidAt?: Date | undefined
+  createdAt?: Date | undefined
+  updatedAt?: Date | undefined
+  expiredAt?: Date | undefined
+  supersessionKey?: string | undefined
+  supersededById?: string | undefined
+  supersededAt?: Date | undefined
 }
 
 export type FactRelevanceFilter = (query: string, facts: FactResult[]) => Promise<string[]>
 
 export interface FactSearchOpts extends TypeGraphOptions {
   limit?: number | undefined
+  asOf?: Date | 'now' | undefined
+  validBetween?: [Date, Date] | undefined
+  includeInvalidated?: boolean | undefined
 }
 
 export type InternalFactSearchOpts = {
   limit?: number | undefined
-} & typegraphIdentity & TelemetryOpts
+} & GraphTemporalQueryOptions & typegraphIdentity & TelemetryOpts
 
 export interface EntityScopeResolution {
   entityIds: string[]
@@ -367,6 +427,9 @@ export interface KnowledgeSearchOpts {
   retrieval?: Pick<RetrievalSwitches, 'semantic' | 'keyword'> | undefined
   entityScope?: QueryEntityScope | undefined
   resolvedEntityIds?: string[] | undefined
+  asOf?: Date | 'now' | undefined
+  validBetween?: [Date, Date] | undefined
+  includeInvalidated?: boolean | undefined
 }
 
 export interface KnowledgeSearchResult {
@@ -388,6 +451,9 @@ export interface GraphExploreOptions {
   chunkLimit?: number | undefined
   depth?: 1 | 2 | undefined
   explain?: boolean | undefined
+  asOf?: Date | 'now' | undefined
+  validBetween?: [Date, Date] | undefined
+  includeInvalidated?: boolean | undefined
 }
 
 export type GraphExploreOpts = GraphExploreOptions & TypeGraphOptions
@@ -485,6 +551,9 @@ export interface GraphSearchOpts {
   minPprScore?: number | undefined
   factFilter?: boolean | undefined
   factChainLimit?: number | undefined
+  asOf?: Date | 'now' | undefined
+  validBetween?: [Date, Date] | undefined
+  includeInvalidated?: boolean | undefined
 }
 
 export interface FactChainResult {
@@ -557,6 +626,9 @@ export interface SubgraphOpts {
   limit?: number | undefined
   /** Filter weak edges. Default: 0. */
   minWeight?: number | undefined
+  asOf?: Date | 'now' | undefined
+  validBetween?: [Date, Date] | undefined
+  includeInvalidated?: boolean | undefined
   /** Filter by entity type. */
   entityTypes?: string[] | undefined
   /** Filter by relation type. */

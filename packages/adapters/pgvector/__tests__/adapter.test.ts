@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { EmbeddedChunk } from '@typegraph-ai/sdk'
 import { PgVectorAdapter } from '../src/adapter.js'
+import { PgDocumentStore } from '../src/document-store.js'
 import { PgEventStore } from '../src/event-store.js'
 import { PgThreadStore } from '../src/thread-store.js'
 
@@ -115,6 +116,54 @@ describe('PgVectorAdapter graph records', () => {
     expect(capturedQuery).toContain('url = EXCLUDED.url')
     expect(capturedParams?.[9]).toBe('https://example.com/threads/thr_1')
     expect(thread.url).toBe('https://example.com/threads/thr_1')
+  })
+
+  it('upserts document records by deterministic id before falling back to content hash', async () => {
+    let capturedQuery = ''
+    const sql = vi.fn(async (query: string, params?: unknown[]) => {
+      capturedQuery = query
+      return [{
+        id: params?.[0],
+        bucket_id: params?.[1],
+        tenant_id: params?.[2],
+        graph_id: params?.[3],
+        organization_id: params?.[4],
+        group_id: params?.[5],
+        user_id: params?.[6],
+        agent_id: params?.[7],
+        thread_id: params?.[8],
+        name: params?.[9],
+        description: params?.[10],
+        url: params?.[11],
+        content_hash: params?.[12],
+        chunk_count: params?.[13],
+        status: params?.[14],
+        metadata: params?.[15],
+        indexed_at: '2026-05-16T00:00:00.000Z',
+        created_at: '2026-05-16T00:00:00.000Z',
+        updated_at: '2026-05-16T00:00:00.000Z',
+        was_created: false,
+      }]
+    })
+    const store = new PgDocumentStore(sql, 'typegraph_documents')
+
+    const document = await store.upsert({
+      id: 'google-drive:document:file-1:employee',
+      bucketId: 'employee_integration_google-drive',
+      tenantId: 'tenant-1',
+      graphId: 'employee',
+      name: 'Drive document',
+      contentHash: 'new-hash',
+      chunkCount: 3,
+      status: 'processing',
+      metadata: {},
+    })
+
+    expect(capturedQuery).toContain('updated_by_id')
+    expect(capturedQuery).toContain('WHERE d.tenant_id = input.tenant_id')
+    expect(capturedQuery).toContain('AND d.id = input.id')
+    expect(capturedQuery).toContain('ON CONFLICT (bucket_id, tenant_id, content_hash)')
+    expect(document.wasCreated).toBe(false)
   })
 
   it('scopes bucket writes and reads by tenant id', async () => {
@@ -247,8 +296,9 @@ describe('PgVectorAdapter graph records', () => {
     expect(count).toBe(1)
     expect(combined).toContain('DELETE FROM typegraph_links')
     expect(combined).toContain('DELETE FROM typegraph_entity_chunk_mentions')
-    expect(combined).toContain('DELETE FROM typegraph_graph_edges')
-    expect(combined).toContain('DELETE FROM typegraph_fact_records')
+    expect(combined).toContain('UPDATE typegraph_graph_edges')
+    expect(combined).toContain('UPDATE typegraph_fact_records')
+    expect(combined).toContain('expired_at = COALESCE')
     expect(combined).toContain('DELETE FROM typegraph_document_chunks_mock')
     expect(combined).toContain('DELETE FROM typegraph_hashes')
     expect(combined).toContain('DELETE FROM typegraph_documents')

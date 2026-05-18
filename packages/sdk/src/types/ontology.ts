@@ -57,6 +57,7 @@ export interface OntologyPromptConfig {
 
 export interface OntologyConfig {
   version: string
+  mode?: 'extend' | 'strict' | undefined
   profiles?: OntologyProfile[] | undefined
   entities?: Record<string, OntologyEntityConfig> | undefined
   relations?: Record<string, OntologyRelationConfig> | undefined

@@ -11,6 +11,7 @@ import {
   compileOntology,
   getEntityTypesForPrompt,
   normalizePredicateWithDirection,
+  validateOntologyConfig,
   validatePredicateTypes,
 } from '../index-engine/ontology.js'
 
@@ -143,10 +144,56 @@ describe('ontology registry', () => {
     ]))
   })
 
+  it('supports strict custom ontologies without built-in profile leakage', () => {
+    const ontology = validateOntologyConfig({
+      version: 'customer-support-strict',
+      mode: 'strict',
+      profiles: ['saas'],
+      entities: {
+        customer: { description: 'A customer organization.' },
+        escalation: { description: 'A named customer escalation.' },
+      },
+      relations: {
+        HAS_ESCALATION: {
+          from: ['customer'],
+          to: ['escalation'],
+          description: 'A customer has an escalation.',
+        },
+      },
+    })
+
+    expect(ontology.config.mode).toBe('strict')
+    expect(ontology.entityTypes).toEqual(['customer', 'escalation'])
+    expect(ontology.entityTypes).not.toContain('person')
+    expect(ontology.entityTypes).not.toContain('account')
+    expect(ontology.relationNames).toEqual(['HAS_ESCALATION'])
+    expect(getEntityTypesForPrompt(ontology)).toContain('customer')
+    expect(validatePredicateTypes('HAS_ESCALATION', 'customer', 'escalation', ontology).valid).toBe(true)
+  })
+
+  it('rejects invalid strict ontology relation endpoint types', () => {
+    expect(() => validateOntologyConfig({
+      version: 'bad-strict',
+      mode: 'strict',
+      entities: {
+        customer: { description: 'A customer organization.' },
+      },
+      relations: {
+        HAS_RISK: {
+          from: ['customer'],
+          to: ['risk'],
+          description: 'A customer has a risk.',
+        },
+      },
+    })).toThrow('unknown entity type "risk"')
+  })
+
   it('uses the curated B2B SaaS ontology for the saas profile', () => {
     const ontology = compileOntology({ version: 'saas-test', profiles: ['saas'] })
     expect(ontology.entityTypes).toEqual(expect.arrayContaining([
       'company',
+      'person',
+      'role',
       'account',
       'opportunity',
       'feature_request',
@@ -155,6 +202,8 @@ describe('ontology registry', () => {
       'message',
       'renewal',
     ]))
+    expect(ontology.entityTypes).not.toContain('contact')
+    expect(ontology.entityTypes).not.toContain('persona')
     expect(ontology.relationNames).toEqual(expect.arrayContaining([
       'CHAMPIONS',
       'ECONOMIC_BUYER_FOR',

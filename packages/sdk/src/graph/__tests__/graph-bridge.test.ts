@@ -705,6 +705,75 @@ describe('createKnowledgeGraphBridge', () => {
         expect.objectContaining({ scope: testScope }),
       )
     })
+
+    it('preserves graph scope and external IDs in graph exploration reads', async () => {
+      const email: ExternalId = { id: 'casey@example.com', type: 'email' }
+      const entities = new Map<string, SemanticEntity>([
+        ['ent-casey', { ...makeEntity('ent-casey', 'Casey', 'person'), externalIds: [email] }],
+        ['ent-acme', makeEntity('ent-acme', 'Acme', 'organization')],
+      ])
+      const edges = [makeEdge('edge-casey-acme', 'ent-casey', 'ent-acme', 'WORKS_FOR')]
+      const store = mockStore(entities, edges)
+      await store.upsertEntityExternalIds!('ent-casey', [email], testScope)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+      const scopedIdentity = {
+        tenantId: 'tenant-1',
+        organizationId: 'org-1',
+        userId: 'user-1',
+        graphId: 'user_user1',
+        graphIds: ['user_user1', 'employee', 'public'],
+      }
+      const asOf = new Date('2026-01-15T00:00:00Z')
+
+      const edgeResults = await bridge.getEdges!('ent-casey', scopedIdentity)
+      const subgraph = await bridge.getSubgraph!({
+        entityIds: ['ent-casey'],
+        depth: 1,
+        identity: scopedIdentity,
+        asOf,
+        includeInvalidated: true,
+      })
+
+      expect(edgeResults).toHaveLength(1)
+      expect(store.getEdges).toHaveBeenCalledWith(
+        'ent-casey',
+        'both',
+        expect.objectContaining({
+          tenantId: 'tenant-1',
+          organizationId: 'org-1',
+          userId: 'user-1',
+          graphId: 'user_user1',
+          graphIds: ['user_user1', 'employee', 'public'],
+        }),
+        expect.any(Object),
+      )
+      expect(store.getEntitiesBatch).toHaveBeenCalledWith(
+        expect.arrayContaining(['ent-casey', 'ent-acme']),
+        expect.objectContaining({
+          graphId: 'user_user1',
+          graphIds: ['user_user1', 'employee', 'public'],
+        }),
+      )
+      expect(store.getEdgesBatch).toHaveBeenCalledWith(
+        expect.arrayContaining(['ent-casey']),
+        'both',
+        expect.objectContaining({
+          graphId: 'user_user1',
+          graphIds: ['user_user1', 'employee', 'public'],
+        }),
+        expect.objectContaining({ asOf, includeInvalidated: true }),
+      )
+      expect(subgraph.entities).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: 'ent-casey',
+          externalIds: [expect.objectContaining({ type: 'email', id: 'casey@example.com' })],
+        }),
+      ]))
+    })
   })
 
   describe('addTriple', () => {
@@ -850,6 +919,129 @@ describe('createKnowledgeGraphBridge', () => {
           }),
         ]))
       }
+    })
+
+    it('writes canonical temporal fields and supersession keys to seeded facts', async () => {
+      const entities = new Map<string, SemanticEntity>()
+      const edges: SemanticEdge[] = []
+      const store = mockStore(entities, edges)
+      store.upsertFactRecord = vi.fn().mockImplementation(async fact => fact)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      const fact = await bridge.upsertFact!({
+        source: { name: 'Jane Doe', entityType: 'person' },
+        relation: 'works_at',
+        target: { name: 'Acme Corp', entityType: 'organization' },
+        validAt: '2026-01-01T00:00:00Z',
+        invalidAt: '2026-02-01T00:00:00Z',
+        supersessionKey: 'crelate:contact:123:works_at_current',
+        evidenceText: 'Crelate current position for Jane Doe: employee at Acme Corp.',
+      })
+
+      expect(edges[0]?.temporal.validAt.toISOString()).toBe('2026-01-01T00:00:00.000Z')
+      expect(edges[0]?.temporal.invalidAt?.toISOString()).toBe('2026-02-01T00:00:00.000Z')
+      expect(edges[0]?.supersessionKey).toBe('crelate:contact:123:works_at_current')
+      expect(store.upsertFactRecord).toHaveBeenCalledWith(expect.objectContaining({
+        validAt: new Date('2026-01-01T00:00:00Z'),
+        invalidAt: new Date('2026-02-01T00:00:00Z'),
+        supersessionKey: 'crelate:contact:123:works_at_current',
+      }))
+      expect(fact.validAt?.toISOString()).toBe('2026-01-01T00:00:00.000Z')
+      expect(fact.invalidAt?.toISOString()).toBe('2026-02-01T00:00:00.000Z')
+      expect(fact.supersessionKey).toBe('crelate:contact:123:works_at_current')
+    })
+
+    it('uses supersessionKey and validAt as the deterministic graph fact version identity', async () => {
+      const entities = new Map<string, SemanticEntity>()
+      const edges: SemanticEdge[] = []
+      const store = mockStore(entities, edges)
+      store.upsertFactRecord = vi.fn().mockImplementation(async fact => fact)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      const input = {
+        source: { name: 'Jane Doe', entityType: 'person' },
+        relation: 'works_at',
+        target: { name: 'Acme Corp', entityType: 'organization' },
+        validAt: '2026-02-01T00:00:00Z',
+        supersessionKey: 'hubspot:12345:contact:111:works_at',
+      }
+
+      await bridge.upsertFact!(input)
+      await bridge.upsertFact!({
+        ...input,
+        evidenceText: 'Repeated drip sync of the same HubSpot deal stage version.',
+      })
+
+      const storedFactCalls = (store.upsertFactRecord as ReturnType<typeof vi.fn>).mock.calls
+      const factIds = storedFactCalls.map(([fact]) => fact.id)
+      const edgeIds = edges.map(edge => edge.id)
+      expect(new Set(factIds).size).toBe(1)
+      expect(new Set(edgeIds).size).toBe(1)
+      expect(storedFactCalls[0]?.[0].supersessionKey).toBe('hubspot:12345:contact:111:works_at')
+      expect(storedFactCalls[0]?.[0].validAt.toISOString()).toBe('2026-02-01T00:00:00.000Z')
+    })
+
+    it('does not create temporal versions for facts without a supersessionKey', async () => {
+      const entities = new Map<string, SemanticEntity>()
+      const edges: SemanticEdge[] = []
+      const store = mockStore(entities, edges)
+      store.upsertFactRecord = vi.fn().mockImplementation(async fact => fact)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      await bridge.upsertFact!({
+        source: { name: 'Jane Doe', entityType: 'person' },
+        relation: 'works_at',
+        target: { name: 'Acme Corp', entityType: 'organization' },
+        validAt: '2026-01-01T00:00:00Z',
+      })
+      await bridge.upsertFact!({
+        source: { name: 'Jane Doe', entityType: 'person' },
+        relation: 'works_at',
+        target: { name: 'Acme Corp', entityType: 'organization' },
+        validAt: '2026-02-01T00:00:00Z',
+      })
+
+      const storedFactCalls = (store.upsertFactRecord as ReturnType<typeof vi.fn>).mock.calls
+      expect(new Set(storedFactCalls.map(([fact]) => fact.id)).size).toBe(1)
+      expect(storedFactCalls.every(([fact]) => fact.supersessionKey === undefined)).toBe(true)
+    })
+
+    it('passes temporal query filters to graph fact storage', async () => {
+      const store = mockStore()
+      store.searchFacts = vi.fn().mockResolvedValue([])
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+      const asOf = new Date('2026-01-15T00:00:00Z')
+
+      await bridge.searchFacts!('deal stage', {
+        tenantId: 'tenant-1',
+        graphId: 'employee',
+        asOf,
+        includeInvalidated: false,
+        limit: 5,
+      })
+
+      expect(store.searchFacts).toHaveBeenCalledWith(
+        expect.any(Array),
+        expect.objectContaining({ tenantId: 'tenant-1', graphId: 'employee' }),
+        5,
+        expect.objectContaining({ asOf, includeInvalidated: false }),
+      )
     })
 
     it('does not merge same-name entities across groups in one process', async () => {

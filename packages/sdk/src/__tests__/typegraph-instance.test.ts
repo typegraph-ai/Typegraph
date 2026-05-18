@@ -217,6 +217,31 @@ describe('typegraphInit', () => {
       })
       expect(result).toEqual(seeded)
     })
+
+    it('rejects seed entity types outside the effective ontology', async () => {
+      const knowledgeGraph: KnowledgeGraphBridge = {
+        upsertEntity: vi.fn(),
+      }
+      const inst = await typegraphInit({
+        vectorStore: adapter,
+        embedding,
+        tenantId: 'tenant-1',
+        ontology: {
+          version: 'strict-customer',
+          mode: 'strict',
+          entities: {
+            customer: { description: 'A customer organization.' },
+          },
+        },
+      })
+      setKnowledgeGraph(inst, knowledgeGraph)
+
+      await expect(inst.graph.upsertEntity({
+        name: 'Alice',
+        entityType: 'person',
+      })).rejects.toThrow('Entity type "person" is not allowed by ontology "strict-customer"')
+      expect(knowledgeGraph.upsertEntity).not.toHaveBeenCalled()
+    })
   })
 
   describe('graph.searchEntities', () => {

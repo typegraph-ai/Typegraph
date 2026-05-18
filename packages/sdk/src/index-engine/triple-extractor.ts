@@ -52,8 +52,8 @@ interface ExtractedRelationship {
   description?: string | undefined
   evidenceText?: string | undefined
   temporalStatus?: 'current' | 'former' | 'historical' | 'unknown' | undefined
-  validFrom?: string | undefined
-  validTo?: string | undefined
+  validAt?: string | undefined
+  invalidAt?: string | undefined
 }
 
 interface ExtractionResult {
@@ -93,8 +93,8 @@ const relationshipSchema = z.array(z.object({
   description: z.string(),
   evidenceText: z.string(),
   temporalStatus: z.enum(['current', 'former', 'historical', 'unknown']),
-  validFrom: z.string(),
-  validTo: z.string(),
+  validAt: z.string(),
+  invalidAt: z.string(),
 }))
 
 const singlePassSchema = z.object({
@@ -926,8 +926,8 @@ function postProcessExtraction(
       description: sanitizeField(rel.description ?? ''),
       evidenceText: sanitizeField(rel.evidenceText ?? ''),
       temporalStatus: normalized.temporalStatus ?? rel.temporalStatus,
-      validFrom: rel.validFrom ? sanitizeField(rel.validFrom) : undefined,
-      validTo: rel.validTo ? sanitizeField(rel.validTo) : undefined,
+      validAt: rel.validAt ? sanitizeField(rel.validAt) : undefined,
+      invalidAt: rel.invalidAt ? sanitizeField(rel.invalidAt) : undefined,
     })
   }
 
@@ -1072,7 +1072,7 @@ For each relationship between the entities you identified, provide:
 - "description": One standalone sentence describing the relationship as a complete fact. It must be understandable without the source text.
 - "evidenceText": A concise source-backed excerpt or paraphrase that justifies the relationship. Keep it short; do not include full paragraphs.
 - "temporalStatus": Use "former" for past-tense relationships, "current" for current relationships, "historical" for historical/narrative facts, or "unknown" when unclear.
-- "validFrom" / "validTo": ISO-like date strings only when the text states explicit dates or bounded periods. Use an empty string when not stated.
+- "validAt" / "invalidAt": ISO-like date strings only when the text states explicit dates or bounded periods. Use an empty string when not stated.
 
 ${getPredicatesForPrompt(ontology)}
 
@@ -1321,7 +1321,7 @@ For each relationship, provide:
 - "description": One standalone sentence describing the relationship as a complete fact.
 - "evidenceText": A concise source-backed excerpt or paraphrase that justifies the relationship.
 - "temporalStatus": Use "former" for past-tense relationships, "current" for current relationships, "historical" for historical/narrative facts, or "unknown" when unclear.
-- "validFrom" / "validTo": ISO-like date strings only when the text states explicit dates or bounded periods. Use an empty string when not stated.
+- "validAt" / "invalidAt": ISO-like date strings only when the text states explicit dates or bounded periods. Use an empty string when not stated.
 
 </TASK_INSTRUCTIONS>
 
@@ -1395,7 +1395,7 @@ Now, below we are getting into the meat of the current task you are performing.
 
 <TASK_OUTPUT_REQUIREMENTS>
 
-- Return a JSON array: [{"subject": "...", "predicate": "...", "object": "...", "confidence": 0.9, "description": "...", "evidenceText": "...", "temporalStatus": "unknown", "validFrom": "", "validTo": ""}, ...]
+- Return a JSON array: [{"subject": "...", "predicate": "...", "object": "...", "confidence": 0.9, "description": "...", "evidenceText": "...", "temporalStatus": "unknown", "validAt": "", "invalidAt": ""}, ...]
 - Return an empty array if no relationships exist between the listed entities
 
 </TASK_OUTPUT_REQUIREMENTS>
@@ -1538,9 +1538,8 @@ export class TripleExtractor {
           objectDescription: objectEntity.description,
           relationshipDescription: rel.description,
           evidenceText: rel.evidenceText,
-          temporalStatus: rel.temporalStatus,
-          validFrom: rel.validFrom,
-          validTo: rel.validTo,
+          validAt: rel.validAt,
+          invalidAt: rel.invalidAt,
           chunkId,
           confidence: typeof rel.confidence === 'number' ? Math.max(0, Math.min(1, rel.confidence)) : 1.0,
           content: cleanContent,

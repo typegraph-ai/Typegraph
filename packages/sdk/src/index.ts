@@ -1,6 +1,8 @@
 // Main public API
 export { typegraphInit, typegraphDeploy, resolveEmbedder, resolveLLMProvider, DEFAULT_BUCKET_ID, DEFAULT_GRAPH_ID } from './typegraph.js'
 export type { typegraphConfig, typegraphInstance, BucketsApi, DocumentsApi, EventsApi, ThreadsApi, JobsApi, GraphApi, RequestOptions, DocumentIngestOptions } from './typegraph.js'
+export { compileOntology, validateOntologyConfig } from './index-engine/ontology.js'
+export { TYPEGRAPH_B2B_SAAS_ONTOLOGY, TYPEGRAPH_B2B_SAAS_ONTOLOGY_VERSION } from './index-engine/saas-ontology.js'
 
 // Types
 export type {
@@ -97,6 +99,8 @@ export type {
   UpsertGraphEntityInput,
   UpsertGraphEdgeInput,
   UpsertGraphFactInput,
+  GraphInvalidationOptions,
+  GraphTemporalQueryOptions,
   MergeGraphEntitiesInput,
   MergeGraphEntitiesResult,
   DeleteGraphEntityOpts,

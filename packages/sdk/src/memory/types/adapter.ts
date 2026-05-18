@@ -16,6 +16,8 @@ import type { ChunkRef } from '../../types/chunk.js'
 import type {
   DeleteGraphEntityOpts,
   DeleteGraphEntityResult,
+  GraphInvalidationOptions,
+  GraphTemporalQueryOptions,
   MergeGraphEntitiesInput,
   MergeGraphEntitiesResult,
 } from '../../types/graph-bridge.js'
@@ -148,8 +150,9 @@ export interface MemoryStoreAdapter {
 
   upsertFactRecord?(fact: SemanticFactRecord): Promise<SemanticFactRecord>
 
-  searchFacts?(embedding: number[], scope: typegraphIdentity, limit?: number): Promise<SemanticFactRecord[]>
-  searchFactsHybrid?(query: string, embedding: number[] | undefined, scope: typegraphIdentity, limit?: number): Promise<SemanticFactRecord[]>
+  searchFacts?(embedding: number[], scope: typegraphIdentity, limit?: number, temporal?: GraphTemporalQueryOptions): Promise<SemanticFactRecord[]>
+  searchFactsHybrid?(query: string, embedding: number[] | undefined, scope: typegraphIdentity, limit?: number, temporal?: GraphTemporalQueryOptions): Promise<SemanticFactRecord[]>
+  invalidateFactRecord?(id: string, opts?: GraphInvalidationOptions | null, scope?: typegraphIdentity): Promise<void>
 
   getChunkEdgesForEntities?(
     entityIds: string[],
@@ -157,6 +160,7 @@ export interface MemoryStoreAdapter {
       scope?: typegraphIdentity | undefined
       bucketIds?: string[] | undefined
       limit?: number | undefined
+      temporal?: GraphTemporalQueryOptions | undefined
     }
   ): Promise<SemanticEntityChunkEdge[]>
 
@@ -195,10 +199,10 @@ export interface MemoryStoreAdapter {
   // ── Edge Storage (optional - needed for semantic memory graph) ──
 
   upsertEdge?(edge: SemanticEdge): Promise<SemanticEdge>
-  getEdges?(entityId: string, direction?: 'in' | 'out' | 'both', scope?: typegraphIdentity): Promise<SemanticEdge[]>
-  getEdgesBatch?(entityIds: string[], direction?: 'in' | 'out' | 'both', scope?: typegraphIdentity): Promise<SemanticEdge[]>
+  getEdges?(entityId: string, direction?: 'in' | 'out' | 'both', scope?: typegraphIdentity, temporal?: GraphTemporalQueryOptions): Promise<SemanticEdge[]>
+  getEdgesBatch?(entityIds: string[], direction?: 'in' | 'out' | 'both', scope?: typegraphIdentity, temporal?: GraphTemporalQueryOptions): Promise<SemanticEdge[]>
   findEdges?(sourceId: string, targetId: string, relation?: string): Promise<SemanticEdge[]>
-  invalidateEdge?(id: string, invalidAt?: Date): Promise<void>
+  invalidateEdge?(id: string, invalidAt?: Date, opts?: GraphInvalidationOptions | null): Promise<void>
   invalidateGraphEdgesForNode?(nodeType: 'entity' | 'chunk' | 'memory', nodeId: string, invalidAt?: Date): Promise<void>
   getMemoryIdsForEntities?(entityIds: string[], scope?: typegraphIdentity): Promise<string[]>
 

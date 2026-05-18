@@ -39,28 +39,82 @@ export class PgDocumentStore {
 
   async upsert(input: UpsertDocumentInput): Promise<UpsertedDocumentRecord> {
     const rows = await this.sql(
-      `INSERT INTO ${this.tableName}
-        (id, bucket_id, tenant_id, graph_id, organization_id, group_id, user_id, agent_id, thread_id,
-         name, description, url, content_hash, chunk_count, status,
-         metadata, indexed_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, NOW(), NOW())
-       ON CONFLICT (bucket_id, tenant_id, content_hash)
-         DO UPDATE SET
-           graph_id = EXCLUDED.graph_id,
-           organization_id = EXCLUDED.organization_id,
-           name = EXCLUDED.name,
-           description = EXCLUDED.description,
-           url = EXCLUDED.url,
-           chunk_count = EXCLUDED.chunk_count,
-           status = EXCLUDED.status,
-           group_id = EXCLUDED.group_id,
-           user_id = EXCLUDED.user_id,
-           agent_id = EXCLUDED.agent_id,
-           thread_id = EXCLUDED.thread_id,
-           metadata = EXCLUDED.metadata,
+      `WITH input AS (
+         SELECT
+           $1::text AS id,
+           $2::text AS bucket_id,
+           $3::text AS tenant_id,
+           $4::text AS graph_id,
+           $5::text AS organization_id,
+           $6::text AS group_id,
+           $7::text AS user_id,
+           $8::text AS agent_id,
+           $9::text AS thread_id,
+           $10::text AS name,
+           $11::text AS description,
+           $12::text AS url,
+           $13::text AS content_hash,
+           $14::int AS chunk_count,
+           $15::text AS status,
+           $16::jsonb AS metadata
+       ),
+       updated_by_id AS (
+         UPDATE ${this.tableName} d
+         SET
+           bucket_id = input.bucket_id,
+           graph_id = input.graph_id,
+           organization_id = input.organization_id,
+           name = input.name,
+           description = input.description,
+           url = input.url,
+           content_hash = input.content_hash,
+           chunk_count = input.chunk_count,
+           status = input.status,
+           group_id = input.group_id,
+           user_id = input.user_id,
+           agent_id = input.agent_id,
+           thread_id = input.thread_id,
+           metadata = input.metadata,
            indexed_at = NOW(),
            updated_at = NOW()
-       RETURNING *, (xmax = 0) AS was_created`,
+         FROM input
+         WHERE d.tenant_id = input.tenant_id
+           AND d.id = input.id
+         RETURNING d.*, false AS was_created
+       ),
+       inserted_or_hash_matched AS (
+         INSERT INTO ${this.tableName}
+           (id, bucket_id, tenant_id, graph_id, organization_id, group_id, user_id, agent_id, thread_id,
+            name, description, url, content_hash, chunk_count, status,
+            metadata, indexed_at, updated_at)
+         SELECT
+           id, bucket_id, tenant_id, graph_id, organization_id, group_id, user_id, agent_id, thread_id,
+           name, description, url, content_hash, chunk_count, status,
+           metadata, NOW(), NOW()
+         FROM input
+         WHERE NOT EXISTS (SELECT 1 FROM updated_by_id)
+         ON CONFLICT (bucket_id, tenant_id, content_hash)
+           DO UPDATE SET
+             graph_id = EXCLUDED.graph_id,
+             organization_id = EXCLUDED.organization_id,
+             name = EXCLUDED.name,
+             description = EXCLUDED.description,
+             url = EXCLUDED.url,
+             chunk_count = EXCLUDED.chunk_count,
+             status = EXCLUDED.status,
+             group_id = EXCLUDED.group_id,
+             user_id = EXCLUDED.user_id,
+             agent_id = EXCLUDED.agent_id,
+             thread_id = EXCLUDED.thread_id,
+             metadata = EXCLUDED.metadata,
+             indexed_at = NOW(),
+             updated_at = NOW()
+         RETURNING *, (xmax = 0) AS was_created
+       )
+       SELECT * FROM updated_by_id
+       UNION ALL
+       SELECT * FROM inserted_or_hash_matched
+       LIMIT 1`,
       [
         input.id,
         input.bucketId,

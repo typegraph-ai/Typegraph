@@ -6,7 +6,7 @@ import type { AccessScope, typegraphIdentity } from '../types/identity.js'
 import type { EmbeddingConfig } from '../types/bucket.js'
 import type { LLMConfig, LLMProvider } from '../types/llm-provider.js'
 import type { CompiledOntology } from '../types/ontology.js'
-import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, InternalFactSearchOpts, InternalGraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, InternalGraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, EntityScopeResolution, KnowledgeSearchOpts, KnowledgeSearchResult, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult } from '../types/graph-bridge.js'
+import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, InternalFactSearchOpts, InternalGraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, InternalGraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, EntityScopeResolution, KnowledgeSearchOpts, KnowledgeSearchResult, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult, GraphInvalidationOptions, GraphTemporalQueryOptions } from '../types/graph-bridge.js'
 import { resolveEmbedder, resolveLLMProvider } from '../typegraph.js'
 import type { ExternalId, MemoryStoreAdapter, SemanticEdge, SemanticEntity, SemanticEntityMention, SemanticEntityChunkEdge, SemanticFactRecord, SemanticGraphEdge } from '../memory/types/index.js'
 import type { ChunkRef } from '../types/chunk.js'
@@ -31,7 +31,6 @@ import {
   normalizeTypeCandidates,
   sanitizePredicate,
   validatePredicateEffectiveTypes,
-  type PredicateTemporalStatus,
   type TypeCandidate,
 } from '../index-engine/ontology.js'
 
@@ -113,6 +112,42 @@ function cleanOptionalText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const cleaned = value.replace(/\s+/g, ' ').trim()
   return cleaned ? cleaned : undefined
+}
+
+function cleanOptionalDate(value: Date | string | undefined, field: string): Date | undefined {
+  if (value === undefined) return undefined
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) throw new Error(`Invalid graph temporal ${field}`)
+    return value
+  }
+  const cleaned = cleanOptionalText(value)
+  if (!cleaned) return undefined
+  const parsed = new Date(cleaned)
+  if (Number.isNaN(parsed.getTime())) throw new Error(`Invalid graph temporal ${field}: ${cleaned}`)
+  return parsed
+}
+
+function createGraphTemporal(input: {
+  validAt?: Date | string | undefined
+  invalidAt?: Date | string | undefined
+  expiredAt?: Date | string | undefined
+}) {
+  const temporal = createTemporal(cleanOptionalDate(input.validAt, 'validAt'))
+  const invalidAt = cleanOptionalDate(input.invalidAt, 'invalidAt')
+  const expiredAt = cleanOptionalDate(input.expiredAt, 'expiredAt')
+  return {
+    ...temporal,
+    ...(invalidAt ? { invalidAt } : {}),
+    ...(expiredAt ? { expiredAt } : {}),
+  }
+}
+
+function temporalQueryFrom(opts: GraphTemporalQueryOptions): GraphTemporalQueryOptions {
+  return optionalCompactObject<GraphTemporalQueryOptions>({
+    asOf: opts.asOf,
+    validBetween: opts.validBetween,
+    includeInvalidated: opts.includeInvalidated,
+  }, 'graph.temporalQuery') as GraphTemporalQueryOptions
 }
 
 function isGraphSelfEdgeError(error: unknown): error is GraphSelfEdgeError {
@@ -636,6 +671,13 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       relation: edge.relation,
       weight: edge.weight,
       metadata: edge.metadata,
+      validAt: edge.temporal.validAt,
+      invalidAt: edge.temporal.invalidAt,
+      createdAt: edge.temporal.createdAt,
+      expiredAt: edge.temporal.expiredAt,
+      supersessionKey: edge.supersessionKey,
+      supersededById: edge.supersededById,
+      supersededAt: edge.supersededAt,
     }
   }
 
@@ -664,6 +706,13 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       evidenceText,
       chunkId: propertyString(edge.metadata, 'chunkId'),
       weight: edge.weight,
+      validAt: edge.temporal.validAt,
+      invalidAt: edge.temporal.invalidAt,
+      createdAt: edge.temporal.createdAt,
+      expiredAt: edge.temporal.expiredAt,
+      supersessionKey: edge.supersessionKey,
+      supersededById: edge.supersededById,
+      supersededAt: edge.supersededAt,
       metadata: {
         ...(score > 0 ? { exploreScore: score } : {}),
       },
@@ -991,9 +1040,11 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     description?: string | undefined
     evidenceText?: string | undefined
     chunkId?: string | undefined
-    temporalStatus?: PredicateTemporalStatus | undefined
-    validFrom?: string | undefined
-    validTo?: string | undefined
+    validAt?: Date | string | undefined
+    invalidAt?: Date | string | undefined
+    expiredAt?: Date | string | undefined
+    supersessionKey?: string | undefined
+    supersedes?: string[] | undefined
   }): Promise<{ edge: SemanticEdge; fact?: SemanticFactRecord | undefined; source: SemanticEntity; target: SemanticEntity }> {
     const ontology = ontologyForGraph(input.scope.graphId)
     const normalizedRelation = normalizePredicateWithDirection(input.relation, ontology)
@@ -1036,12 +1087,14 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const relationshipDescription = cleanOptionalText(input.description)
     const evidenceText = cleanOptionalText(input.evidenceText)
     const chunkId = cleanOptionalText(input.chunkId)
-    const temporalStatus = input.temporalStatus ?? normalizedRelation.temporalStatus
-    const validFrom = cleanOptionalText(input.validFrom)
-    const validTo = cleanOptionalText(input.validTo)
+    const temporal = createGraphTemporal(input)
+    const supersessionKey = cleanOptionalText(input.supersessionKey)
+    const supersedes = input.supersedes?.map(id => cleanOptionalText(id)).filter((id): id is string => !!id) ?? []
     const weight = (input.weight ?? 1) * (typeValidation.valid ? 1 : 0.85)
     const edge: SemanticEdge = {
-      id: stableGraphId('edge', [source.id, relation, target.id]),
+      id: supersessionKey
+        ? stableGraphId('edge', [supersessionKey, temporal.validAt.toISOString()])
+        : stableGraphId('edge', [source.id, relation, target.id]),
       sourceEntityId: source.id,
       targetEntityId: target.id,
       relation,
@@ -1050,19 +1103,24 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         ...(relationshipDescription ? { relationshipDescription } : {}),
         ...(evidenceText ? { evidenceText } : {}),
         ...(chunkId ? { chunkId } : {}),
-        ...(temporalStatus ? { temporalStatus } : {}),
-        ...(validFrom ? { validFrom } : {}),
-        ...(validTo ? { validTo } : {}),
         ...(!typeValidation.valid ? { predicateValidation: typeValidation } : {}),
         ...(input.metadata ?? {}),
       },
       scope: input.scope,
       accessScope: input.accessScope,
-      temporal: createTemporal(),
+      temporal,
+      ...(supersessionKey ? { supersessionKey } : {}),
       evidence: [],
     }
 
     const storedEdge = await graph.addEdge(edge)
+    for (const supersededId of supersedes) {
+      await memoryStore.invalidateEdge?.(supersededId, temporal.validAt, {
+        invalidAt: temporal.validAt,
+        expiredAt: temporal.createdAt,
+        reason: 'superseded',
+      })
+    }
     let storedFact: SemanticFactRecord | undefined
     if (memoryStore.upsertFactRecord) {
       const fallbackDescription = cleanOptionalText(input.description) ?? factTextFor(source.name, relation, target.name)
@@ -1072,7 +1130,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       }) || fallbackDescription
       const factEmbedding = await embedText(embedding, description)
       storedFact = await memoryStore.upsertFactRecord({
-        id: stableGraphId('fact', [storedEdge.sourceEntityId, storedEdge.relation, storedEdge.targetEntityId]),
+        id: supersessionKey
+          ? stableGraphId('fact', [supersessionKey, temporal.validAt.toISOString()])
+          : stableGraphId('fact', [storedEdge.sourceEntityId, storedEdge.relation, storedEdge.targetEntityId]),
         edgeId: storedEdge.id,
         sourceEntityId: storedEdge.sourceEntityId,
         targetEntityId: storedEdge.targetEntityId,
@@ -1084,10 +1144,22 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         embedding: factEmbedding,
         scope: input.scope,
         accessScope: storedEdge.accessScope,
+        validAt: storedEdge.temporal.validAt,
+        invalidAt: storedEdge.temporal.invalidAt,
         createdAt: storedEdge.temporal.createdAt,
         updatedAt: new Date(),
-        ...(storedEdge.temporal.invalidAt ? { invalidAt: storedEdge.temporal.invalidAt } : {}),
+        expiredAt: storedEdge.temporal.expiredAt,
+        supersessionKey: storedEdge.supersessionKey,
+        supersededById: storedEdge.supersededById,
+        supersededAt: storedEdge.supersededAt,
       })
+      for (const supersededId of supersedes) {
+        await memoryStore.invalidateFactRecord?.(supersededId, {
+          invalidAt: temporal.validAt,
+          expiredAt: temporal.createdAt,
+          reason: 'superseded',
+        }, input.scope)
+      }
     }
 
     if (memoryStore.upsertEntity) {
@@ -1316,9 +1388,11 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     objectDescription?: string | undefined
     relationshipDescription?: string | undefined
     evidenceText?: string | undefined
-    temporalStatus?: PredicateTemporalStatus | undefined
-    validFrom?: string | undefined
-    validTo?: string | undefined
+    validAt?: Date | string | undefined
+    invalidAt?: Date | string | undefined
+    expiredAt?: Date | string | undefined
+    supersessionKey?: string | undefined
+    supersedes?: string[] | undefined
     chunkId?: string | undefined
     confidence?: number | undefined
     content: string
@@ -1453,9 +1527,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const relationshipDescription = cleanOptionalText(triple.relationshipDescription)
     const evidenceText = cleanOptionalText(triple.evidenceText)
     const chunkId = cleanOptionalText(triple.chunkId)
-    const temporalStatus = triple.temporalStatus ?? normalizedRelation.temporalStatus
-    const validFrom = cleanOptionalText(triple.validFrom)
-    const validTo = cleanOptionalText(triple.validTo)
+    const temporal = createGraphTemporal(triple)
+    const supersessionKey = cleanOptionalText(triple.supersessionKey)
+    const supersedes = triple.supersedes?.map(id => cleanOptionalText(id)).filter((id): id is string => !!id) ?? []
 
     if (textMentionsDirectionalContradiction({
       relation,
@@ -1477,7 +1551,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     // and provenance move to the entity↔chunk junction. Keep triple metadata in
     // metadata only if the caller supplied it (not auto-generated content).
     const edge: SemanticEdge = {
-      id: generateId('edge'),
+      id: supersessionKey
+        ? stableGraphId('edge', [supersessionKey, temporal.validAt.toISOString()])
+        : stableGraphId('edge', [sourceEntity.id, relation, targetEntity.id]),
       sourceEntityId: sourceEntity.id,
       targetEntityId: targetEntity.id,
       relation,
@@ -1486,19 +1562,24 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         ...(relationshipDescription ? { relationshipDescription } : {}),
         ...(evidenceText ? { evidenceText } : {}),
         ...(chunkId ? { chunkId } : {}),
-        ...(temporalStatus ? { temporalStatus } : {}),
-        ...(validFrom ? { validFrom } : {}),
-        ...(validTo ? { validTo } : {}),
         ...(!typeValidation.valid ? { predicateValidation: typeValidation } : {}),
         ...(triple.metadata ? { metadata: triple.metadata } : {}),
       },
       scope,
       accessScope: triple.accessScope,
-      temporal: createTemporal(),
+      temporal,
+      ...(supersessionKey ? { supersessionKey } : {}),
       evidence: [],
     }
 
     const storedEdge = await graph.addEdge(edge)
+    for (const supersededId of supersedes) {
+      await memoryStore.invalidateEdge?.(supersededId, temporal.validAt, {
+        invalidAt: temporal.validAt,
+        expiredAt: temporal.createdAt,
+        reason: 'superseded',
+      })
+    }
 
     if (memoryStore.upsertFactRecord) {
       const fallbackDescription = factTextFor(sourceEntity.name, relation, targetEntity.name)
@@ -1508,7 +1589,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       }) || fallbackDescription
       const factEmbedding = await embedText(embedding, description)
       await memoryStore.upsertFactRecord({
-        id: stableGraphId('fact', [storedEdge.sourceEntityId, storedEdge.relation, storedEdge.targetEntityId]),
+        id: supersessionKey
+          ? stableGraphId('fact', [supersessionKey, temporal.validAt.toISOString()])
+          : stableGraphId('fact', [storedEdge.sourceEntityId, storedEdge.relation, storedEdge.targetEntityId]),
         edgeId: storedEdge.id,
         sourceEntityId: storedEdge.sourceEntityId,
         targetEntityId: storedEdge.targetEntityId,
@@ -1520,10 +1603,22 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         embedding: factEmbedding,
         scope,
         accessScope: storedEdge.accessScope,
+        validAt: storedEdge.temporal.validAt,
+        invalidAt: storedEdge.temporal.invalidAt,
         createdAt: storedEdge.temporal.createdAt,
         updatedAt: new Date(),
-        ...(storedEdge.temporal.invalidAt ? { invalidAt: storedEdge.temporal.invalidAt } : {}),
+        expiredAt: storedEdge.temporal.expiredAt,
+        supersessionKey: storedEdge.supersessionKey,
+        supersededById: storedEdge.supersededById,
+        supersededAt: storedEdge.supersededAt,
       })
+      for (const supersededId of supersedes) {
+        await memoryStore.invalidateFactRecord?.(supersededId, {
+          invalidAt: temporal.validAt,
+          expiredAt: temporal.createdAt,
+          reason: 'superseded',
+        }, scope)
+      }
     }
 
     if (memoryStore.upsertEntity) {
@@ -1552,7 +1647,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
           const coKey = [newId, linkTo].sort().join(':')
           if (!directEdgePairs.has(coKey)) {
             await graph.addEdge({
-              id: generateId('edge'),
+              id: stableGraphId('edge', [newId, 'CO_OCCURS', linkTo]),
               sourceEntityId: newId,
               targetEntityId: linkTo,
               relation: 'CO_OCCURS',
@@ -1641,9 +1736,11 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       description: input.description,
       evidenceText: input.evidenceText,
       chunkId: input.chunkId,
-      temporalStatus: input.temporalStatus,
-      validFrom: input.validFrom,
-      validTo: input.validTo,
+      validAt: input.validAt,
+      invalidAt: input.invalidAt,
+      expiredAt: input.expiredAt,
+      supersessionKey: input.supersessionKey,
+      supersedes: input.supersedes,
     })
     return edgeResultFromSemanticEdge(
       result.edge,
@@ -1681,9 +1778,11 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       description: input.description,
       evidenceText: input.evidenceText,
       chunkId: input.chunkId,
-      temporalStatus: input.temporalStatus,
-      validFrom: input.validFrom,
-      validTo: input.validTo,
+      validAt: input.validAt,
+      invalidAt: input.invalidAt,
+      expiredAt: input.expiredAt,
+      supersessionKey: input.supersessionKey,
+      supersedes: input.supersedes,
     })
     if (result.fact) {
       const [fact] = await hydrateFacts([result.fact], scope)
@@ -1710,6 +1809,23 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       }
     }
     return results
+  }
+
+  async function invalidateFact(id: string, opts?: GraphInvalidationOptions | null): Promise<void> {
+    if (!memoryStore.invalidateFactRecord) {
+      throw new ConfigError('MemoryStoreAdapter does not support graph fact invalidation.')
+    }
+    const normalized = optionalCompactObject<GraphInvalidationOptions>(opts, 'graph.invalidateFact') as GraphInvalidationOptions
+    await memoryStore.invalidateFactRecord(id, normalized, scopeFrom(opts as typegraphIdentity | undefined))
+  }
+
+  async function invalidateEdge(id: string, opts?: GraphInvalidationOptions | null): Promise<void> {
+    if (!memoryStore.invalidateEdge) {
+      throw new ConfigError('MemoryStoreAdapter does not support graph edge invalidation.')
+    }
+    const normalized = optionalCompactObject<GraphInvalidationOptions>(opts, 'graph.invalidateEdge') as GraphInvalidationOptions
+    const invalidAt = cleanOptionalDate(normalized.invalidAt, 'invalidAt') ?? new Date()
+    await memoryStore.invalidateEdge(id, invalidAt, normalized)
   }
 
   async function searchEntities(
@@ -1763,6 +1879,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   async function getAdjacencyList(
     entityIds: string[],
     identity?: typegraphIdentity,
+    temporal?: GraphTemporalQueryOptions,
   ): Promise<Map<string, Array<{ target: string; weight: number }>>> {
     const adjacency = new Map<string, Array<{ target: string; weight: number }>>()
 
@@ -1783,7 +1900,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const allEntityIds = new Set(entityIds)
     const neighborEdges: SemanticEdge[] = []
 
-    const seedEdges = await graph.getEdgesBatch(entityIds, 'both', identity)
+    const seedEdges = await graph.getEdgesBatch(entityIds, 'both', identity, temporal)
     for (const edge of seedEdges) {
       neighborEdges.push(edge)
       allEntityIds.add(edge.sourceEntityId)
@@ -1792,7 +1909,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
     const firstHopIds = [...allEntityIds].filter(id => !entityIds.includes(id)).slice(0, 100)
     if (firstHopIds.length > 0) {
-      const firstHopEdges = await graph.getEdgesBatch(firstHopIds, 'both', identity)
+      const firstHopEdges = await graph.getEdgesBatch(firstHopIds, 'both', identity, temporal)
       for (const edge of firstHopEdges) {
         neighborEdges.push(edge)
         allEntityIds.add(edge.sourceEntityId)
@@ -1802,7 +1919,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       const seenIds = new Set<string>([...entityIds, ...firstHopIds])
       const secondHopIds = [...allEntityIds].filter(id => !seenIds.has(id)).slice(0, 100)
       if (secondHopIds.length > 0) {
-        const secondHopEdges = await graph.getEdgesBatch(secondHopIds, 'both', identity)
+        const secondHopEdges = await graph.getEdgesBatch(secondHopIds, 'both', identity, temporal)
         neighborEdges.push(...secondHopEdges)
       }
     }
@@ -1834,14 +1951,17 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const searchEmbedding = await embedText(embedding, query)
     const identity = {
       tenantId: normalizedOpts.tenantId,
+      organizationId: normalizedOpts.organizationId,
       groupId: normalizedOpts.groupId,
       userId: normalizedOpts.userId,
       agentId: normalizedOpts.agentId,
       threadId: normalizedOpts.threadId,
+      graphId: normalizedOpts.graphId,
+      graphIds: normalizedOpts.graphIds,
     }
     const facts = memoryStore.searchFactsHybrid
-      ? await memoryStore.searchFactsHybrid(query, searchEmbedding, identity, normalizedOpts.limit ?? 20)
-      : await memoryStore.searchFacts!(searchEmbedding, identity, normalizedOpts.limit ?? 20)
+      ? await memoryStore.searchFactsHybrid(query, searchEmbedding, identity, normalizedOpts.limit ?? 20, temporalQueryFrom(normalizedOpts))
+      : await memoryStore.searchFacts!(searchEmbedding, identity, normalizedOpts.limit ?? 20, temporalQueryFrom(normalizedOpts))
     return hydrateFacts(facts, identity)
   }
 
@@ -1852,11 +1972,15 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const normalizedOpts = optionalCompactObject<InternalGraphExploreOpts>(opts, 'graph.explore') as InternalGraphExploreOpts
     const identity = {
       tenantId: normalizedOpts.tenantId,
+      organizationId: normalizedOpts.organizationId,
       groupId: normalizedOpts.groupId,
       userId: normalizedOpts.userId,
       agentId: normalizedOpts.agentId,
       threadId: normalizedOpts.threadId,
+      graphId: normalizedOpts.graphId,
+      graphIds: normalizedOpts.graphIds,
     }
+    const temporal = temporalQueryFrom(normalizedOpts)
     const include = {
       entities: normalizedOpts.include?.entities ?? true,
       facts: normalizedOpts.include?.facts ?? true,
@@ -1923,7 +2047,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const anchorScoreById = new Map(
       anchors.map(anchor => [anchor.id, normalizeSeedScore(anchor.similarity ?? 1)]),
     )
-    const subgraph = await graph.getSubgraph(anchors.map(anchor => anchor.id), depth, identity)
+    const subgraph = await graph.getSubgraph(anchors.map(anchor => anchor.id), depth, identity, temporal)
     const entityById = new Map(subgraph.entities.map(entity => [entity.id, entity]))
     const nameMap = new Map(subgraph.entities.map(entity => [entity.id, entity.name]))
 
@@ -2011,6 +2135,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         const connectedChunks = await getChunksForEntity(entityId, {
           bucketIds: normalizedOpts.bucketIds,
           limit: chunkLimit,
+          ...temporal,
           ...identity,
         })
         const entityScore = entityScoreById.get(entityId) ?? 0
@@ -2049,26 +2174,39 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   async function getChunksForEntity(entityId: string, opts?: ({
     bucketIds?: string[] | undefined
     limit?: number | undefined
+    asOf?: Date | 'now' | undefined
+    validBetween?: [Date, Date] | undefined
+    includeInvalidated?: boolean | undefined
   } & typegraphIdentity) | null): Promise<ChunkResult[]> {
     const normalizedOpts = optionalCompactObject<{
       bucketIds?: string[] | undefined
       limit?: number | undefined
+      asOf?: Date | 'now' | undefined
+      validBetween?: [Date, Date] | undefined
+      includeInvalidated?: boolean | undefined
     } & typegraphIdentity>(opts, 'graph.getChunksForEntity') as {
       bucketIds?: string[] | undefined
       limit?: number | undefined
+      asOf?: Date | 'now' | undefined
+      validBetween?: [Date, Date] | undefined
+      includeInvalidated?: boolean | undefined
     } & typegraphIdentity
     if (!memoryStore.getChunkEdgesForEntities || !memoryStore.getChunksByRefs || !config.resolveChunksTable) return []
     const identity = {
       tenantId: normalizedOpts.tenantId,
+      organizationId: normalizedOpts.organizationId,
       groupId: normalizedOpts.groupId,
       userId: normalizedOpts.userId,
       agentId: normalizedOpts.agentId,
       threadId: normalizedOpts.threadId,
+      graphId: normalizedOpts.graphId,
+      graphIds: normalizedOpts.graphIds,
     }
     const chunkEdges = await memoryStore.getChunkEdgesForEntities([entityId], {
       scope: identity,
       bucketIds: normalizedOpts.bucketIds,
       limit: normalizedOpts.limit ?? 20,
+      temporal: temporalQueryFrom(normalizedOpts),
     })
     if (chunkEdges.length === 0) return []
     const chunksTable = await config.resolveChunksTable(embeddingModelKey(embedding))
@@ -2101,13 +2239,22 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   async function resolveEntityScope(scope: import('../types/query.js').QueryEntityScope, identity: typegraphIdentity, opts?: {
     bucketIds?: string[] | undefined
     limit?: number | undefined
+    asOf?: Date | 'now' | undefined
+    validBetween?: [Date, Date] | undefined
+    includeInvalidated?: boolean | undefined
   } | null): Promise<EntityScopeResolution> {
     const normalizedOpts = optionalCompactObject<{
       bucketIds?: string[] | undefined
       limit?: number | undefined
+      asOf?: Date | 'now' | undefined
+      validBetween?: [Date, Date] | undefined
+      includeInvalidated?: boolean | undefined
     }>(opts, 'graph.resolveEntityScope') as {
       bucketIds?: string[] | undefined
       limit?: number | undefined
+      asOf?: Date | 'now' | undefined
+      validBetween?: [Date, Date] | undefined
+      includeInvalidated?: boolean | undefined
     }
     const warnings: string[] = []
     const entityIds = new Set((scope.entityIds ?? []).filter(Boolean))
@@ -2132,6 +2279,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
           scope: identity,
           bucketIds: normalizedOpts.bucketIds,
           limit: normalizedOpts.limit ?? Math.max(200, resolvedIds.length * 200),
+          temporal: temporalQueryFrom(normalizedOpts),
         })
       : []
     const chunkRefs = [...new Map(chunkEdges.map(edge => [chunkRefKey(edge.chunkRef), edge.chunkRef])).values()]
@@ -2149,6 +2297,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
   ): Promise<KnowledgeSearchResult> {
     const normalizedOpts = optionalCompactObject<KnowledgeSearchOpts>(opts, 'graph.searchKnowledge') as KnowledgeSearchOpts
     const limit = normalizedOpts.count ?? 10
+    const temporal = temporalQueryFrom(normalizedOpts)
     const scopeEntityIds = new Set(normalizedOpts.resolvedEntityIds ?? [])
     const hasEntityScopeFilter = Boolean(normalizedOpts.entityScope && normalizedOpts.entityScope.mode !== 'boost')
     if (hasEntityScopeFilter && scopeEntityIds.size === 0) return { facts: [], entities: [] }
@@ -2167,9 +2316,9 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       .slice(0, limit)
 
     const factRows = memoryStore.searchFactsHybrid
-      ? await memoryStore.searchFactsHybrid(query, searchEmbedding, identity, limit)
+      ? await memoryStore.searchFactsHybrid(query, searchEmbedding, identity, limit, temporal)
       : searchEmbedding && memoryStore.searchFacts
-        ? await memoryStore.searchFacts(searchEmbedding, identity, limit)
+        ? await memoryStore.searchFacts(searchEmbedding, identity, limit, temporal)
         : []
     const facts = (await hydrateFacts(
       factRows.filter(fact =>
@@ -2200,11 +2349,13 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const minPprScore = normalizedOpts.minPprScore ?? 1e-10
     const maxExpansionEdgesPerEntity = normalizedOpts.maxExpansionEdgesPerEntity ?? 100
     const factChainLimit = normalizedOpts.factChainLimit ?? 3
+    const temporal = temporalQueryFrom(normalizedOpts)
     const entityScopeMode = normalizedOpts.entityScope?.mode ?? 'filter'
     const scopedEntityIds = normalizedOpts.entityScope
       ? (normalizedOpts.resolvedEntityIds ?? (await resolveEntityScope(normalizedOpts.entityScope, identity, {
           bucketIds: normalizedOpts.bucketIds,
           limit: Math.max(count * 50, 200),
+          ...temporal,
         })).entityIds)
       : []
     const scopedEntityIdSet = new Set(scopedEntityIds)
@@ -2262,7 +2413,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     const chunksTable = await config.resolveChunksTable(embeddingModelKey(embedding))
 
     const factCandidates = needsFactSearch && factEmbedding && memoryStore.searchFacts
-      ? await memoryStore.searchFacts(factEmbedding, identity, factCandidateLimit)
+      ? await memoryStore.searchFacts(factEmbedding, identity, factCandidateLimit, temporal)
       : []
     const candidateEntityIds = uniqueIds(factCandidates.flatMap(fact => [fact.sourceEntityId, fact.targetEntityId]))
     const candidateEntities = candidateEntityIds.length > 0
@@ -2338,7 +2489,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
 
     const entitySeedIds = [...entitySeeds.keys()]
     const entityAdjacency = entitySeedIds.length > 0
-      ? await getAdjacencyList(entitySeedIds, identity)
+      ? await getAdjacencyList(entitySeedIds, identity, temporal)
       : new Map<string, Array<{ target: string; weight: number }>>()
     for (const [entityId, edges] of entityAdjacency) {
       for (const edge of edges.slice(0, maxExpansionEdgesPerEntity)) {
@@ -2359,6 +2510,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
           scope: identity,
           bucketIds: normalizedOpts.bucketIds,
           limit: Math.max(100, activeEntityIds.size * maxExpansionEdgesPerEntity),
+          temporal,
         })
       : []
     for (const edge of chunkEntityEdges) {
@@ -2531,6 +2683,14 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         chunkId,
         weight: fact.weight,
         similarity: fact.similarity,
+        validAt: fact.validAt,
+        invalidAt: fact.invalidAt,
+        createdAt: fact.createdAt,
+        updatedAt: fact.updatedAt,
+        expiredAt: fact.expiredAt,
+        supersessionKey: fact.supersessionKey,
+        supersededById: fact.supersededById,
+        supersededAt: fact.supersededAt,
         ...(metadata ? { metadata } : {}),
       }
     })
@@ -2669,8 +2829,14 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
               embedding: factEmbeddings[i],
               scope: input.edge.scope,
               accessScope: input.edge.accessScope,
+              validAt: input.edge.temporal.validAt,
+              invalidAt: input.edge.temporal.invalidAt,
               createdAt: input.edge.temporal.createdAt,
               updatedAt: new Date(),
+              expiredAt: input.edge.temporal.expiredAt,
+              supersessionKey: input.edge.supersessionKey,
+              supersededById: input.edge.supersededById,
+              supersededAt: input.edge.supersededAt,
             })
             result.factRecordsUpserted += 1
           }
@@ -2719,6 +2885,13 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         relation: e.relation,
         weight: e.weight,
         metadata: e.metadata,
+        validAt: e.temporal.validAt,
+        invalidAt: e.temporal.invalidAt,
+        createdAt: e.temporal.createdAt,
+        expiredAt: e.temporal.expiredAt,
+        supersessionKey: e.supersessionKey,
+        supersededById: e.supersededById,
+        supersededAt: e.supersededAt,
       }))
 
     return {
@@ -2741,24 +2914,36 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     direction?: 'in' | 'out' | 'both'
     relation?: string
     limit?: number
+    asOf?: Date | 'now' | undefined
+    validBetween?: [Date, Date] | undefined
+    includeInvalidated?: boolean | undefined
   } & typegraphIdentity) | null): Promise<EdgeResult[]> {
     const normalizedOpts = optionalCompactObject<{
       direction?: 'in' | 'out' | 'both'
       relation?: string
       limit?: number
+      asOf?: Date | 'now' | undefined
+      validBetween?: [Date, Date] | undefined
+      includeInvalidated?: boolean | undefined
     } & typegraphIdentity>(opts, 'graph.getEdges') as {
       direction?: 'in' | 'out' | 'both'
       relation?: string
       limit?: number
+      asOf?: Date | 'now' | undefined
+      validBetween?: [Date, Date] | undefined
+      includeInvalidated?: boolean | undefined
     } & typegraphIdentity
     const identity = {
       tenantId: normalizedOpts.tenantId,
+      organizationId: normalizedOpts.organizationId,
       groupId: normalizedOpts.groupId,
       userId: normalizedOpts.userId,
       agentId: normalizedOpts.agentId,
       threadId: normalizedOpts.threadId,
+      graphId: normalizedOpts.graphId,
+      graphIds: normalizedOpts.graphIds,
     }
-    let edges = await graph.getEdges(entityId, normalizedOpts.direction ?? 'both', identity)
+    let edges = await graph.getEdges(entityId, normalizedOpts.direction ?? 'both', identity, temporalQueryFrom(normalizedOpts))
     if (normalizedOpts.relation) {
       edges = edges.filter(e => e.relation === normalizedOpts.relation)
     }
@@ -2782,6 +2967,13 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
       relation: e.relation,
       weight: e.weight,
       metadata: e.metadata,
+      validAt: e.temporal.validAt,
+      invalidAt: e.temporal.invalidAt,
+      createdAt: e.temporal.createdAt,
+      expiredAt: e.temporal.expiredAt,
+      supersessionKey: e.supersessionKey,
+      supersededById: e.supersededById,
+      supersededAt: e.supersededAt,
     }))
   }
 
@@ -2800,7 +2992,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     }
 
     const depth = Math.min(normalizedOpts.depth ?? 1, 3)
-    const sub = await graph.getSubgraph(seedIds, depth, normalizedOpts.identity)
+    const sub = await graph.getSubgraph(seedIds, depth, normalizedOpts.identity, temporalQueryFrom(normalizedOpts))
 
     let entities = sub.entities
     let edges = sub.edges
@@ -2849,6 +3041,7 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         name: e.name,
         entityType: e.entityType,
         aliases: e.aliases,
+        externalIds: e.externalIds,
         edgeCount: degree.get(e.id) ?? 0,
         metadata: e.metadata,
         size: Math.max(1, Math.round(((degree.get(e.id) ?? 0) / maxDegree) * 10)),
@@ -2862,6 +3055,13 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
         relation: e.relation,
         weight: e.weight,
         metadata: e.metadata,
+        validAt: e.temporal.validAt,
+        invalidAt: e.temporal.invalidAt,
+        createdAt: e.temporal.createdAt,
+        expiredAt: e.temporal.expiredAt,
+        supersessionKey: e.supersessionKey,
+        supersededById: e.supersededById,
+        supersededAt: e.supersededAt,
         thickness: Math.max(1, Math.round((e.weight / maxWeight) * 5)),
       })),
       stats: {
@@ -2937,6 +3137,8 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     upsertEdges,
     upsertFact,
     upsertFacts,
+    invalidateFact,
+    invalidateEdge,
     addEntityMentions,
     searchEntities,
     searchFacts,

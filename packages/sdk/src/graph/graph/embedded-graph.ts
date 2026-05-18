@@ -1,5 +1,6 @@
 import type { typegraphIdentity } from '../../types/identity.js'
 import type { SemanticEntity, SemanticEdge, MemoryStoreAdapter } from '../../memory/types/index.js'
+import type { GraphTemporalQueryOptions } from '../../types/graph-bridge.js'
 import { isActiveAt } from '../../memory/index.js'
 
 // ── Graph Types ──
@@ -66,9 +67,10 @@ export class EmbeddedGraph {
     entityId: string,
     direction: 'in' | 'out' | 'both' = 'both',
     scope?: typegraphIdentity,
+    temporal?: GraphTemporalQueryOptions,
   ): Promise<SemanticEdge[]> {
     if (!this.store.getEdges) return []
-    return this.store.getEdges(entityId, direction, scope)
+    return this.store.getEdges(entityId, direction, scope, temporal)
   }
 
   /**
@@ -79,15 +81,16 @@ export class EmbeddedGraph {
     entityIds: string[],
     direction: 'in' | 'out' | 'both' = 'both',
     scope?: typegraphIdentity,
+    temporal?: GraphTemporalQueryOptions,
   ): Promise<SemanticEdge[]> {
     if (this.store.getEdgesBatch) {
-      return this.store.getEdgesBatch(entityIds, direction, scope)
+      return this.store.getEdgesBatch(entityIds, direction, scope, temporal)
     }
     // Fallback to sequential
     if (!this.store.getEdges) return []
     const results: SemanticEdge[] = []
     for (const id of entityIds) {
-      const edges = await this.store.getEdges(id, direction, scope)
+      const edges = await this.store.getEdges(id, direction, scope, temporal)
       results.push(...edges)
     }
     return results
@@ -175,6 +178,7 @@ export class EmbeddedGraph {
     entityIds: string[],
     depth: number = 0,
     scope?: typegraphIdentity,
+    temporal?: GraphTemporalQueryOptions,
   ): Promise<Subgraph> {
     // Step 1: Batch-load seed entities (1 roundtrip)
     const seedEntities = await this.getEntitiesBatch(entityIds, scope)
@@ -191,7 +195,7 @@ export class EmbeddedGraph {
 
       for (let d = 0; d < depth && frontier.length > 0; d++) {
         // Batch-load edges for current frontier (1 roundtrip per depth level)
-        const frontierEdges = await this.getEdgesBatch(frontier, 'both', scope)
+        const frontierEdges = await this.getEdgesBatch(frontier, 'both', scope, temporal)
         allEdges.push(...frontierEdges)
         for (const id of frontier) edgeLoadedIds.add(id)
 
@@ -217,7 +221,7 @@ export class EmbeddedGraph {
     // Step 3: Load edges for entities that haven't had edges loaded yet
     const needEdgeIds = [...entityMap.keys()].filter(id => !edgeLoadedIds.has(id))
     if (needEdgeIds.length > 0) {
-      const remaining = await this.getEdgesBatch(needEdgeIds, 'both', scope)
+      const remaining = await this.getEdgesBatch(needEdgeIds, 'both', scope, temporal)
       allEdges.push(...remaining)
     }
 

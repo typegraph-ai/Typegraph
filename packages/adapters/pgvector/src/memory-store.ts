@@ -26,6 +26,8 @@ import type {
   MergeGraphEntitiesResult,
   DeleteGraphEntityOpts,
   DeleteGraphEntityResult,
+  GraphInvalidationOptions,
+  GraphTemporalQueryOptions,
 } from '@typegraph-ai/sdk'
 import { generateId } from '@typegraph-ai/sdk'
 import type { TypeGraphStorageIdentity } from './identity.js'
@@ -103,15 +105,16 @@ const EDGE_ROW_COLUMNS = [
   'from_chunk_index', 'from_embedding_model', 'from_chunk_id', 'to_bucket_id',
   'to_document_id', 'to_chunk_index', 'to_embedding_model', 'to_chunk_id',
   'tenant_id', 'organization_id', 'group_id', 'user_id', 'agent_id', 'thread_id',
-  'graph_id', 'evidence', 'valid_at', 'invalid_at', 'created_at',
-  'updated_at',
+  'graph_id', 'evidence', 'valid_at', 'invalid_at', 'expired_at',
+  'supersession_key', 'superseded_by_id', 'superseded_at', 'created_at', 'updated_at',
 ]
 
 const FACT_ROW_COLUMNS = [
   'id', 'edge_id', 'source_entity_id', 'target_entity_id', 'relation',
   'fact_text', 'description', 'evidence_text', 'fact_search_text',
   'from_chunk_id', 'weight', 'evidence_count', 'tenant_id', 'organization_id', 'group_id',
-  'user_id', 'agent_id', 'thread_id', 'graph_id', 'invalid_at',
+  'user_id', 'agent_id', 'thread_id', 'graph_id', 'valid_at', 'invalid_at',
+  'expired_at', 'supersession_key', 'superseded_by_id', 'superseded_at',
   'created_at', 'updated_at',
 ]
 
@@ -313,10 +316,13 @@ const EDGES_DDL = (t: string) => {
     evidence         TEXT[] DEFAULT '{}',
     valid_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     invalid_at       TIMESTAMPTZ,
+    expired_at       TIMESTAMPTZ,
+    supersession_key TEXT,
+    superseded_by_id TEXT,
+    superseded_at    TIMESTAMPTZ,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (tenant_id, graph_id, id),
-    CONSTRAINT ${safeIdx(i, 'rel_uniq')} UNIQUE (tenant_id, graph_id, source_type, source_id, target_type, target_id, relation)
+    PRIMARY KEY (tenant_id, graph_id, id)
   );
 
   CREATE INDEX IF NOT EXISTS ${idx('source_idx')} ON ${t} (source_type, source_id);
@@ -328,7 +334,10 @@ const EDGES_DDL = (t: string) => {
   CREATE INDEX IF NOT EXISTS ${idx('to_chunk_ref_idx')} ON ${t} (tenant_id, graph_id, to_bucket_id, to_document_id, to_chunk_index) WHERE target_type = 'chunk';
   CREATE INDEX IF NOT EXISTS ${idx('from_chunk_ref_idx')} ON ${t} (tenant_id, graph_id, from_bucket_id, from_document_id, from_chunk_index) WHERE source_type = 'chunk';
   CREATE INDEX IF NOT EXISTS ${idx('relation_idx')} ON ${t} (relation);
+  CREATE INDEX IF NOT EXISTS ${idx('valid_at_idx')} ON ${t} (valid_at);
   CREATE INDEX IF NOT EXISTS ${idx('invalid_at_idx')} ON ${t} (invalid_at);
+  CREATE INDEX IF NOT EXISTS ${idx('expired_at_idx')} ON ${t} (expired_at);
+  CREATE INDEX IF NOT EXISTS ${idx('supersession_idx')} ON ${t} (tenant_id, graph_id, supersession_key, valid_at) WHERE supersession_key IS NOT NULL;
   CREATE INDEX IF NOT EXISTS ${idx('tenant_org_idx')} ON ${t} (tenant_id, organization_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')} ON ${t} (tenant_id, user_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')} ON ${t} (tenant_id, group_id);
@@ -397,7 +406,12 @@ const FACT_RECORDS_DDL = (t: string, dims?: number) => {
     agent_id         TEXT,
     thread_id        TEXT,
     graph_id         TEXT NOT NULL DEFAULT 'public',
+    valid_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     invalid_at       TIMESTAMPTZ,
+    expired_at       TIMESTAMPTZ,
+    supersession_key TEXT,
+    superseded_by_id TEXT,
+    superseded_at    TIMESTAMPTZ,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     search_vector    TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', fact_search_text)) STORED,
@@ -408,6 +422,10 @@ const FACT_RECORDS_DDL = (t: string, dims?: number) => {
   CREATE INDEX IF NOT EXISTS ${idx('source_idx')} ON ${t} (source_entity_id);
   CREATE INDEX IF NOT EXISTS ${idx('target_idx')} ON ${t} (target_entity_id);
   CREATE INDEX IF NOT EXISTS ${idx('relation_idx')} ON ${t} (relation);
+  CREATE INDEX IF NOT EXISTS ${idx('valid_at_idx')} ON ${t} (valid_at);
+  CREATE INDEX IF NOT EXISTS ${idx('invalid_at_idx')} ON ${t} (invalid_at);
+  CREATE INDEX IF NOT EXISTS ${idx('expired_at_idx')} ON ${t} (expired_at);
+  CREATE INDEX IF NOT EXISTS ${idx('supersession_idx')} ON ${t} (tenant_id, graph_id, supersession_key, valid_at) WHERE supersession_key IS NOT NULL;
   CREATE INDEX IF NOT EXISTS ${idx('tenant_org_idx')} ON ${t} (tenant_id, organization_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_user_idx')} ON ${t} (tenant_id, user_id);
   CREATE INDEX IF NOT EXISTS ${idx('tenant_group_idx')} ON ${t} (tenant_id, group_id);
@@ -1136,7 +1154,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     for (const edge of edges) {
       const base = params.length
       const scope = edge.scope ?? {}
-      values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17},$${base + 18},$${base + 19},$${base + 20},$${base + 21},$${base + 22},$${base + 23},$${base + 24},$${base + 25},$${base + 26},$${base + 27},$${base + 28})`)
+      values.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17},$${base + 18},$${base + 19},$${base + 20},$${base + 21},$${base + 22},$${base + 23},$${base + 24},$${base + 25},$${base + 26},$${base + 27},$${base + 28},$${base + 29},$${base + 30},$${base + 31},$${base + 32})`)
       params.push(
         edge.id,
         edge.sourceType,
@@ -1166,6 +1184,10 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         edge.evidence ?? [],
         edge.temporal.validAt.toISOString(),
         edge.temporal.invalidAt?.toISOString() ?? null,
+        edge.temporal.expiredAt?.toISOString() ?? null,
+        edge.supersessionKey ?? null,
+        edge.supersededById ?? null,
+        edge.supersededAt?.toISOString() ?? null,
       )
     }
 
@@ -1175,9 +1197,10 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         (id, source_type, source_id, target_type, target_id, relation, weight, properties,
          from_bucket_id, from_document_id, from_chunk_index, from_embedding_model, from_chunk_id,
          to_bucket_id, to_document_id, to_chunk_index, to_embedding_model, to_chunk_id,
-         tenant_id, organization_id, group_id, user_id, agent_id, thread_id, graph_id, evidence, valid_at, invalid_at)
+         tenant_id, organization_id, group_id, user_id, agent_id, thread_id, graph_id, evidence,
+         valid_at, invalid_at, expired_at, supersession_key, superseded_by_id, superseded_at)
        VALUES ${values.join(',')}
-       ON CONFLICT (tenant_id, graph_id, source_type, source_id, target_type, target_id, relation) DO UPDATE SET
+       ON CONFLICT (tenant_id, graph_id, id) DO UPDATE SET
          weight = LEAST(5.0, ${tbl}.weight + EXCLUDED.weight),
          properties = ${tbl}.properties || EXCLUDED.properties,
          from_bucket_id = COALESCE(EXCLUDED.from_bucket_id, ${tbl}.from_bucket_id),
@@ -1196,7 +1219,12 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          agent_id = EXCLUDED.agent_id,
          thread_id = EXCLUDED.thread_id,
          evidence = ARRAY(SELECT DISTINCT v FROM unnest(${tbl}.evidence || EXCLUDED.evidence) AS v WHERE v <> ''),
+         valid_at = LEAST(${tbl}.valid_at, EXCLUDED.valid_at),
          invalid_at = EXCLUDED.invalid_at,
+         expired_at = EXCLUDED.expired_at,
+         supersession_key = EXCLUDED.supersession_key,
+         superseded_by_id = EXCLUDED.superseded_by_id,
+         superseded_at = EXCLUDED.superseded_at,
          updated_at = NOW()`,
       params
     )
@@ -1226,7 +1254,13 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       fact.scope.agentId ?? null,
       fact.scope.threadId ?? null,
       fact.graphId ?? fact.scope.graphId ?? 'public',
+      fact.validAt.toISOString(),
       fact.invalidAt?.toISOString() ?? null,
+      fact.expiredAt?.toISOString() ?? null,
+      fact.supersessionKey ?? null,
+      fact.supersededById ?? null,
+      fact.supersededAt?.toISOString() ?? null,
+      fact.createdAt.toISOString(),
       fact.updatedAt.toISOString(),
     ]
     const table = unqualified(this.factRecordsTable)
@@ -1234,8 +1268,9 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         (id, edge_id, source_entity_id, target_entity_id, relation, fact_text,
          description, evidence_text, fact_search_text, from_chunk_id, weight,
          evidence_count, embedding, tenant_id, organization_id, group_id, user_id, agent_id,
-         thread_id, graph_id, invalid_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::halfvec,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+         thread_id, graph_id, valid_at, invalid_at, expired_at, supersession_key,
+         superseded_by_id, superseded_at, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::halfvec,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
        ON CONFLICT (${conflictTarget === 'edge' ? 'tenant_id, graph_id, edge_id' : 'tenant_id, graph_id, id'}) DO UPDATE SET
          ${conflictTarget === 'id'
            ? `edge_id = EXCLUDED.edge_id,
@@ -1256,7 +1291,13 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
          user_id = EXCLUDED.user_id,
          agent_id = EXCLUDED.agent_id,
          thread_id = EXCLUDED.thread_id,
+         valid_at = EXCLUDED.valid_at,
          invalid_at = EXCLUDED.invalid_at,
+         expired_at = EXCLUDED.expired_at,
+         supersession_key = EXCLUDED.supersession_key,
+         superseded_by_id = EXCLUDED.superseded_by_id,
+         superseded_at = EXCLUDED.superseded_at,
+         created_at = ${table}.created_at,
          updated_at = EXCLUDED.updated_at
        RETURNING ${selectColumns(FACT_ROW_COLUMNS)}`
     let rows: Record<string, unknown>[]
@@ -1266,30 +1307,113 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       if (!isDuplicateFactIdError(err)) throw err
       rows = await this.sqlWithRetry(buildSql('id'), params)
     }
-    return mapRowToFact(rows[0]!)
+    const stored = mapRowToFact(rows[0]!)
+    return this.applyFactSupersession(stored)
   }
 
-  async searchFacts(embedding: number[], scope: TypeGraphStorageIdentity, limit?: number): Promise<SemanticFactRecord[]> {
+  private async applyFactSupersession(fact: SemanticFactRecord): Promise<SemanticFactRecord> {
+    if (!fact.supersessionKey) return fact
+    const tenantId = fact.scope.tenantId ?? 'public'
+    const graphId = fact.graphId ?? fact.scope.graphId ?? 'public'
+    const validAt = fact.validAt.toISOString()
+    const nextRows = await this.sqlWithRetry(
+      `SELECT id, valid_at
+         FROM ${this.factRecordsTable}
+        WHERE tenant_id = $1
+          AND graph_id = $2
+          AND supersession_key = $3
+          AND id <> $4
+          AND valid_at > $5
+        ORDER BY valid_at ASC
+        LIMIT 1`,
+      [tenantId, graphId, fact.supersessionKey, fact.id, validAt]
+    )
+    const next = nextRows[0]
+    if (next) {
+      await this.sqlWithRetry(
+        `UPDATE ${this.factRecordsTable}
+            SET invalid_at = CASE
+                  WHEN invalid_at IS NULL OR invalid_at > $5 THEN $5::timestamptz
+                  ELSE invalid_at
+                END,
+                expired_at = COALESCE(expired_at, NOW()),
+                superseded_by_id = COALESCE(superseded_by_id, $6),
+                superseded_at = COALESCE(superseded_at, NOW()),
+                updated_at = NOW()
+          WHERE tenant_id = $1
+            AND graph_id = $2
+            AND supersession_key = $3
+            AND id = $4`,
+        [tenantId, graphId, fact.supersessionKey, fact.id, new Date(next.valid_at as string).toISOString(), next.id as string]
+      )
+    }
+
+    const prevRows = await this.sqlWithRetry(
+      `SELECT id, invalid_at
+         FROM ${this.factRecordsTable}
+        WHERE tenant_id = $1
+          AND graph_id = $2
+          AND supersession_key = $3
+          AND id <> $4
+          AND valid_at < $5
+        ORDER BY valid_at DESC
+        LIMIT 1`,
+      [tenantId, graphId, fact.supersessionKey, fact.id, validAt]
+    )
+    const previous = prevRows[0]
+    if (previous) {
+      await this.sqlWithRetry(
+        `UPDATE ${this.factRecordsTable}
+            SET invalid_at = $5,
+                expired_at = COALESCE(expired_at, NOW()),
+                superseded_by_id = $4,
+                superseded_at = NOW(),
+                updated_at = NOW()
+          WHERE tenant_id = $1
+            AND graph_id = $2
+            AND supersession_key = $3
+            AND id = $6
+            AND (invalid_at IS NULL OR invalid_at > $5)`,
+        [tenantId, graphId, fact.supersessionKey, fact.id, validAt, previous.id as string]
+      )
+    }
+
+    const rows = await this.sqlWithRetry(
+      `SELECT ${selectColumns(FACT_ROW_COLUMNS)}
+         FROM ${this.factRecordsTable}
+        WHERE tenant_id = $1 AND graph_id = $2 AND id = $3
+        LIMIT 1`,
+      [tenantId, graphId, fact.id]
+    )
+    return rows[0] ? mapRowToFact(rows[0]) : fact
+  }
+
+  async searchFacts(embedding: number[], scope: TypeGraphStorageIdentity, limit?: number, temporal?: GraphTemporalQueryOptions): Promise<SemanticFactRecord[]> {
     const vectorStr = `[${embedding.join(',')}]`
     const identity = buildGraphVisibilityWhere(scope, 1)
     const scopeClause = identity.where ? ` AND ${identity.where}` : ''
-    const limitParam = `$${2 + identity.params.length}`
+    const temporalWhere = buildGraphTemporalWhere(temporal, 1 + identity.params.length)
+    const temporalClause = temporalWhere.where ? ` AND ${temporalWhere.where}` : ''
+    const limitParam = `$${2 + identity.params.length + temporalWhere.params.length}`
     const rows = await this.sqlWithRetry(
       `SELECT ${selectColumns(FACT_ROW_COLUMNS)}, 1 - (embedding <=> $1::halfvec) AS similarity
          FROM ${this.factRecordsTable}
         WHERE embedding IS NOT NULL
           ${scopeClause}
+          ${temporalClause}
         ORDER BY embedding <=> $1::halfvec
         LIMIT ${limitParam}`,
-      [vectorStr, ...identity.params, limit ?? 20]
+      [vectorStr, ...identity.params, ...temporalWhere.params, limit ?? 20]
     )
     return rows.map(mapRowToFact)
   }
 
-  async searchFactsHybrid(query: string, embedding: number[] | undefined, scope: TypeGraphStorageIdentity, limit?: number): Promise<SemanticFactRecord[]> {
+  async searchFactsHybrid(query: string, embedding: number[] | undefined, scope: TypeGraphStorageIdentity, limit?: number, temporal?: GraphTemporalQueryOptions): Promise<SemanticFactRecord[]> {
     const maxRows = limit ?? 20
     const identity = buildGraphVisibilityWhere(scope, 2)
     const scopeClause = identity.where ? ` AND ${identity.where}` : ''
+    const temporalWhere = buildGraphTemporalWhere(temporal, 2 + identity.params.length, 'f')
+    const temporalClause = temporalWhere.where ? ` AND ${temporalWhere.where}` : ''
     const relaxedQuery = normalizeEntityText(query)
     const lexicalRows = await this.sqlWithRetry(
       `WITH tsq AS (
@@ -1299,16 +1423,17 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
        SELECT ${selectColumns(FACT_ROW_COLUMNS, 'f')},
               GREATEST(ts_rank(f.search_vector, tsq.strict_q), ts_rank(f.search_vector, tsq.relaxed_q) * 0.75) AS similarity
          FROM ${this.factRecordsTable} f, tsq
-        WHERE f.invalid_at IS NULL
+        WHERE TRUE
           AND (f.search_vector @@ tsq.strict_q OR f.search_vector @@ tsq.relaxed_q)
           ${scopeClause}
+          ${temporalClause}
         ORDER BY similarity DESC
-        LIMIT $${2 + identity.params.length + 1}`,
-      [query, relaxedQuery, ...identity.params, maxRows * 3]
+        LIMIT $${2 + identity.params.length + temporalWhere.params.length + 1}`,
+      [query, relaxedQuery, ...identity.params, ...temporalWhere.params, maxRows * 3]
     )
 
     const vectorRows = embedding
-      ? await this.searchFacts(embedding, scope, maxRows * 3)
+      ? await this.searchFacts(embedding, scope, maxRows * 3, temporal)
       : []
 
     const byId = new Map<string, SemanticFactRecord>()
@@ -1327,6 +1452,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       scope?: TypeGraphStorageIdentity | undefined
       bucketIds?: string[] | undefined
       limit?: number | undefined
+      temporal?: GraphTemporalQueryOptions | undefined
     }
   ): Promise<SemanticEntityChunkEdge[]> {
     if (entityIds.length === 0) return []
@@ -1339,9 +1465,12 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     }
     const edgeIdentity = buildGraphVisibilityWhere(opts?.scope, params.length, 'e')
     params.push(...edgeIdentity.params)
+    const temporalWhere = buildGraphTemporalWhere(opts?.temporal, params.length, 'e')
+    params.push(...temporalWhere.params)
     params.push(opts?.limit ?? entityIds.length * 200)
     const limitParam = `$${params.length}`
     const edgeScopeClause = edgeIdentity.where ? `AND ${edgeIdentity.where}` : ''
+    const temporalClause = temporalWhere.where ? `AND ${temporalWhere.where}` : ''
 
     const rows = await this.sqlWithRetry(
       `SELECT ${selectColumns(EDGE_ROW_COLUMNS, 'e')}
@@ -1349,9 +1478,9 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         WHERE e.source_type = 'entity'
           AND e.target_type = 'chunk'
           AND e.source_id = ANY($1::text[])
-          AND e.invalid_at IS NULL
           ${bucketClause}
           ${edgeScopeClause}
+          ${temporalClause}
         ORDER BY e.weight DESC
         LIMIT ${limitParam}`,
       params
@@ -1461,16 +1590,23 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       `INSERT INTO ${this.edgesTable}
         (id, source_type, source_id, target_type, target_id, relation, weight, properties,
          tenant_id, organization_id, group_id, user_id, agent_id, thread_id, graph_id,
-         evidence, valid_at, invalid_at, updated_at)
-       VALUES ($1,'entity',$2,'entity',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW())
-       ON CONFLICT (tenant_id, graph_id, source_type, source_id, target_type, target_id, relation) DO UPDATE SET
+         evidence, valid_at, invalid_at, expired_at, supersession_key, superseded_by_id,
+         superseded_at, updated_at)
+       VALUES ($1,'entity',$2,'entity',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW())
+       ON CONFLICT (tenant_id, graph_id, id) DO UPDATE SET
          weight = ${unqualified(this.edgesTable)}.weight + EXCLUDED.weight,
+         properties = ${unqualified(this.edgesTable)}.properties || EXCLUDED.properties,
          organization_id = EXCLUDED.organization_id,
          group_id = EXCLUDED.group_id,
          user_id = EXCLUDED.user_id,
          agent_id = EXCLUDED.agent_id,
          thread_id = EXCLUDED.thread_id,
-         valid_at = LEAST(${unqualified(this.edgesTable)}.valid_at, EXCLUDED.valid_at),
+         valid_at = EXCLUDED.valid_at,
+         invalid_at = EXCLUDED.invalid_at,
+         expired_at = EXCLUDED.expired_at,
+         supersession_key = EXCLUDED.supersession_key,
+         superseded_by_id = EXCLUDED.superseded_by_id,
+         superseded_at = EXCLUDED.superseded_at,
          updated_at = NOW()
        RETURNING ${selectColumns(EDGE_ROW_COLUMNS)}`,
       [
@@ -1486,47 +1622,133 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
         edge.evidence,
         edge.temporal.validAt.toISOString(),
         edge.temporal.invalidAt?.toISOString() ?? null,
+        edge.temporal.expiredAt?.toISOString() ?? null,
+        edge.supersessionKey ?? null,
+        edge.supersededById ?? null,
+        edge.supersededAt?.toISOString() ?? null,
       ]
     )
-    return mapRowToEdge(rows[0]!)
+    const stored = mapRowToEdge(rows[0]!)
+    return this.applyEdgeSupersession(stored)
   }
 
-  async getEdges(entityId: string, direction?: 'in' | 'out' | 'both', scope?: TypeGraphStorageIdentity): Promise<SemanticEdge[]> {
+  private async applyEdgeSupersession(edge: SemanticEdge): Promise<SemanticEdge> {
+    if (!edge.supersessionKey) return edge
+    const tenantId = edge.scope.tenantId ?? 'public'
+    const graphId = edge.graphId ?? edge.scope.graphId ?? 'public'
+    const validAt = edge.temporal.validAt.toISOString()
+    const nextRows = await this.sqlWithRetry(
+      `SELECT id, valid_at
+         FROM ${this.edgesTable}
+        WHERE tenant_id = $1
+          AND graph_id = $2
+          AND supersession_key = $3
+          AND id <> $4
+          AND valid_at > $5
+        ORDER BY valid_at ASC
+        LIMIT 1`,
+      [tenantId, graphId, edge.supersessionKey, edge.id, validAt]
+    )
+    const next = nextRows[0]
+    if (next) {
+      await this.sqlWithRetry(
+        `UPDATE ${this.edgesTable}
+            SET invalid_at = CASE
+                  WHEN invalid_at IS NULL OR invalid_at > $5 THEN $5::timestamptz
+                  ELSE invalid_at
+                END,
+                expired_at = COALESCE(expired_at, NOW()),
+                superseded_by_id = COALESCE(superseded_by_id, $6),
+                superseded_at = COALESCE(superseded_at, NOW()),
+                updated_at = NOW()
+          WHERE tenant_id = $1
+            AND graph_id = $2
+            AND supersession_key = $3
+            AND id = $4`,
+        [tenantId, graphId, edge.supersessionKey, edge.id, new Date(next.valid_at as string).toISOString(), next.id as string]
+      )
+    }
+
+    const prevRows = await this.sqlWithRetry(
+      `SELECT id
+         FROM ${this.edgesTable}
+        WHERE tenant_id = $1
+          AND graph_id = $2
+          AND supersession_key = $3
+          AND id <> $4
+          AND valid_at < $5
+        ORDER BY valid_at DESC
+        LIMIT 1`,
+      [tenantId, graphId, edge.supersessionKey, edge.id, validAt]
+    )
+    const previous = prevRows[0]
+    if (previous) {
+      await this.sqlWithRetry(
+        `UPDATE ${this.edgesTable}
+            SET invalid_at = $5,
+                expired_at = COALESCE(expired_at, NOW()),
+                superseded_by_id = $4,
+                superseded_at = NOW(),
+                updated_at = NOW()
+          WHERE tenant_id = $1
+            AND graph_id = $2
+            AND supersession_key = $3
+            AND id = $6
+            AND (invalid_at IS NULL OR invalid_at > $5)`,
+        [tenantId, graphId, edge.supersessionKey, edge.id, validAt, previous.id as string]
+      )
+    }
+
+    const rows = await this.sqlWithRetry(
+      `SELECT ${selectColumns(EDGE_ROW_COLUMNS)}
+         FROM ${this.edgesTable}
+        WHERE tenant_id = $1 AND graph_id = $2 AND id = $3
+        LIMIT 1`,
+      [tenantId, graphId, edge.id]
+    )
+    return rows[0] ? mapRowToEdge(rows[0]) : edge
+  }
+
+  async getEdges(entityId: string, direction?: 'in' | 'out' | 'both', scope?: TypeGraphStorageIdentity, temporal?: GraphTemporalQueryOptions): Promise<SemanticEdge[]> {
     let query: string
     const identity = buildGraphVisibilityWhere(scope, 1)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
-    const params = [entityId, ...identity.params]
+    const temporalWhere = buildGraphTemporalWhere(temporal, 1 + identity.params.length)
+    const temporalClause = temporalWhere.where ? `AND ${temporalWhere.where}` : ''
+    const params = [entityId, ...identity.params, ...temporalWhere.params]
     if (direction === 'in') {
-      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable} WHERE target_type = 'entity' AND target_id = $1 AND source_type = 'entity' AND invalid_at IS NULL ${scopeClause}`
+      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable} WHERE target_type = 'entity' AND target_id = $1 AND source_type = 'entity' ${scopeClause} ${temporalClause}`
     } else if (direction === 'out') {
-      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable} WHERE source_type = 'entity' AND source_id = $1 AND target_type = 'entity' AND invalid_at IS NULL ${scopeClause}`
+      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable} WHERE source_type = 'entity' AND source_id = $1 AND target_type = 'entity' ${scopeClause} ${temporalClause}`
     } else {
       query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable}
                WHERE ((source_type = 'entity' AND source_id = $1 AND target_type = 'entity')
                    OR (target_type = 'entity' AND target_id = $1 AND source_type = 'entity'))
-                 AND invalid_at IS NULL ${scopeClause}`
+                 ${scopeClause} ${temporalClause}`
     }
     const rows = await this.sqlWithRetry(query, params)
     return rows.map(mapRowToEdge)
   }
 
-  async getEdgesBatch(entityIds: string[], direction: 'in' | 'out' | 'both' = 'both', scope?: TypeGraphStorageIdentity): Promise<SemanticEdge[]> {
+  async getEdgesBatch(entityIds: string[], direction: 'in' | 'out' | 'both' = 'both', scope?: TypeGraphStorageIdentity, temporal?: GraphTemporalQueryOptions): Promise<SemanticEdge[]> {
     if (entityIds.length === 0) return []
     const identity = buildGraphVisibilityWhere(scope, 1)
     const scopeClause = identity.where ? `AND ${identity.where}` : ''
+    const temporalWhere = buildGraphTemporalWhere(temporal, 1 + identity.params.length)
+    const temporalClause = temporalWhere.where ? `AND ${temporalWhere.where}` : ''
     let query: string
     if (direction === 'out') {
-      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable} WHERE source_type = 'entity' AND source_id = ANY($1::text[]) AND target_type = 'entity' AND invalid_at IS NULL ${scopeClause}`
+      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable} WHERE source_type = 'entity' AND source_id = ANY($1::text[]) AND target_type = 'entity' ${scopeClause} ${temporalClause}`
     } else if (direction === 'in') {
-      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable} WHERE target_type = 'entity' AND target_id = ANY($1::text[]) AND source_type = 'entity' AND invalid_at IS NULL ${scopeClause}`
+      query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable} WHERE target_type = 'entity' AND target_id = ANY($1::text[]) AND source_type = 'entity' ${scopeClause} ${temporalClause}`
     } else {
       query = `SELECT ${selectColumns(EDGE_ROW_COLUMNS)} FROM ${this.edgesTable}
                WHERE ((source_type = 'entity' AND source_id = ANY($1::text[]) AND target_type = 'entity')
                    OR (target_type = 'entity' AND target_id = ANY($1::text[]) AND source_type = 'entity'))
-                 AND invalid_at IS NULL
                  ${scopeClause}`
+      query += ` ${temporalClause}`
     }
-    const rows = await this.sqlWithRetry(query, [entityIds, ...identity.params])
+    const rows = await this.sqlWithRetry(query, [entityIds, ...identity.params, ...temporalWhere.params])
     return rows.map(mapRowToEdge)
   }
 
@@ -1544,10 +1766,31 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     return rows.map(mapRowToEdge)
   }
 
-  async invalidateEdge(id: string, invalidAt?: Date): Promise<void> {
+  async invalidateEdge(id: string, invalidAt?: Date, opts?: GraphInvalidationOptions | null): Promise<void> {
+    const expiredAt = dateParam(opts?.expiredAt) ?? (opts?.reason ? new Date().toISOString() : null)
     await this.sqlWithRetry(
-      `UPDATE ${this.edgesTable} SET invalid_at = $2, updated_at = NOW() WHERE id = $1`,
-      [id, (invalidAt ?? new Date()).toISOString()]
+      `UPDATE ${this.edgesTable}
+          SET invalid_at = $2,
+              expired_at = COALESCE($3::timestamptz, expired_at),
+              updated_at = NOW()
+        WHERE id = $1`,
+      [id, (invalidAt ?? new Date()).toISOString(), expiredAt]
+    )
+  }
+
+  async invalidateFactRecord(id: string, opts?: GraphInvalidationOptions | null, scope?: TypeGraphStorageIdentity): Promise<void> {
+    const invalidAt = dateParam(opts?.invalidAt) ?? new Date().toISOString()
+    const expiredAt = dateParam(opts?.expiredAt) ?? (opts?.reason ? new Date().toISOString() : null)
+    const identity = buildGraphVisibilityWhere(scope, 3)
+    const scopeClause = identity.where ? `AND ${identity.where}` : ''
+    await this.sqlWithRetry(
+      `UPDATE ${this.factRecordsTable}
+          SET invalid_at = $2,
+              expired_at = COALESCE($3::timestamptz, expired_at),
+              updated_at = NOW()
+        WHERE id = $1
+          ${scopeClause}`,
+      [id, invalidAt, expiredAt, ...identity.params]
     )
   }
 
@@ -2287,8 +2530,11 @@ function mapRowToEdge(row: Record<string, unknown>): SemanticEdge {
       validAt: new Date(row.valid_at as string),
       invalidAt: row.invalid_at ? new Date(row.invalid_at as string) : undefined,
       createdAt: new Date(row.created_at as string),
-      expiredAt: undefined,
+      expiredAt: row.expired_at ? new Date(row.expired_at as string) : undefined,
     },
+    supersessionKey: (row.supersession_key as string | null) ?? undefined,
+    supersededById: (row.superseded_by_id as string | null) ?? undefined,
+    supersededAt: row.superseded_at ? new Date(row.superseded_at as string) : undefined,
   }
 }
 
@@ -2306,9 +2552,14 @@ function mapRowToFact(row: Record<string, unknown>): SemanticFactRecord {
     weight: row.weight as number,
     embedding: undefined,
     scope: rowToIdentity(row),
+    validAt: new Date(row.valid_at as string),
+    invalidAt: row.invalid_at ? new Date(row.invalid_at as string) : undefined,
     createdAt: new Date(row.created_at as string),
     updatedAt: new Date(row.updated_at as string),
-    invalidAt: row.invalid_at ? new Date(row.invalid_at as string) : undefined,
+    expiredAt: row.expired_at ? new Date(row.expired_at as string) : undefined,
+    supersessionKey: (row.supersession_key as string | null) ?? undefined,
+    supersededById: (row.superseded_by_id as string | null) ?? undefined,
+    supersededAt: row.superseded_at ? new Date(row.superseded_at as string) : undefined,
     similarity: (row.similarity as number | null) ?? undefined,
   }
 }
@@ -2652,6 +2903,57 @@ function buildGraphVisibilityWhere(
   } else if (identity?.graphId) {
     params.push(identity.graphId)
     conditions.push(`${col('graph_id')} = ${p()}`)
+  }
+
+  return {
+    where: conditions.join(' AND '),
+    params,
+  }
+}
+
+function dateParam(value: unknown, fallbackNow = false): string | undefined {
+  if (value === undefined || value === null) return fallbackNow ? new Date().toISOString() : undefined
+  if (value === 'now') return new Date().toISOString()
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return undefined
+    return value.toISOString()
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value)
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString()
+  }
+  return undefined
+}
+
+function buildGraphTemporalWhere(
+  temporal: GraphTemporalQueryOptions | undefined,
+  paramOffset = 0,
+  alias?: string,
+): { where: string; params: unknown[] } {
+  const conditions: string[] = []
+  const params: unknown[] = []
+  const p = () => `$${paramOffset + params.length}`
+  const col = (name: string) => alias ? `${alias}.${name}` : name
+
+  const range = temporal?.validBetween as unknown
+  if (Array.isArray(range) && range.length >= 2) {
+    const start = dateParam(range[0])
+    const end = dateParam(range[1])
+    if (start && end) {
+      params.push(end)
+      conditions.push(`${col('valid_at')} <= ${p()}::timestamptz`)
+      params.push(start)
+      const startParam = p()
+      conditions.push(`(${col('invalid_at')} IS NULL OR ${col('invalid_at')} > ${startParam}::timestamptz)`)
+      conditions.push(`(${col('expired_at')} IS NULL OR ${col('expired_at')} > ${startParam}::timestamptz)`)
+    }
+  } else if (temporal?.includeInvalidated !== true) {
+    const asOf = dateParam(temporal?.asOf, true)!
+    params.push(asOf)
+    const asOfParam = p()
+    conditions.push(`${col('valid_at')} <= ${asOfParam}::timestamptz`)
+    conditions.push(`(${col('invalid_at')} IS NULL OR ${col('invalid_at')} > ${asOfParam}::timestamptz)`)
+    conditions.push(`(${col('expired_at')} IS NULL OR ${col('expired_at')} > ${asOfParam}::timestamptz)`)
   }
 
   return {

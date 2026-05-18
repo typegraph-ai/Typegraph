@@ -13,7 +13,7 @@ import type { PaginationOpts, PaginatedResult } from '../types/pagination.js'
 import type { MemoryHealthReport } from '../types/memory.js'
 import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
 import type { Job, JobFilter } from '../types/job.js'
-import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult, RememberOpts, ForgetOpts, CorrectOpts, HealthCheckOpts } from '../types/graph-bridge.js'
+import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult, GraphInvalidationOptions, RememberOpts, ForgetOpts, CorrectOpts, HealthCheckOpts } from '../types/graph-bridge.js'
 import { DEFAULT_BUCKET_ID, normalizeDocumentInput } from '../typegraph.js'
 import { HttpClient } from './http-client.js'
 import type { CloudConfig } from './http-client.js'
@@ -236,6 +236,14 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     },
     async upsertFacts(inputs: UpsertGraphFactInput[]): Promise<FactResult[]> {
       return client.post<FactResult[]>('/v1/graph/facts/batch', { facts: inputs })
+    },
+    async invalidateFact(id: string, opts?: (GraphInvalidationOptions & TypeGraphOptions) | null): Promise<void> {
+      const { identity, rest } = splitContextOpts<GraphInvalidationOptions & TypeGraphOptions>(opts as GraphInvalidationOptions & TypeGraphOptions | null, 'graph.invalidateFact')
+      return client.post<void>(`/v1/graph/facts/${e(id)}/invalidate`, { ...rest, identity })
+    },
+    async invalidateEdge(id: string, opts?: (GraphInvalidationOptions & TypeGraphOptions) | null): Promise<void> {
+      const { identity, rest } = splitContextOpts<GraphInvalidationOptions & TypeGraphOptions>(opts as GraphInvalidationOptions & TypeGraphOptions | null, 'graph.invalidateEdge')
+      return client.post<void>(`/v1/graph/edges/${e(id)}/invalidate`, { ...rest, identity })
     },
     async searchEntities(query: string, opts?: ({
       limit?: number

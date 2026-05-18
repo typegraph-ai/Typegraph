@@ -97,6 +97,38 @@ describe('IndexEngine', () => {
       const updatedDocs = [createTestDocument({ id: 'document-1', content: 'Updated content' })]
       const result = await ingestDocs(engine, bucket.id, updatedDocs, ingestOptions)
       expect(result.inserted).toBe(1)
+      expect(adapter.calls.some(call =>
+        call.method === 'deleteDocuments' &&
+        call.args[0]?.tenantId === 'tenant-1' &&
+        call.args[0]?.bucketId === bucket.id &&
+        call.args[0]?.documentIds?.[0] === 'document-1'
+      )).toBe(true)
+    })
+
+    it('replaces stale chunks when deterministic document content changes', async () => {
+      const document = createTestDocument({ id: 'document-1', content: 'Original content' })
+      const updated = createTestDocument({ id: 'document-1', content: 'Updated content' })
+      const { bucket, ingestOptions } = createMockBucket({ documents: [document] })
+      const engine = new IndexEngine(adapter, embedding)
+      const opts = { tenantId: 'tenant-1', ...ingestOptions }
+
+      await engine.ingestBatch(bucket.id, [{
+        document,
+        chunks: [
+          { content: 'Original chunk 0', chunkIndex: 0 },
+          { content: 'Original chunk 1', chunkIndex: 1 },
+          { content: 'Original chunk 2', chunkIndex: 2 },
+        ],
+      }], opts)
+
+      await engine.ingestBatch(bucket.id, [{
+        document: updated,
+        chunks: [{ content: 'Updated chunk 0', chunkIndex: 0 }],
+      }], opts)
+
+      const chunks = adapter._chunks.get(embeddingModelKey(embedding)) ?? []
+      expect(chunks.filter(chunk => chunk.documentId === 'document-1')).toHaveLength(1)
+      expect(chunks.find(chunk => chunk.documentId === 'document-1')?.content).toBe('Updated chunk 0')
     })
 
     it('re-indexes on model change', async () => {

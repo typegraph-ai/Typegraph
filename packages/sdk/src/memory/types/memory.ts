@@ -159,6 +159,9 @@ export interface SemanticGraphEdge {
   scope: typegraphIdentity
   accessScope?: AccessScope | undefined
   temporal: TemporalRecord
+  supersessionKey?: string | undefined
+  supersededById?: string | undefined
+  supersededAt?: Date | undefined
   evidence: string[]
   sourceChunkRef?: ChunkRef | undefined
   targetChunkRef?: ChunkRef | undefined
@@ -210,9 +213,14 @@ export interface SemanticFactRecord {
   embedding?: number[] | undefined
   scope: typegraphIdentity
   accessScope?: AccessScope | undefined
+  validAt: Date
+  invalidAt?: Date | undefined
   createdAt: Date
   updatedAt: Date
-  invalidAt?: Date | undefined
+  expiredAt?: Date | undefined
+  supersessionKey?: string | undefined
+  supersededById?: string | undefined
+  supersededAt?: Date | undefined
   similarity?: number | undefined
 }
 
@@ -239,6 +247,9 @@ export interface SemanticEdge {
   /** Optional record access scope. Empty or omitted means tenant-wide recall. */
   accessScope?: AccessScope | undefined
   temporal: TemporalRecord
+  supersessionKey?: string | undefined
+  supersededById?: string | undefined
+  supersededAt?: Date | undefined
   /** Memory IDs that provide evidence for this edge */
   evidence: string[]
 }

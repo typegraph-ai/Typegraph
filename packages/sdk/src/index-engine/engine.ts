@@ -267,6 +267,24 @@ export class IndexEngine {
     this.tripleExtractor = new ConfiguredExtractorRunner(extractor, this.knowledgeGraph, this.logger, this.extractionCoreferenceCache)
   }
 
+  private async replaceExistingDocumentIfContentChanged(args: {
+    stored: HashRecord | null | undefined
+    contentHash: string
+    document: DocumentInput
+    tenantId: string
+    bucketId: string
+  }): Promise<void> {
+    if (!this.adapter.deleteDocuments) return
+    if (!args.document.id) return
+    if (!args.stored || args.stored.contentHash === args.contentHash) return
+
+    await this.adapter.deleteDocuments({
+      tenantId: args.tenantId,
+      bucketId: args.bucketId,
+      documentIds: [args.document.id],
+    })
+  }
+
   /**
    * Ingest a document with pre-built chunks.
    * Skips the default chunker - uses the provided chunks directly.
@@ -295,6 +313,18 @@ export class IndexEngine {
     const contentHash = sha256(cleanDocument.content)
     const deduplicateBy = opts.deduplicateBy ?? ['url']
     const ikey = resolveIdempotencyKey(cleanDocument, deduplicateBy)
+    const storeKey = buildHashStoreKey(tenantId, bucketId, ikey)
+
+    if (!dryRun) {
+      const stored = await this.adapter.hashStore.get(storeKey)
+      await this.replaceExistingDocumentIfContentChanged({
+        stored,
+        contentHash,
+        document: cleanDocument,
+        tenantId,
+        bucketId,
+      })
+    }
 
     let documentId = cleanDocument.id ?? generateId('doc')
     let documentWasCreated = true
@@ -394,7 +424,6 @@ export class IndexEngine {
           await this.adapter.updateDocumentStatus(tenantId, documentId, 'complete', cleanChunks.length)
         }
 
-        const storeKey = buildHashStoreKey(tenantId, bucketId, ikey)
         await this.adapter.hashStore.set(storeKey, {
           idempotencyKey: ikey,
           contentHash,
@@ -510,9 +539,11 @@ export class IndexEngine {
       const { chunks } = cleanItems[i]!
       const { document, contentHash, ikey, storeKey } = documentMeta[i]!
 
+      let stored: HashRecord | null = null
+
       // Hash store dedup: skip documents whose content + model haven't changed
       if (!dryRun) {
-        const stored = hashMap
+        stored = hashMap
           ? hashMap.get(storeKey) ?? null
           : await this.adapter.hashStore.get(storeKey)
         if (stored?.contentHash === contentHash && stored.embeddingModel === modelId) {
@@ -530,6 +561,14 @@ export class IndexEngine {
             continue
           }
         }
+
+        await this.replaceExistingDocumentIfContentChanged({
+          stored,
+          contentHash,
+          document,
+          tenantId,
+          bucketId,
+        })
       }
 
       let documentId = document.id ?? generateId('doc')

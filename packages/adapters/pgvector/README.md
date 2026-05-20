@@ -5,7 +5,7 @@ Postgres + pgvector storage for TypeGraph self-hosted deployments.
 This adapter is the default self-hosted storage target for the SDK. It stores
 documents, chunks, buckets, business events, threads, links, jobs, policies,
 ontology config, telemetry, and the memory/graph backing store used by
-`graphExtraction`, `graph.*`, and `memory.*`.
+`graphExtraction`, `graph.*`, `memory.*`, and database-backed memory artifacts.
 
 ## Install
 
@@ -129,8 +129,16 @@ Core storage created by `PgVectorAdapter.deploy()`:
 When graph/memory are enabled, TypeGraph also initializes the memory graph backing
 store through `PgMemoryStoreAdapter`. Those internal tables include memories,
 semantic entities, entity external IDs, graph edges, chunk mentions, and fact
-records. Public SDK calls expose these as entities, facts, graph results, and
-private memory APIs.
+records. The memory store also owns `typegraph_memory_artifacts`, which stores
+agent-facing files such as `memory_summary.md`, `MEMORY.md`, raw memories,
+rollout summaries, phase-two selection JSON, and optional skill files. Public
+SDK calls expose these as entities, facts, graph results, private memory APIs,
+and `memory.artifacts` CRUD.
+
+Self-hosted conversation memory is fully database-backed. `memory.extractThread`
+reads stored thread events, writes raw memory and rollout summary artifacts, and
+`memory.consolidate` rewrites the compact summary and handbook artifacts. No
+local Markdown files are written by the adapter.
 
 ## Embeddings
 
@@ -210,6 +218,7 @@ The adapter supports:
 - Metadata, bucket, document, tenant, identity, and graph filtering.
 - Recency fields used by SDK recency scoring.
 - Graph/memory backing store when configured through TypeGraph.
+- Database-backed memory artifacts for conversation memory.
 
 Use SDK search options to select resources and weights:
 
@@ -248,6 +257,10 @@ existing database naming scheme.
 
 `tablePrefix` controls the dynamic per-embedding-model chunk table prefix, not
 every TypeGraph table name.
+
+The low-level `PgMemoryStoreAdapter` also accepts table overrides, including
+`artifactsTable`, for advanced integrations that construct the memory store
+directly.
 
 ## Exports
 

@@ -53,8 +53,17 @@ export type SearchRerankOptions =
   | boolean
   | {
       topK?: number | undefined
-      domain?: 'general' | 'legal' | 'code' | 'medical' | undefined
     }
+
+export interface SearchRerankExplanation {
+  requested: boolean
+  applied: boolean
+  topK: number
+  candidateCount: number
+  finalCount: number
+  reranker?: string | undefined
+  warning?: string | undefined
+}
 
 export interface SearchExplanation {
   requestedGraph: string
@@ -66,6 +75,7 @@ export interface SearchExplanation {
   candidateCounts: Partial<Record<SearchResource, number>>
   timings: Record<string, number>
   graphTrace?: GraphSearchTrace | undefined
+  rerank?: SearchRerankExplanation | undefined
   warnings?: string[] | undefined
   skippedResources?: Partial<Record<SearchResource, string>> | undefined
 }

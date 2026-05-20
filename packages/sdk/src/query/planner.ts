@@ -1,5 +1,5 @@
 import type { Bucket } from '../types/bucket.js'
-import type { QueryChunkResult, QueryResponse, QueryResults, RetrievalSwitches, RawScores, NormalizedScores, SearchOptions, SearchResource, SearchWeights, SearchFusion, OutputScores } from '../types/query.js'
+import type { QueryChunkResult, QueryResponse, QueryResults, RetrievalSwitches, RawScores, NormalizedScores, SearchOptions, SearchResource, SearchWeights, SearchFusion, OutputScores, SearchRerankExplanation } from '../types/query.js'
 import type { VectorStoreAdapter } from '../types/adapter.js'
 import type { Embedder } from '../embedding/provider.js'
 import { embeddingModelKey } from '../embedding/provider.js'
@@ -7,6 +7,7 @@ import type { EntityResult, FactResult, GraphSearchTrace, KnowledgeGraphBridge }
 import type { typegraphEvent, typegraphEventSink } from '../types/events.js'
 import type { typegraphLogger } from '../types/logger.js'
 import type { ChunkRef } from '../types/chunk.js'
+import type { Reranker } from '../types/extractor.js'
 import { ConfigError } from '../types/errors.js'
 import { compactTypeGraphContext, contextTelemetry, contextToIdentity, optionalCompactObject } from '../utils/input.js'
 import { IndexedRunner } from './runners/indexed.js'
@@ -24,6 +25,8 @@ const DEFAULT_SEARCH_WEIGHTS: Required<Record<keyof SearchWeights, number | fals
   recency: 0.3,
 }
 const DEFAULT_FUSION: Required<SearchFusion> = { method: 'rrf', k: 60 }
+const DEFAULT_SEARCH_LIMIT = 10
+const MAX_RERANK_CANDIDATES = 100
 
 function resolveResources(opts?: SearchOptions | null): SearchResource[] {
   const resources = opts?.resources ?? DEFAULT_SEARCH_RESOURCES
@@ -48,6 +51,39 @@ function resolveFusion(opts?: SearchOptions | null): Required<SearchFusion> {
 
 function hasWeight(value: number | false | undefined): value is number {
   return typeof value === 'number' && value > 0
+}
+
+function positiveInteger(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined
+}
+
+function resolveRequestedCount(opts: SearchOptions): number {
+  const explicitLimit = typeof opts.limit === 'number' && Number.isFinite(opts.limit)
+    ? Math.max(0, Math.floor(opts.limit))
+    : undefined
+  if (explicitLimit !== undefined) return explicitLimit
+
+  const rerankTopK = typeof opts.rerank === 'object' && opts.rerank !== null
+    ? positiveInteger(opts.rerank.topK)
+    : undefined
+  return rerankTopK ?? DEFAULT_SEARCH_LIMIT
+}
+
+function resolveRerankTopK(opts: SearchOptions, finalCount: number): number {
+  if (typeof opts.rerank === 'object' && opts.rerank !== null) {
+    return positiveInteger(opts.rerank.topK) ?? finalCount
+  }
+  return finalCount
+}
+
+function rerankRequested(opts: SearchOptions): boolean {
+  return opts.rerank === true || (typeof opts.rerank === 'object' && opts.rerank !== null)
+}
+
+function resolveRerankCandidateLimit(topK: number): number {
+  return Math.min(Math.max(topK * 3, topK + 10), MAX_RERANK_CANDIDATES)
 }
 
 /** Resolve public resources/weights into internal retrieval switches. */
@@ -159,6 +195,17 @@ interface ScoredCandidate {
   modes: string[]
 }
 
+interface RerankState {
+  requested: boolean
+  applied: boolean
+  topK: number
+  candidateLimit: number
+  candidateCount: number
+  finalCount: number
+  reranker?: string | undefined
+  warning?: string | undefined
+}
+
 function scoreCandidate(
   r: RetrievalCandidate,
   switches: Required<RetrievalSwitches>,
@@ -267,6 +314,103 @@ function partitionResults(
   }
 }
 
+function chunkResultIdentityKey(result: QueryChunkResult): string {
+  if (result.document.id && result.chunk.index !== undefined && result.document.bucketId) {
+    return `${result.document.bucketId}:${result.document.id}:${result.chunk.index}`
+  }
+  return result.content
+}
+
+function isQueryChunkResult(value: unknown): value is QueryChunkResult {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<QueryChunkResult>
+  return typeof candidate.content === 'string' &&
+    typeof candidate.score === 'number' &&
+    typeof candidate.document?.id === 'string' &&
+    typeof candidate.document?.bucketId === 'string' &&
+    typeof candidate.chunk?.index === 'number'
+}
+
+function normalizeRerankedChunks(original: QueryChunkResult[], returned: unknown[]): QueryChunkResult[] {
+  const byKey = new Map(original.map(chunk => [chunkResultIdentityKey(chunk), chunk]))
+  const used = new Set<string>()
+  const ordered: QueryChunkResult[] = []
+
+  for (const value of returned) {
+    if (!isQueryChunkResult(value)) continue
+    const key = chunkResultIdentityKey(value)
+    if (used.has(key)) continue
+    const originalChunk = byKey.get(key)
+    if (!originalChunk) continue
+    used.add(key)
+    ordered.push(originalChunk)
+  }
+
+  for (const chunk of original) {
+    const key = chunkResultIdentityKey(chunk)
+    if (used.has(key)) continue
+    used.add(key)
+    ordered.push(chunk)
+  }
+
+  return ordered
+}
+
+function rerankScore(index: number, total: number): number {
+  if (total <= 1) return 1
+  return (total - index) / total
+}
+
+function applyRerankScores(chunks: QueryChunkResult[]): QueryChunkResult[] {
+  const total = chunks.length
+  return chunks.map((chunk, index) => {
+    const score = rerankScore(index, total)
+    return {
+      ...chunk,
+      score,
+      scores: {
+        ...chunk.scores,
+        output: {
+          ...chunk.scores.output,
+          reranker: score,
+        },
+      },
+    }
+  })
+}
+
+async function applyReranker(
+  query: string,
+  chunks: QueryChunkResult[],
+  reranker: Reranker<QueryChunkResult>,
+  state: RerankState,
+  abortSignal?: AbortSignal,
+): Promise<QueryChunkResult[]> {
+  const reranked = await reranker.rerank(query, chunks, {
+    topK: state.topK,
+    abortSignal,
+  })
+  const returned = Array.isArray(reranked) ? reranked : []
+  const ordered = normalizeRerankedChunks(chunks, returned)
+  state.applied = true
+  state.candidateCount = chunks.length
+  return applyRerankScores(ordered)
+}
+
+function rerankExplanation(state: RerankState): SearchRerankExplanation | undefined {
+  if (!state.requested) return undefined
+  const explanation: SearchRerankExplanation = {
+    requested: state.requested,
+    applied: state.applied,
+    topK: state.topK,
+    candidateCount: state.candidateCount,
+    finalCount: state.finalCount,
+  }
+  if (state.reranker) explanation.reranker = state.reranker
+  if (state.warning) explanation.warning = state.warning
+  return explanation
+}
+
 function resultCounts(results: QueryResults): {
   resultCount: number
   chunkCount: number
@@ -292,6 +436,7 @@ function buildExplanation(
     results: QueryResults
     bucketTimings: QueryResponse['buckets']
     graphTrace?: GraphSearchTrace | undefined
+    rerank?: SearchRerankExplanation | undefined
     warnings: string[]
     skippedResources?: Partial<Record<SearchResource, string>> | undefined
   }
@@ -313,6 +458,7 @@ function buildExplanation(
     ),
   }
   if (opts.graphTrace) explanation.graphTrace = opts.graphTrace
+  if (opts.rerank) explanation.rerank = opts.rerank
   if (opts.warnings.length > 0) explanation.warnings = opts.warnings
   if (opts.skippedResources) explanation.skippedResources = opts.skippedResources
   return explanation
@@ -338,12 +484,13 @@ export class QueryPlanner {
     private eventSink?: typegraphEventSink,
     private logger?: typegraphLogger,
     private tenantId?: string,
+    private reranker?: Reranker<QueryChunkResult>,
   ) {}
 
   async execute(text: string, opts?: SearchOptions | null): Promise<QueryResponse> {
     const normalizedOpts = optionalCompactObject<SearchOptions>(opts, 'QueryPlanner.execute') as SearchOptions
     const startMs = Date.now()
-    const count = normalizedOpts.limit ?? 10
+    const count = resolveRequestedCount(normalizedOpts)
     const resources = resolveResources(normalizedOpts)
     const publicWeights = resolveWeights(normalizedOpts)
     const fusion = resolveFusion(normalizedOpts)
@@ -354,6 +501,21 @@ export class QueryPlanner {
     const requestedGraph = normalizedOpts.graph ?? 'public'
     const graphIds = normalizedOpts.graphIds ?? [requestedGraph]
     const onBucketError = normalizedOpts.onBucketError ?? 'throw'
+    const shouldRerank = rerankRequested(normalizedOpts)
+    const rerankTopK = resolveRerankTopK(normalizedOpts, count)
+    const rerankState: RerankState = {
+      requested: shouldRerank,
+      applied: false,
+      topK: rerankTopK,
+      candidateLimit: count,
+      candidateCount: count,
+      finalCount: count,
+    }
+    if (shouldRerank && this.reranker && count > 0) {
+      rerankState.reranker = this.reranker.name
+      rerankState.candidateLimit = resolveRerankCandidateLimit(rerankTopK)
+    }
+    const retrievalCount = shouldRerank && this.reranker && count > 0 ? rerankState.candidateLimit : count
 
     // Auto-weights: classify query type and use optimized weight profile.
     // User-provided weights always override.
@@ -375,7 +537,7 @@ export class QueryPlanner {
       this.logger?.debug('Auto-weights', { queryType: classification.type, confidence: classification.confidence, weights: classification.weights })
     }
 
-    this.logger?.debug('Search start', { text: text.slice(0, 100), retrieval: switches, count })
+    this.logger?.debug('Search start', { text: text.slice(0, 100), retrieval: switches, count, retrievalCount, rerank: shouldRerank })
 
     // Filter to requested buckets or use all
     const activeBucketIds = normalizedOpts.buckets
@@ -416,7 +578,7 @@ export class QueryPlanner {
       }
       const resolved = await this.knowledgeGraph.resolveEntityScope(normalizedOpts.entityScope, identity, {
         bucketIds: activeBucketIds,
-        limit: Math.max(count * 50, 200),
+        limit: Math.max(retrievalCount * 50, 200),
       })
       scopedEntityIds = resolved.entityIds
       scopedChunkRefs = resolved.chunkRefs
@@ -441,7 +603,7 @@ export class QueryPlanner {
         try {
           const graphRunner = new GraphRunner(this.knowledgeGraph!)
           const graphRun = await withTimeout(
-            graphRunner.run(text, identity, count, activeBucketIds, {
+            graphRunner.run(text, identity, retrievalCount, activeBucketIds, {
               ...normalizedOpts.graphOptions,
               ...(normalizedOpts.entityScope ? { entityScope: normalizedOpts.entityScope, resolvedEntityIds: scopedEntityIds } : {}),
             }),
@@ -461,10 +623,28 @@ export class QueryPlanner {
       }
 
       const allResults = runnerArrays.length > 1
-        ? mergeAndRank(runnerArrays, count, undefined, switches, effectiveScoreWeights)
-        : (runnerArrays[0] ?? []).slice(0, count)
+        ? mergeAndRank(runnerArrays, retrievalCount, undefined, switches, effectiveScoreWeights)
+        : (runnerArrays[0] ?? []).slice(0, retrievalCount)
 
       const results = partitionResults(allResults, switches, Math.max(1, runnerArrays.length), needsGraph, graphFacts, graphEntities, graphTrace, effectiveScoreWeights)
+      let rerankWarning: string | undefined
+      if (shouldRerank && !this.reranker) {
+        rerankWarning = 'Search rerank was requested but no reranker is configured; returning non-reranked results.'
+        rerankState.warning = rerankWarning
+        warnings.push(rerankWarning)
+        this.logger?.warn(rerankWarning)
+      } else if (shouldRerank && this.reranker && results.chunks.length > 0) {
+        try {
+          results.chunks = await applyReranker(text, results.chunks, this.reranker, rerankState, normalizedOpts.abortSignal)
+        } catch (err) {
+          rerankWarning = `Search reranker failed: ${err instanceof Error ? err.message : String(err)}; returning non-reranked results.`
+          rerankState.warning = rerankWarning
+          warnings.push(rerankWarning)
+          this.logger?.warn(rerankWarning)
+        }
+      }
+      rerankState.candidateCount = results.chunks.length
+      results.chunks = results.chunks.slice(0, count)
 
       const bucketTimings: QueryResponse['buckets'] = {}
       if (needsGraph) bucketTimings['__graph__'] = { mode: 'graph', resultCount: results.chunks.filter(result => result.matchedBy.includes('graph')).length, durationMs: Date.now() - startMs, status: 'ok' }
@@ -481,11 +661,19 @@ export class QueryPlanner {
             query: text,
             retrieval: switches,
             requested_count: count,
+            candidate_count: rerankState.candidateCount,
+            candidate_limit: retrievalCount,
             result_count: counts.resultCount,
             chunk_count: counts.chunkCount,
             fact_count: counts.factCount,
             entity_count: counts.entityCount,
             bucket_count: activeBucketIds.length,
+            requested_graph: requestedGraph,
+            graph_closure: graphIds,
+            active_bucket_ids: activeBucketIds,
+            rerank_requested: rerankState.requested,
+            rerank_applied: rerankState.applied,
+            reranker: rerankState.reranker,
           },
           durationMs,
           traceId: telemetry.traceId,
@@ -500,9 +688,9 @@ export class QueryPlanner {
       return {
         results,
         buckets: bucketTimings,
-        query: { text, durationMs, mergeStrategy: 'rrf' },
+        query: { text, durationMs, mergeStrategy: rerankState.applied ? 'rrf+rerank' : 'rrf' },
         explanation: normalizedOpts.explain
-          ? buildExplanation({ requestedGraph, graphClosure: graphIds, resources, weights: publicWeights, fusion, results, bucketTimings, graphTrace, warnings })
+          ? buildExplanation({ requestedGraph, graphClosure: graphIds, resources, weights: publicWeights, fusion, results, bucketTimings, graphTrace, rerank: rerankExplanation(rerankState), warnings })
           : undefined,
         warnings: warnings.length > 0 ? warnings : undefined,
       }
@@ -521,7 +709,7 @@ export class QueryPlanner {
           runner.run(
             text,
             modelGroups,
-            count,
+            retrievalCount,
             identity,
             { ...(normalizedOpts.documentFilter ?? {}), tenantId: identity.tenantId, graphIds },
             switches,
@@ -580,7 +768,7 @@ export class QueryPlanner {
     if (needsIndexedSearch && this.knowledgeGraph?.searchKnowledge) {
       try {
         const direct = await this.knowledgeGraph.searchKnowledge(text, identity, {
-          count,
+          count: retrievalCount,
           retrieval: switches,
           entityScope: normalizedOpts.entityScope,
           resolvedEntityIds: scopedEntityIds,
@@ -598,7 +786,7 @@ export class QueryPlanner {
     }
     if (needsGraph) {
       const graphRun = await withTimeout(
-        new GraphRunner(this.knowledgeGraph!).run(text, identity, count, activeBucketIds, {
+        new GraphRunner(this.knowledgeGraph!).run(text, identity, retrievalCount, activeBucketIds, {
           ...normalizedOpts.graphOptions,
           asOf: normalizedOpts.asOf,
           validBetween: normalizedOpts.validBetween,
@@ -651,10 +839,28 @@ export class QueryPlanner {
     // Merge and rank
     const needsMerge = runnerArrays.length > 1 || modelGroups.size > 1
     const mergedResults = needsMerge
-      ? mergeAndRank(runnerArrays, count, undefined, switches, effectiveScoreWeights)
-      : allResults.slice(0, count)
+      ? mergeAndRank(runnerArrays, retrievalCount, undefined, switches, effectiveScoreWeights)
+      : allResults.slice(0, retrievalCount)
 
     const results = partitionResults(mergedResults, switches, Math.max(1, runnerArrays.length), needsGraph, graphFacts, graphEntities, graphTrace, effectiveScoreWeights)
+    let rerankWarning: string | undefined
+    if (shouldRerank && !this.reranker) {
+      rerankWarning = 'Search rerank was requested but no reranker is configured; returning non-reranked results.'
+      rerankState.warning = rerankWarning
+      warnings.push(rerankWarning)
+      this.logger?.warn(rerankWarning)
+    } else if (shouldRerank && this.reranker && results.chunks.length > 0) {
+      try {
+        results.chunks = await applyReranker(text, results.chunks, this.reranker, rerankState, normalizedOpts.abortSignal)
+      } catch (err) {
+        rerankWarning = `Search reranker failed: ${err instanceof Error ? err.message : String(err)}; returning non-reranked results.`
+        rerankState.warning = rerankWarning
+        warnings.push(rerankWarning)
+        this.logger?.warn(rerankWarning)
+      }
+    }
+    rerankState.candidateCount = results.chunks.length
+    results.chunks = results.chunks.slice(0, count)
 
     const durationMs = Date.now() - startMs
     const counts = resultCounts(results)
@@ -668,11 +874,19 @@ export class QueryPlanner {
           query: text,
           retrieval: switches,
           requested_count: count,
+          candidate_count: rerankState.candidateCount,
+          candidate_limit: retrievalCount,
           result_count: counts.resultCount,
           chunk_count: counts.chunkCount,
           fact_count: counts.factCount,
           entity_count: counts.entityCount,
           bucket_count: activeBucketIds.length,
+          requested_graph: requestedGraph,
+          graph_closure: graphIds,
+          active_bucket_ids: activeBucketIds,
+          rerank_requested: rerankState.requested,
+          rerank_applied: rerankState.applied,
+          reranker: rerankState.reranker,
         },
         durationMs,
         traceId: telemetry.traceId,
@@ -690,10 +904,10 @@ export class QueryPlanner {
       query: {
         text,
         durationMs,
-        mergeStrategy: 'rrf',
+        mergeStrategy: rerankState.applied ? 'rrf+rerank' : 'rrf',
       },
       explanation: normalizedOpts.explain
-        ? buildExplanation({ requestedGraph, graphClosure: graphIds, resources, weights: publicWeights, fusion, results, bucketTimings, graphTrace, warnings })
+        ? buildExplanation({ requestedGraph, graphClosure: graphIds, resources, weights: publicWeights, fusion, results, bucketTimings, graphTrace, rerank: rerankExplanation(rerankState), warnings })
         : undefined,
       warnings: warnings.length > 0 ? warnings : undefined,
     }

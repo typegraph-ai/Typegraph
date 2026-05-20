@@ -233,9 +233,88 @@ describe('PgMemoryStoreAdapter', () => {
     expect(ddl).toContain('supersession_idx')
     expect(ddl).toContain("CHECK (source_type IN ('entity', 'chunk', 'memory'))")
     expect(ddl).toContain('typegraph_entity_chunk_mentions')
+    expect(ddl).toContain('typegraph_memory_artifacts')
+    expect(ddl).toContain('PRIMARY KEY (tenant_id, graph_id, layout_id, path)')
+    expect(ddl).toContain('content_hash')
+    expect(ddl).toContain("CHECK (kind IN ('summary', 'handbook', 'raw_memory', 'raw_memories', 'rollout_summary', 'phase_two_selection', 'skill', 'other'))")
     expect(ddl).not.toMatch(/\bscope\s+JSONB\b/)
     expect(ddl).not.toContain('typegraph_passage_nodes')
     expect(ddl).not.toContain('typegraph_passage_entity_edges')
+  })
+
+  it('persists memory artifacts by tenant, graph, layout, and path', async () => {
+    const rows = new Map<string, Record<string, unknown>>()
+    const rowKey = (tenantId: unknown, graphId: unknown, layoutId: unknown, path: unknown) =>
+      [tenantId, graphId, layoutId, path].join('|')
+    const sql = vi.fn(async (query: string, params?: unknown[]) => {
+      const bound = params ?? []
+      if (query.includes('INSERT INTO typegraph_memory_artifacts')) {
+        const row = {
+          tenant_id: bound[0],
+          graph_id: bound[1],
+          layout_id: bound[2],
+          path: bound[3],
+          kind: bound[4],
+          content: bound[5],
+          metadata: bound[6],
+          content_hash: bound[7],
+          created_at: '2026-05-20T00:00:00.000Z',
+          updated_at: '2026-05-20T00:00:00.000Z',
+        }
+        rows.set(rowKey(bound[0], bound[1], bound[2], bound[3]), row)
+        return [row]
+      }
+      if (query.includes('SELECT tenant_id, graph_id, layout_id, path, kind, content')) {
+        if (query.includes('path = $4')) {
+          const row = rows.get(rowKey(bound[0], bound[1], bound[2], bound[3]))
+          return row ? [row] : []
+        }
+        const graphIds = bound[1] as string[]
+        const kind = query.includes('kind = $') ? bound[bound.length - 1] : undefined
+        return [...rows.values()].filter(row =>
+          row.tenant_id === bound[0]
+          && graphIds.includes(row.graph_id as string)
+          && (!query.includes('layout_id = $') || row.layout_id === bound[2])
+          && (!query.includes('path LIKE') || String(row.path).startsWith(String(bound[bound.length - 1]).replace(/%$/, '')))
+          && (!kind || row.kind === kind)
+        )
+      }
+      if (query.includes('DELETE FROM typegraph_memory_artifacts')) {
+        rows.delete(rowKey(bound[0], bound[1], bound[2], bound[3]))
+      }
+      return []
+    })
+    const store = new PgMemoryStoreAdapter({ sql, embeddingDimensions: 4 })
+
+    const artifact = await store.upsertArtifact({
+      identity: { tenantId: 'tenant-1', graphId: 'memory:user:user-1' },
+      layoutId: 'default',
+      path: 'MEMORY.md',
+      kind: 'handbook',
+      content: '# Task Group: Memory',
+      contentHash: 'hash-1',
+      metadata: { selected: 1 },
+    })
+    const loaded = await store.getArtifact({ tenantId: 'tenant-1', graphId: 'memory:user:user-1' }, 'default', 'MEMORY.md')
+    const listed = await store.listArtifacts({
+      identity: { tenantId: 'tenant-1', graphId: 'memory:user:user-1' },
+      layoutId: 'default',
+      kind: 'handbook',
+    })
+    await store.deleteArtifact({ tenantId: 'tenant-1', graphId: 'memory:user:user-1' }, 'default', 'MEMORY.md')
+
+    expect(artifact).toMatchObject({
+      tenantId: 'tenant-1',
+      graphId: 'memory:user:user-1',
+      layoutId: 'default',
+      path: 'MEMORY.md',
+      kind: 'handbook',
+      contentHash: 'hash-1',
+      metadata: { selected: 1 },
+    })
+    expect(loaded?.path).toBe('MEMORY.md')
+    expect(listed.map(item => item.path)).toEqual(['MEMORY.md'])
+    expect(await store.getArtifact({ tenantId: 'tenant-1', graphId: 'memory:user:user-1' }, 'default', 'MEMORY.md')).toBeNull()
   })
 
   it('upserts entity-to-chunk associations as typed graph edges with chunk refs', async () => {

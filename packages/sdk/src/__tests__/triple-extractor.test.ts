@@ -758,8 +758,9 @@ describe('TripleExtractor', () => {
     const mentions = vi.mocked(graph.addEntityMentions).mock.calls[0]![0]
     expect(mentions[0]).toEqual(expect.objectContaining({
       name: 'Cæsar Simon',
-      aliases: expect.arrayContaining(['Cole Conway', 'Conway', 'Cousin Cæsar']),
+      aliases: expect.arrayContaining(['Cole Conway', 'Conway']),
     }))
+    expect(mentions[0]!.aliases).not.toContain('Cousin Cæsar')
     expect(graph.addTriple).toHaveBeenCalledWith(expect.objectContaining({
       subject: 'Cæsar Simon',
       subjectAliases: expect.arrayContaining(['Cole Conway']),
@@ -1022,14 +1023,86 @@ describe('TripleExtractor', () => {
     )
 
     const mentions = vi.mocked(graph.addEntityMentions).mock.calls[0]![0]
-    expect(mentions[0]!.aliases).toContain('Adarsh')
     expect(mentions[0]!.aliases).not.toEqual(expect.arrayContaining([
+      'Adarsh',
       'Hi Adarsh',
       'Inform Adarsh Tadimari',
       "Plotline's Adarsh",
       "Adarsh's",
       'Both Adarsh',
     ]))
+  })
+
+  it('drops bare given-name person aliases and standalone duplicate first-name entities', async () => {
+    const graph: KnowledgeGraphBridge = {
+      addEntityMentions: vi.fn().mockResolvedValue(undefined),
+      addTriple: vi.fn().mockResolvedValue(undefined),
+    }
+    const extractor = new TripleExtractor({
+      llm: mockLLM({
+        entities: [
+          {
+            name: 'Ada Lovelace',
+            type: 'person',
+            description: 'A mathematician mentioned in the text.',
+            aliases: ['Ada', 'Dr Ada'],
+          },
+          {
+            name: 'Ada',
+            type: 'person',
+            description: 'A bare first-name reference to Ada Lovelace.',
+            aliases: [],
+          },
+          {
+            name: 'Alan Turing',
+            type: 'person',
+            description: 'A mathematician mentioned in the text.',
+            aliases: ['Alan'],
+          },
+          {
+            name: 'Kevin Durant',
+            type: 'person',
+            description: 'A basketball player mentioned in the text.',
+            aliases: ['Kevin'],
+          },
+          {
+            name: 'Madonna',
+            type: 'person',
+            description: 'A mononymous performer mentioned in the text.',
+            aliases: [],
+          },
+          {
+            name: 'Cher',
+            type: 'person',
+            description: 'A mononymous performer mentioned in the text.',
+            aliases: [],
+          },
+        ],
+        relationships: [],
+      }),
+      graph,
+      twoPass: false,
+    })
+
+    await extractor.extractFromChunk(
+      'Ada Lovelace met Alan Turing. Ada later wrote to Alan. Kevin Durant joined the team and Kevin later spoke. Madonna and Cher performed.',
+      'bucket-1',
+      0,
+      'source-1',
+    )
+
+    const mentions = vi.mocked(graph.addEntityMentions).mock.calls[0]![0]
+    expect(mentions.map(m => m.name)).toEqual(expect.arrayContaining([
+      'Ada Lovelace',
+      'Alan Turing',
+      'Kevin Durant',
+      'Madonna',
+      'Cher',
+    ]))
+    expect(mentions.filter(m => m.name === 'Ada')).toHaveLength(0)
+    expect(mentions.find(m => m.name === 'Ada Lovelace')!.aliases).not.toEqual(expect.arrayContaining(['Ada', 'Dr Ada']))
+    expect(mentions.find(m => m.name === 'Alan Turing')!.aliases).not.toContain('Alan')
+    expect(mentions.find(m => m.name === 'Kevin Durant')!.aliases).not.toContain('Kevin')
   })
 
   it('propagates extraction errors to the index engine', async () => {

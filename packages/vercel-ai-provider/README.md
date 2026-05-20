@@ -5,7 +5,7 @@ Vercel AI SDK integration for TypeGraph tools and memory context helpers.
 ## Install
 
 ```bash
-npm install ai @ai-sdk/openai @typegraph-ai/sdk @typegraph-ai/vercel-ai-provider
+pnpm add ai @ai-sdk/openai @typegraph-ai/sdk @typegraph-ai/vercel-ai-provider
 ```
 
 ## Basic Usage
@@ -174,13 +174,50 @@ const memories = await tg.memory.recall('What answer style does this user prefer
 console.log(memories)
 ```
 
+## Memory Middleware
+
+`typegraphMemoryMiddleware()` enriches prompts from scoped memory recall and can
+capture response turns back into a TypeGraph thread. Conversation artifact
+extraction is opt-in.
+
+```ts
+import { typegraphMemoryMiddleware } from '@typegraph-ai/vercel-ai-provider'
+
+const memory = typegraphMemoryMiddleware(tg, {
+  context: {
+    userId: UserId('demo-user'),
+    threadId: ThreadId('demo-thread'),
+    agentId: AgentId('support-agent'),
+  },
+  includeFacts: true,
+  format: 'xml',
+  conversationMemory: {
+    enabled: true,
+    mode: 'extract_and_consolidate',
+  },
+})
+
+const enrichedPrompt = await memory.enrichPrompt('How should I reply?')
+
+await memory.afterResponse([
+  { role: 'user', content: 'How should I reply?' },
+  { role: 'assistant', content: 'Use a concise answer and mention the SSO workaround.' },
+])
+```
+
+`afterResponse()` always stores supplied turns with `thread.addTurn()`. When
+`conversationMemory.enabled` is true, it also calls `memory.extractThread()`.
+When `mode` is `extract_and_consolidate`, it follows with
+`memory.consolidate()`. Leave `conversationMemory` unset when you only want
+prompt enrichment and turn capture.
+
 ## API
 
 | Export | Description |
 | --- | --- |
 | `typegraphTools(typegraph, opts)` | Full Vercel AI SDK tool set |
 | `typegraphMemoryTools(memory, opts)` | Memory-only subset for remember/correct |
-| `typegraphMemoryMiddleware(memory, opts)` | Prompt enrichment helper for memory recall |
+| `typegraphMemoryMiddleware(typegraph, opts)` | Prompt enrichment, turn capture, and optional conversation memory extraction |
 
 ## Related
 

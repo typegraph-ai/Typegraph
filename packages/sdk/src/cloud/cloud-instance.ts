@@ -11,9 +11,9 @@ import type { CreatePolicyInput, UpdatePolicyInput, Policy, PolicyType } from '.
 import type { UndeployResult } from '../types/adapter.js'
 import type { PaginationOpts, PaginatedResult } from '../types/pagination.js'
 import type { MemoryHealthReport } from '../types/memory.js'
-import type { ExternalId, MemoryRecord } from '../memory/types/memory.js'
+import type { ExternalId, MemoryArtifact, MemoryRecord } from '../memory/types/memory.js'
 import type { Job, JobFilter } from '../types/job.js'
-import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult, GraphInvalidationOptions, RememberOpts, ForgetOpts, CorrectOpts, HealthCheckOpts } from '../types/graph-bridge.js'
+import type { EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, RecallOpts, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult, GraphInvalidationOptions, GraphFactLookupOptions, GraphFactTripleLookup, FactReconciliationInput, FactReconciliationOptions, FactReconciliationCandidate, FactReconciliationDecision, FactReconciliationResult, RememberOpts, ForgetOpts, CorrectOpts, HealthCheckOpts, ExtractThreadOpts, ConversationMemoryExtraction, ConsolidateMemoryOpts, MemoryConsolidationResult, MemoryContextOpts, MemoryContextResult, MemoryArtifactUpsert, MemoryArtifactListOpts, MemoryArtifactGetOpts, MemoryArtifactDeleteOpts } from '../types/graph-bridge.js'
 import { DEFAULT_BUCKET_ID, normalizeDocumentInput } from '../typegraph.js'
 import { HttpClient } from './http-client.js'
 import type { CloudConfig } from './http-client.js'
@@ -237,6 +237,34 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
     async upsertFacts(inputs: UpsertGraphFactInput[]): Promise<FactResult[]> {
       return client.post<FactResult[]>('/v1/graph/facts/batch', { facts: inputs })
     },
+    async getFact(id: string, opts?: (GraphFactLookupOptions & TypeGraphOptions) | null): Promise<FactResult | null> {
+      const { identity, rest } = splitContextOpts<GraphFactLookupOptions & TypeGraphOptions>(opts as GraphFactLookupOptions & TypeGraphOptions | null, 'graph.getFact')
+      return client.post<FactResult | null>('/v1/graph/facts/get', { id, identity, ...rest })
+    },
+    async getFactsByIds(ids: string[], opts?: (GraphFactLookupOptions & TypeGraphOptions) | null): Promise<FactResult[]> {
+      const { identity, rest } = splitContextOpts<GraphFactLookupOptions & TypeGraphOptions>(opts as GraphFactLookupOptions & TypeGraphOptions | null, 'graph.getFactsByIds')
+      return client.post<FactResult[]>('/v1/graph/facts/batch-get', { ids, identity, ...rest })
+    },
+    async findFactsBySupersessionKey(key: string, opts?: (GraphFactLookupOptions & TypeGraphOptions) | null): Promise<FactResult[]> {
+      const { identity, rest } = splitContextOpts<GraphFactLookupOptions & TypeGraphOptions>(opts as GraphFactLookupOptions & TypeGraphOptions | null, 'graph.findFactsBySupersessionKey')
+      return client.post<FactResult[]>('/v1/graph/facts/by-supersession-key', { key, identity, ...rest })
+    },
+    async findFactsByTriple(triple: GraphFactTripleLookup, opts?: (GraphFactLookupOptions & TypeGraphOptions) | null): Promise<FactResult[]> {
+      const { identity, rest } = splitContextOpts<GraphFactLookupOptions & TypeGraphOptions>(opts as GraphFactLookupOptions & TypeGraphOptions | null, 'graph.findFactsByTriple')
+      return client.post<FactResult[]>('/v1/graph/facts/by-triple', { triple, identity, ...rest })
+    },
+    async findFactReconciliationCandidates(inputFact: FactReconciliationInput, opts?: (FactReconciliationOptions & TypeGraphOptions) | null): Promise<FactReconciliationCandidate[]> {
+      const { identity, rest } = splitContextOpts<FactReconciliationOptions & TypeGraphOptions>(opts as FactReconciliationOptions & TypeGraphOptions | null, 'graph.findFactReconciliationCandidates')
+      return client.post<FactReconciliationCandidate[]>('/v1/graph/facts/reconciliation/candidates', { inputFact, identity, ...rest })
+    },
+    async previewFactReconciliation(inputFact: FactReconciliationInput, decisions: FactReconciliationDecision[], opts?: (FactReconciliationOptions & TypeGraphOptions) | null): Promise<FactReconciliationResult> {
+      const { identity, rest } = splitContextOpts<FactReconciliationOptions & TypeGraphOptions>(opts as FactReconciliationOptions & TypeGraphOptions | null, 'graph.previewFactReconciliation')
+      return client.post<FactReconciliationResult>('/v1/graph/facts/reconciliation/preview', { inputFact, decisions, identity, ...rest })
+    },
+    async applyFactReconciliation(inputFact: FactReconciliationInput, decisions: FactReconciliationDecision[], opts?: (FactReconciliationOptions & TypeGraphOptions) | null): Promise<FactReconciliationResult> {
+      const { identity, rest } = splitContextOpts<FactReconciliationOptions & TypeGraphOptions>(opts as FactReconciliationOptions & TypeGraphOptions | null, 'graph.applyFactReconciliation')
+      return client.post<FactReconciliationResult>('/v1/graph/facts/reconciliation/apply', { inputFact, decisions, identity, ...rest })
+    },
     async invalidateFact(id: string, opts?: (GraphInvalidationOptions & TypeGraphOptions) | null): Promise<void> {
       const { identity, rest } = splitContextOpts<GraphInvalidationOptions & TypeGraphOptions>(opts as GraphInvalidationOptions & TypeGraphOptions | null, 'graph.invalidateFact')
       return client.post<void>(`/v1/graph/facts/${e(id)}/invalidate`, { ...rest, identity })
@@ -353,6 +381,36 @@ export function createCloudInstance(config: CloudConfig): typegraphCloudInstance
       return client.post('/v1/memory/correct', { correction, identity, ...rest })
     },
     recall: recall as MemoryApi['recall'],
+    async extractThread(threadId: string, opts?: ExtractThreadOpts | null): Promise<ConversationMemoryExtraction> {
+      const { identity, rest } = splitContextOpts<ExtractThreadOpts>(opts, 'memory.extractThread')
+      return client.post<ConversationMemoryExtraction>('/v1/memory/extract-thread', { threadId, identity, ...rest })
+    },
+    async consolidate(opts?: ConsolidateMemoryOpts | null): Promise<MemoryConsolidationResult> {
+      const { identity, rest } = splitContextOpts<ConsolidateMemoryOpts>(opts, 'memory.consolidate')
+      return client.post<MemoryConsolidationResult>('/v1/memory/consolidate', { identity, ...rest })
+    },
+    async context(query: string, opts?: MemoryContextOpts | null): Promise<MemoryContextResult> {
+      const { identity, rest } = splitContextOpts<MemoryContextOpts>(opts, 'memory.context')
+      return client.post<MemoryContextResult>('/v1/memory/context', { query, identity, ...rest })
+    },
+    artifacts: {
+      async get(path: string, opts?: MemoryArtifactGetOpts | null): Promise<MemoryArtifact | null> {
+        const { identity, rest } = splitContextOpts<MemoryArtifactGetOpts>(opts, 'memory.artifacts.get')
+        return client.post<MemoryArtifact | null>('/v1/memory/artifacts/get', { path, identity, ...rest })
+      },
+      async list(opts?: MemoryArtifactListOpts | null): Promise<MemoryArtifact[]> {
+        const { identity, rest } = splitContextOpts<MemoryArtifactListOpts>(opts, 'memory.artifacts.list')
+        return client.post<MemoryArtifact[]>('/v1/memory/artifacts/list', { identity, ...rest })
+      },
+      async upsert(input: MemoryArtifactUpsert, opts?: TypeGraphOptions | null): Promise<MemoryArtifact> {
+        const { identity, rest } = splitContextOpts<TypeGraphOptions>(opts, 'memory.artifacts.upsert')
+        return client.post<MemoryArtifact>('/v1/memory/artifacts', { artifact: input, identity, ...rest })
+      },
+      async delete(path: string, opts?: MemoryArtifactDeleteOpts | null): Promise<void> {
+        const { identity, rest } = splitContextOpts<MemoryArtifactDeleteOpts>(opts, 'memory.artifacts.delete')
+        await client.delete('/v1/memory/artifacts', { path, identity, ...rest })
+      },
+    },
     async healthCheck(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport> {
       const { identity, rest } = splitContextOpts<HealthCheckOpts>(opts, 'memory.healthCheck')
       return client.post<MemoryHealthReport>('/v1/memory/health', { identity, ...rest })

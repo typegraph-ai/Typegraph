@@ -9,6 +9,8 @@ import type { Bucket } from '../types/bucket.js'
 import type { Embedder } from '../embedding/provider.js'
 import type { typegraphEventRecord } from '../types/event.js'
 import type { EntityDetail, EntityResult, GraphExploreResult, KnowledgeGraphBridge } from '../types/graph-bridge.js'
+import type { Reranker } from '../types/extractor.js'
+import type { QueryChunkResult } from '../types/query.js'
 
 /** Register a pre-built Bucket + embedding on an instance (bypasses buckets.create UUID generation). */
 function registerTestBucket(instance: typegraphInstance, bucket: Bucket, embedding: Embedder) {
@@ -498,6 +500,36 @@ describe('typegraphInit', () => {
       await instance.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
       const response = await instance.search('Documents 1')
       expect(response.results.chunks.length).toBeGreaterThan(0)
+    })
+
+    it('uses the reranker configured on typegraphInit for self-hosted search', async () => {
+      const reranker: Reranker<QueryChunkResult> = {
+        name: 'configured-reranker',
+        rerank: vi.fn(async (_query, candidates) => [...candidates].reverse()),
+      }
+      const inst = await typegraphInit({ vectorStore: adapter, embedding, tenantId: 'tenant-1', reranker })
+      const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(3) })
+      registerTestBucket(inst, bucket, embedding)
+      await inst.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
+
+      const response = await inst.search('Documents', { limit: 1, rerank: true })
+
+      expect(reranker.rerank).toHaveBeenCalled()
+      expect(response.query.mergeStrategy).toBe('rrf+rerank')
+      expect(response.results.chunks).toHaveLength(1)
+      expect(response.results.chunks[0]!.scores.output.reranker).toBe(1)
+    })
+
+    it('does not throw when rerank is requested without a configured reranker', async () => {
+      const { bucket, documents, ingestOptions } = createMockBucket({ documents: createTestDocuments(1) })
+      registerTestBucket(instance, bucket, embedding)
+      await instance.document.ingest(documents, { ...ingestOptions, bucketId: bucket.id })
+
+      const response = await instance.search('Documents 1', { rerank: true })
+
+      expect(response.results.chunks.length).toBeGreaterThan(0)
+      expect(response.query.mergeStrategy).toBe('rrf')
+      expect(response.warnings?.[0]).toContain('no reranker is configured')
     })
 
     it('treats null query opts as omitted', async () => {

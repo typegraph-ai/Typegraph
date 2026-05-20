@@ -6,12 +6,12 @@ import type { AccessScope, typegraphIdentity } from '../types/identity.js'
 import type { EmbeddingConfig } from '../types/bucket.js'
 import type { LLMConfig, LLMProvider } from '../types/llm-provider.js'
 import type { CompiledOntology } from '../types/ontology.js'
-import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, InternalFactSearchOpts, InternalGraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, InternalGraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, EntityScopeResolution, KnowledgeSearchOpts, KnowledgeSearchResult, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult, GraphInvalidationOptions, GraphTemporalQueryOptions } from '../types/graph-bridge.js'
+import type { KnowledgeGraphBridge, EntityDetail, EntityResult, EdgeResult, FactChainResult, FactRelevanceFilter, FactResult, InternalFactSearchOpts, InternalGraphExploreOpts, GraphExploreResult, GraphExploreTrace, GraphBackfillOpts, GraphBackfillResult, InternalGraphExplainOpts, GraphSearchOpts, GraphSearchResult, GraphSearchTrace, ChunkResult, SubgraphOpts, SubgraphResult, GraphStats, GraphQueryIntent, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput, EntityScopeResolution, KnowledgeSearchOpts, KnowledgeSearchResult, MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult, GraphInvalidationOptions, GraphTemporalQueryOptions, GraphFactLookupOptions, GraphFactTripleLookup, FactReconciliationCandidate, FactReconciliationDecision, FactReconciliationInput, FactReconciliationOptions, FactReconciliationResult, FactReconciliationAppliedAction } from '../types/graph-bridge.js'
 import { resolveEmbedder, resolveLLMProvider } from '../typegraph.js'
 import type { ExternalId, MemoryStoreAdapter, SemanticEdge, SemanticEntity, SemanticEntityMention, SemanticEntityChunkEdge, SemanticFactRecord, SemanticGraphEdge } from '../memory/types/index.js'
 import type { ChunkRef } from '../types/chunk.js'
 import { ConfigError, GraphSelfEdgeError } from '../types/errors.js'
-import { EntityResolver, createTemporal } from '../memory/index.js'
+import { EntityResolver, createTemporal, buildCuratedSupersessionKey } from '../memory/index.js'
 import { EmbeddedGraph } from './graph/embedded-graph.js'
 import { parseGraphQueryIntent } from './query-intent.js'
 import { generateId } from '../utils/id.js'
@@ -38,6 +38,25 @@ type ScopedGraphEntityInput = UpsertGraphEntityInput & typegraphIdentity & { acc
 type ScopedGraphEntityRef = GraphEntityRef & typegraphIdentity & { accessScope?: AccessScope | undefined }
 type ScopedGraphEdgeInput = UpsertGraphEdgeInput & typegraphIdentity & { accessScope?: AccessScope | undefined }
 type ScopedGraphFactInput = UpsertGraphFactInput & typegraphIdentity & { accessScope?: AccessScope | undefined }
+
+type ReconciliationSubject = {
+  inputFact?: FactResult | undefined
+  upsertInput: UpsertGraphFactInput
+  relation: string
+  sourceEntity?: SemanticEntity | undefined
+  targetEntity?: SemanticEntity | undefined
+  sourceEntityId?: string | undefined
+  targetEntityId?: string | undefined
+  sourceName?: string | undefined
+  targetName?: string | undefined
+  supersessionKey?: string | undefined
+  validAt?: Date | undefined
+  invalidAt?: Date | undefined
+  expiredAt?: Date | undefined
+  description?: string | undefined
+  evidenceText?: string | undefined
+  searchText: string
+}
 
 // ── Config ──
 
@@ -1811,6 +1830,559 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     return results
   }
 
+  function factLookupIdentity(opts?: typegraphIdentity): typegraphIdentity {
+    return scopeFrom(opts)
+  }
+
+  function factLookupTemporal(opts?: GraphFactLookupOptions | null): GraphFactLookupOptions {
+    return temporalQueryFrom(opts ?? {})
+  }
+
+  async function getFact(id: string, opts?: (GraphFactLookupOptions & typegraphIdentity) | null): Promise<FactResult | null> {
+    if (!memoryStore.getFactRecord) {
+      throw new ConfigError('MemoryStoreAdapter does not support graph fact lookup.')
+    }
+    const normalized = optionalCompactObject<GraphFactLookupOptions & typegraphIdentity>(opts, 'graph.getFact') as GraphFactLookupOptions & typegraphIdentity
+    const identity = factLookupIdentity(normalized)
+    const row = await memoryStore.getFactRecord(id, identity, factLookupTemporal(normalized))
+    if (!row) return null
+    const [fact] = await hydrateFacts([row], identity)
+    return fact ?? null
+  }
+
+  async function getFactsByIds(ids: string[], opts?: (GraphFactLookupOptions & typegraphIdentity) | null): Promise<FactResult[]> {
+    if (!memoryStore.getFactRecordsByIds) {
+      throw new ConfigError('MemoryStoreAdapter does not support graph fact lookup.')
+    }
+    const requestedIds = uniqueIds(ids.map(id => cleanOptionalText(id)).filter((id): id is string => !!id))
+    if (requestedIds.length === 0) return []
+    const normalized = optionalCompactObject<GraphFactLookupOptions & typegraphIdentity>(opts, 'graph.getFactsByIds') as GraphFactLookupOptions & typegraphIdentity
+    const identity = factLookupIdentity(normalized)
+    const rows = await memoryStore.getFactRecordsByIds(requestedIds, identity, factLookupTemporal(normalized))
+    const facts = await hydrateFacts(rows, identity)
+    const byId = new Map(facts.map(fact => [fact.id, fact]))
+    return requestedIds.map(id => byId.get(id)).filter((fact): fact is FactResult => !!fact)
+  }
+
+  async function findFactsBySupersessionKey(key: string, opts?: (GraphFactLookupOptions & typegraphIdentity) | null): Promise<FactResult[]> {
+    if (!memoryStore.findFactRecordsBySupersessionKey) {
+      throw new ConfigError('MemoryStoreAdapter does not support graph fact supersession lookup.')
+    }
+    const supersessionKey = cleanOptionalText(key)
+    if (!supersessionKey) return []
+    const normalized = optionalCompactObject<GraphFactLookupOptions & typegraphIdentity>(opts, 'graph.findFactsBySupersessionKey') as GraphFactLookupOptions & typegraphIdentity
+    const identity = factLookupIdentity(normalized)
+    const rows = await memoryStore.findFactRecordsBySupersessionKey(supersessionKey, identity, factLookupTemporal(normalized))
+    return hydrateFacts(rows, identity)
+  }
+
+  async function findFactsByTriple(triple: GraphFactTripleLookup, opts?: (GraphFactLookupOptions & typegraphIdentity) | null): Promise<FactResult[]> {
+    if (!memoryStore.findFactRecordsByTriple) {
+      throw new ConfigError('MemoryStoreAdapter does not support graph fact triple lookup.')
+    }
+    const normalizedTriple = {
+      sourceEntityId: cleanOptionalText(triple.sourceEntityId),
+      relation: cleanOptionalText(triple.relation),
+      targetEntityId: cleanOptionalText(triple.targetEntityId),
+    }
+    if (!normalizedTriple.sourceEntityId || !normalizedTriple.relation || !normalizedTriple.targetEntityId) return []
+    const normalized = optionalCompactObject<GraphFactLookupOptions & typegraphIdentity>(opts, 'graph.findFactsByTriple') as GraphFactLookupOptions & typegraphIdentity
+    const identity = factLookupIdentity(normalized)
+    const rows = await memoryStore.findFactRecordsByTriple(normalizedTriple as GraphFactTripleLookup, identity, factLookupTemporal(normalized))
+    return hydrateFacts(rows, identity)
+  }
+
+  function isFactResultInput(input: FactReconciliationInput): input is FactResult {
+    const record = input as Partial<FactResult>
+    return typeof record.id === 'string'
+      && typeof record.edgeId === 'string'
+      && typeof record.sourceEntityId === 'string'
+      && typeof record.targetEntityId === 'string'
+      && typeof record.relation === 'string'
+  }
+
+  function factInputFromResult(fact: FactResult): UpsertGraphFactInput {
+    return {
+      source: { id: fact.sourceEntityId, ...(fact.sourceEntityName ? { name: fact.sourceEntityName } : {}) },
+      target: { id: fact.targetEntityId, ...(fact.targetEntityName ? { name: fact.targetEntityName } : {}) },
+      relation: fact.relation,
+      description: fact.description,
+      evidenceText: fact.evidenceText,
+      validAt: fact.validAt,
+      invalidAt: fact.invalidAt,
+      expiredAt: fact.expiredAt,
+      supersessionKey: fact.supersessionKey,
+      chunkId: fact.chunkId,
+      confidence: fact.weight,
+      metadata: fact.metadata,
+    }
+  }
+
+  function refLabel(ref: GraphEntityRef | string, entity?: SemanticEntity): string | undefined {
+    if (entity?.name) return entity.name
+    if (typeof ref === 'string') return ref
+    return cleanOptionalText(ref.name) ?? cleanOptionalText(ref.id)
+  }
+
+  async function reconciliationSubject(inputFact: FactReconciliationInput, identity: typegraphIdentity): Promise<ReconciliationSubject> {
+    if (isFactResultInput(inputFact)) {
+      const description = cleanOptionalText(inputFact.description)
+      const evidenceText = cleanOptionalText(inputFact.evidenceText)
+      const fallback = factTextFor(
+        inputFact.sourceEntityName ?? inputFact.sourceEntityId,
+        inputFact.relation,
+        inputFact.targetEntityName ?? inputFact.targetEntityId,
+      )
+      return {
+        inputFact,
+        upsertInput: factInputFromResult(inputFact),
+        relation: inputFact.relation,
+        sourceEntityId: inputFact.sourceEntityId,
+        targetEntityId: inputFact.targetEntityId,
+        sourceName: inputFact.sourceEntityName,
+        targetName: inputFact.targetEntityName,
+        supersessionKey: inputFact.supersessionKey,
+        validAt: inputFact.validAt,
+        invalidAt: inputFact.invalidAt,
+        expiredAt: inputFact.expiredAt,
+        description,
+        evidenceText,
+        searchText: uniqueIds([
+          buildFactSearchText({ description: description ?? fallback, evidenceText }) || fallback,
+          inputFact.sourceEntityName ?? inputFact.sourceEntityId,
+          relationToPhrase(inputFact.relation),
+          inputFact.targetEntityName ?? inputFact.targetEntityId,
+        ]).join('\n'),
+      }
+    }
+
+    const ontology = ontologyForGraph(identity.graphId)
+    const normalizedRelation = normalizePredicateWithDirection(inputFact.relation, ontology)
+    if (!normalizedRelation.valid || GENERIC_DISALLOWED_PREDICATES.has(normalizedRelation.predicate)) {
+      throw new Error(`Invalid or too-generic graph relation: ${inputFact.relation}`)
+    }
+
+    let sourceRef = inputFact.source
+    let targetRef = inputFact.target
+    if (normalizedRelation.swapSubjectObject) {
+      ;[sourceRef, targetRef] = [targetRef, sourceRef]
+    }
+
+    let [source, target] = await Promise.all([
+      resolveEntityForRead(sourceRef, identity),
+      resolveEntityForRead(targetRef, identity),
+    ])
+
+    if (normalizedRelation.symmetric && source && target) {
+      const sourceKey = normalizeSurfaceText(source.id || source.name)
+      const targetKey = normalizeSurfaceText(target.id || target.name)
+      if (sourceKey > targetKey) {
+        ;[source, target] = [target, source]
+        ;[sourceRef, targetRef] = [targetRef, sourceRef]
+      }
+    }
+
+    const relation = normalizedRelation.predicate
+    const description = cleanOptionalText(inputFact.description)
+    const evidenceText = cleanOptionalText(inputFact.evidenceText)
+    const sourceName = refLabel(sourceRef, source ?? undefined)
+    const targetName = refLabel(targetRef, target ?? undefined)
+    const fallback = sourceName && targetName
+      ? factTextFor(sourceName, relation, targetName)
+      : relationToPhrase(relation)
+    const validAt = cleanOptionalDate(inputFact.validAt, 'validAt')
+    const invalidAt = cleanOptionalDate(inputFact.invalidAt, 'invalidAt')
+    const expiredAt = cleanOptionalDate(inputFact.expiredAt, 'expiredAt')
+    return {
+      upsertInput: {
+        ...inputFact,
+        source: sourceRef,
+        target: targetRef,
+        relation,
+        validAt,
+        invalidAt,
+        expiredAt,
+      },
+      relation,
+      sourceEntity: source ?? undefined,
+      targetEntity: target ?? undefined,
+      sourceEntityId: source?.id,
+      targetEntityId: target?.id,
+      sourceName,
+      targetName,
+      supersessionKey: cleanOptionalText(inputFact.supersessionKey),
+      validAt,
+      invalidAt,
+      expiredAt,
+      description,
+      evidenceText,
+      searchText: uniqueIds([
+        buildFactSearchText({ description: description ?? fallback, evidenceText }) || fallback,
+        sourceName,
+        relationToPhrase(relation),
+        targetName,
+      ].filter((item): item is string => !!item)).join('\n'),
+    }
+  }
+
+  function factDatesOrder(candidate: FactResult, subject: ReconciliationSubject): 'older' | 'newer' | 'same' | 'unknown' {
+    if (!candidate.validAt || !subject.validAt) return 'unknown'
+    const candidateTime = candidate.validAt.getTime()
+    const subjectTime = subject.validAt.getTime()
+    if (candidateTime < subjectTime) return 'older'
+    if (candidateTime > subjectTime) return 'newer'
+    return 'same'
+  }
+
+  function sameTriple(fact: FactResult, subject: ReconciliationSubject): boolean {
+    return !!subject.sourceEntityId
+      && !!subject.targetEntityId
+      && fact.sourceEntityId === subject.sourceEntityId
+      && fact.targetEntityId === subject.targetEntityId
+      && fact.relation === subject.relation
+  }
+
+  function candidateFor(
+    fact: FactResult,
+    subject: ReconciliationSubject,
+    input: {
+      kind: FactReconciliationCandidate['kind']
+      score: number
+      recommendedAction: FactReconciliationCandidate['recommendedAction']
+      reasons: string[]
+      risks?: string[] | undefined
+    },
+  ): FactReconciliationCandidate {
+    if (input.kind === 'same_timeline' && fact.validAt && subject.validAt) {
+      const order = factDatesOrder(fact, subject)
+      if (order === 'older') {
+        return {
+          fact,
+          score: Math.max(input.score, 0.92),
+          kind: 'older_version',
+          recommendedAction: 'supersede_candidate',
+          reasons: [...input.reasons, 'Candidate is older on the same supersession timeline.'],
+          risks: input.risks ?? [],
+        }
+      }
+      if (order === 'newer') {
+        return {
+          fact,
+          score: Math.max(input.score, 0.9),
+          kind: 'newer_version',
+          recommendedAction: 'manual_review',
+          reasons: [...input.reasons, 'Candidate is newer than the input fact on the same supersession timeline.'],
+          risks: [...(input.risks ?? []), 'Applying the input may overwrite newer evidence.'],
+        }
+      }
+    }
+    return {
+      fact,
+      score: input.score,
+      kind: input.kind,
+      recommendedAction: input.recommendedAction,
+      reasons: input.reasons,
+      risks: input.risks ?? [],
+    }
+  }
+
+  function addCandidate(target: Map<string, FactReconciliationCandidate>, candidate: FactReconciliationCandidate): void {
+    const existing = target.get(candidate.fact.id)
+    if (!existing || candidate.score > existing.score) {
+      target.set(candidate.fact.id, candidate)
+    }
+  }
+
+  function normalizedMutableRelations(opts: FactReconciliationOptions): Set<string> {
+    const defaults = [
+      'HAS_ROLE',
+      'HAS_TITLE',
+      'HAS_STATUS',
+      'HAS_STAGE',
+      'REPORTS_TO',
+      'OWNED_BY',
+      'ASSIGNED_TO',
+      'LOCATED_AT',
+      'WORKS_AT',
+      'WORKS_FOR',
+    ]
+    return new Set((opts.mutableSlotRelations ?? defaults).map(relation => sanitizePredicate(relation)))
+  }
+
+  async function findFactReconciliationCandidates(
+    inputFact: FactReconciliationInput,
+    opts?: (FactReconciliationOptions & typegraphIdentity) | null,
+  ): Promise<FactReconciliationCandidate[]> {
+    const normalized = optionalCompactObject<FactReconciliationOptions & typegraphIdentity>(opts, 'graph.findFactReconciliationCandidates') as FactReconciliationOptions & typegraphIdentity
+    const identity = factLookupIdentity(normalized)
+    const subject = await reconciliationSubject(inputFact, identity)
+    const candidates = new Map<string, FactReconciliationCandidate>()
+    const inputFactId = subject.inputFact?.id
+    const includeInvalidatedTimeline = { ...normalized, includeInvalidated: true }
+
+    if (subject.supersessionKey) {
+      const timeline = await findFactsBySupersessionKey(subject.supersessionKey, { ...includeInvalidatedTimeline, ...identity })
+      for (const fact of timeline) {
+        if (fact.id === inputFactId) continue
+        addCandidate(candidates, candidateFor(fact, subject, {
+          kind: sameTriple(fact, subject) ? 'exact_duplicate' : 'same_timeline',
+          score: sameTriple(fact, subject) ? 0.99 : 0.94,
+          recommendedAction: sameTriple(fact, subject) ? 'merge_duplicate' : 'manual_review',
+          reasons: [`Shares supersessionKey "${subject.supersessionKey}".`],
+        }))
+      }
+    }
+
+    if (subject.sourceEntityId && subject.targetEntityId) {
+      const exact = await findFactsByTriple({
+        sourceEntityId: subject.sourceEntityId,
+        relation: subject.relation,
+        targetEntityId: subject.targetEntityId,
+      }, { ...normalized, ...identity })
+      for (const fact of exact) {
+        if (fact.id === inputFactId) continue
+        addCandidate(candidates, candidateFor(fact, subject, {
+          kind: 'exact_duplicate',
+          score: 0.98,
+          recommendedAction: 'merge_duplicate',
+          reasons: ['Same sourceEntityId, relation, and targetEntityId.'],
+        }))
+      }
+    }
+
+    const mutableRelations = normalizedMutableRelations(normalized)
+    if (subject.sourceEntityId && mutableRelations.has(subject.relation) && subject.searchText) {
+      const slotFacts = await searchFacts(subject.searchText, {
+        ...normalized,
+        ...identity,
+        limit: Math.max(normalized.semanticLimit ?? 25, 25),
+      })
+      for (const fact of slotFacts) {
+        if (fact.id === inputFactId) continue
+        if (fact.sourceEntityId !== subject.sourceEntityId || fact.relation !== subject.relation) continue
+        if (subject.targetEntityId && fact.targetEntityId === subject.targetEntityId) continue
+        const order = factDatesOrder(fact, subject)
+        addCandidate(candidates, candidateFor(fact, subject, {
+          kind: 'same_slot_conflict',
+          score: 0.88,
+          recommendedAction: order === 'older' ? 'supersede_candidate' : 'manual_review',
+          reasons: ['Same source entity and mutable relation, but a different target entity.'],
+          risks: ['Mutable slot conflicts can erase useful historical state if applied without validAt/invalidAt review.'],
+        }))
+      }
+    }
+
+    if (normalized.includeSemanticCandidates !== false && subject.searchText) {
+      const semantic = await searchFacts(subject.searchText, {
+        ...normalized,
+        ...identity,
+        limit: normalized.semanticLimit ?? 20,
+      })
+      for (const fact of semantic) {
+        if (fact.id === inputFactId) continue
+        if (candidates.has(fact.id)) continue
+        addCandidate(candidates, candidateFor(fact, subject, {
+          kind: sameTriple(fact, subject) ? 'exact_duplicate' : 'semantic_overlap',
+          score: typeof fact.similarity === 'number' ? Math.max(0.55, Math.min(0.86, fact.similarity)) : 0.65,
+          recommendedAction: sameTriple(fact, subject) ? 'merge_duplicate' : 'manual_review',
+          reasons: ['Retrieved by semantic or hybrid fact search against the input description/evidence.'],
+          risks: ['Semantic overlap can be related evidence rather than a duplicate or contradiction.'],
+        }))
+      }
+    }
+
+    return [...candidates.values()].slice(0, Math.max(1, normalized.limit ?? 20))
+  }
+
+  function plannedSupersessionKey(
+    decision: FactReconciliationDecision,
+    candidate: FactResult,
+    subject: ReconciliationSubject,
+    identity: typegraphIdentity,
+    opts: FactReconciliationOptions,
+  ): string {
+    return cleanOptionalText(decision.supersessionKey)
+      ?? subject.supersessionKey
+      ?? buildCuratedSupersessionKey({
+        graphId: identity.graphId ?? defaultScope.graphId ?? 'public',
+        sourceEntityId: subject.sourceEntityId ?? candidate.sourceEntityId,
+        relation: subject.relation || candidate.relation,
+        slotKey: cleanOptionalText(decision.slotKey) ?? cleanOptionalText(opts.slotKey) ?? subject.relation ?? candidate.relation,
+      })
+  }
+
+  function validateDecision(decision: FactReconciliationDecision): { invalidAt?: Date | undefined } {
+    const candidateId = cleanOptionalText(decision.candidateId)
+    if (!candidateId) throw new Error('Fact reconciliation decision requires candidateId.')
+    if (!decision.action) throw new Error(`Fact reconciliation decision for ${candidateId} requires action.`)
+    return {
+      invalidAt: cleanOptionalDate(decision.invalidAt, 'invalidAt'),
+    }
+  }
+
+  async function reconcileFacts(
+    inputFact: FactReconciliationInput,
+    decisions: FactReconciliationDecision[],
+    opts: (FactReconciliationOptions & typegraphIdentity) | null | undefined,
+    dryRun: boolean,
+  ): Promise<FactReconciliationResult> {
+    const normalized = optionalCompactObject<FactReconciliationOptions & typegraphIdentity>(opts, dryRun ? 'graph.previewFactReconciliation' : 'graph.applyFactReconciliation') as FactReconciliationOptions & typegraphIdentity
+    const identity = factLookupIdentity(normalized)
+    const subject = await reconciliationSubject(inputFact, identity)
+    const candidates = await findFactReconciliationCandidates(inputFact, normalized)
+    const actions: FactReconciliationAppliedAction[] = []
+    const warnings: string[] = []
+
+    for (const decision of decisions) {
+      const { invalidAt } = validateDecision(decision)
+      const candidate = await getFact(decision.candidateId, { ...identity, includeInvalidated: true })
+      if (!candidate) {
+        throw new Error(`Fact reconciliation candidate not found: ${decision.candidateId}`)
+      }
+      const supersessionKey = decision.action === 'supersede_candidate' || decision.action === 'attach_supersession_key'
+        ? plannedSupersessionKey(decision, candidate, subject, identity, normalized)
+        : cleanOptionalText(decision.supersessionKey)
+
+      if (dryRun) {
+        actions.push({
+          candidateId: candidate.id,
+          action: decision.action,
+          status: 'planned',
+          fact: candidate,
+          supersessionKey,
+          reason: decision.reason,
+        })
+        continue
+      }
+
+      if (decision.action === 'ignore') {
+        actions.push({
+          candidateId: candidate.id,
+          action: decision.action,
+          status: 'skipped',
+          fact: candidate,
+          reason: decision.reason,
+        })
+        continue
+      }
+
+      if (decision.action === 'invalidate_candidate') {
+        await invalidateFact(candidate.id, {
+          invalidAt: invalidAt ?? new Date(),
+          reason: decision.reason,
+          ...identity,
+        } as GraphInvalidationOptions)
+        if (candidate.edgeId) {
+          await invalidateEdge(candidate.edgeId, {
+            invalidAt: invalidAt ?? new Date(),
+            reason: decision.reason,
+            ...identity,
+          } as GraphInvalidationOptions)
+        }
+        actions.push({
+          candidateId: candidate.id,
+          action: decision.action,
+          status: 'applied',
+          fact: candidate,
+          invalidatedFactId: candidate.id,
+          invalidatedEdgeId: candidate.edgeId,
+          reason: decision.reason,
+        })
+        continue
+      }
+
+      if (decision.action === 'supersede_candidate') {
+        const createdFact = await upsertFact({
+          ...subject.upsertInput,
+          ...identity,
+          supersessionKey,
+          supersedes: uniqueIds([candidate.id, ...(subject.upsertInput.supersedes ?? [])]),
+        } as UpsertGraphFactInput)
+        actions.push({
+          candidateId: candidate.id,
+          action: decision.action,
+          status: 'applied',
+          fact: candidate,
+          createdFact,
+          invalidatedFactId: candidate.id,
+          invalidatedEdgeId: candidate.edgeId,
+          supersessionKey,
+          reason: decision.reason,
+        })
+        continue
+      }
+
+      if (decision.action === 'attach_supersession_key') {
+        const createdFact = await upsertFact({
+          ...factInputFromResult(candidate),
+          ...identity,
+          supersessionKey,
+          supersedes: [candidate.id],
+        } as UpsertGraphFactInput)
+        actions.push({
+          candidateId: candidate.id,
+          action: decision.action,
+          status: 'applied',
+          fact: candidate,
+          createdFact,
+          invalidatedFactId: candidate.id,
+          invalidatedEdgeId: candidate.edgeId,
+          supersessionKey,
+          reason: decision.reason,
+        })
+        continue
+      }
+
+      if (decision.action === 'mark_duplicate') {
+        const canonicalFactId = cleanOptionalText(decision.canonicalFactId) ?? subject.inputFact?.id
+        if (!canonicalFactId) warnings.push(`Decision for ${candidate.id} marked a duplicate without canonicalFactId.`)
+        const marked = await upsertFact({
+          ...factInputFromResult(candidate),
+          ...identity,
+          metadata: {
+            ...(candidate.metadata ?? {}),
+            duplicateOfFactId: canonicalFactId,
+            duplicateReason: decision.reason ?? 'duplicate',
+            curationAction: 'mark_duplicate',
+          },
+        } as UpsertGraphFactInput)
+        actions.push({
+          candidateId: candidate.id,
+          action: decision.action,
+          status: 'applied',
+          fact: candidate,
+          createdFact: marked,
+          reason: decision.reason ?? 'duplicate',
+          warnings: ['Duplicate marker is stored on the backing edge metadata; both fact rows are preserved.'],
+        })
+      }
+    }
+
+    return {
+      dryRun,
+      inputFact: subject.inputFact,
+      candidates,
+      actions,
+      warnings,
+    }
+  }
+
+  async function previewFactReconciliation(
+    inputFact: FactReconciliationInput,
+    decisions: FactReconciliationDecision[],
+    opts?: (FactReconciliationOptions & typegraphIdentity) | null,
+  ): Promise<FactReconciliationResult> {
+    return reconcileFacts(inputFact, decisions, opts, true)
+  }
+
+  async function applyFactReconciliation(
+    inputFact: FactReconciliationInput,
+    decisions: FactReconciliationDecision[],
+    opts?: (FactReconciliationOptions & typegraphIdentity) | null,
+  ): Promise<FactReconciliationResult> {
+    return reconcileFacts(inputFact, decisions, opts, false)
+  }
+
   async function invalidateFact(id: string, opts?: GraphInvalidationOptions | null): Promise<void> {
     if (!memoryStore.invalidateFactRecord) {
       throw new ConfigError('MemoryStoreAdapter does not support graph fact invalidation.')
@@ -3137,6 +3709,13 @@ export function createKnowledgeGraphBridge(config: CreateKnowledgeGraphBridgeCon
     upsertEdges,
     upsertFact,
     upsertFacts,
+    getFact,
+    getFactsByIds,
+    findFactsBySupersessionKey,
+    findFactsByTriple,
+    findFactReconciliationCandidates,
+    previewFactReconciliation,
+    applyFactReconciliation,
     invalidateFact,
     invalidateEdge,
     addEntityMentions,

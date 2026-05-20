@@ -4,7 +4,20 @@ import type { typegraphEventSink, typegraphEventType, TelemetryOpts } from '../t
 import type { MemoryStoreAdapter } from './types/adapter.js'
 import type { AccessScope, typegraphIdentity } from '../types/identity.js'
 import type {
+  ConversationMemoryExtraction,
+  ConsolidateMemoryOpts,
+  MemoryArtifactDeleteOpts,
+  MemoryArtifactGetOpts,
+  MemoryArtifactListOpts,
+  MemoryArtifactUpsert,
+  MemoryContextOpts,
+  MemoryContextResult,
+  MemoryConsolidationResult,
+} from '../types/graph-bridge.js'
+import type {
   MemoryRecord,
+  MemoryArtifact,
+  MemoryArtifactKind,
   MemoryCategory,
   SemanticEntity,
   ProceduralMemory,
@@ -23,6 +36,27 @@ import { createTemporal } from './temporal.js'
 import { generateId, stableInternalId } from '../utils/id.js'
 import { optionalCompactObject } from '../utils/input.js'
 import { DEFAULT_ENTITY_TYPE } from '../index-engine/ontology.js'
+import { sha256 } from '../index-engine/hash.js'
+import {
+  DEFAULT_MEMORY_LAYOUT_ID,
+  MEMORY_HANDBOOK_PATH,
+  MEMORY_SUMMARY_PATH,
+  PHASE_TWO_SELECTION_PATH,
+  RAW_MEMORIES_PATH,
+  type ConversationMemoryMessage,
+  conversationExtractionSchema,
+  fallbackMemorySummary,
+  memoryConsolidationSchema,
+  normalizeArtifactPath,
+  normalizeConversationSlug,
+  normalizeLayoutId,
+  rawMemoryPath,
+  redactMemorySecrets,
+  renderConversationExtractionPrompt,
+  renderConversationTranscript,
+  renderMemoryConsolidationPrompt,
+  rolloutSummaryPath,
+} from './conversation.js'
 
 // ── Recall option shapes ──
 
@@ -58,6 +92,27 @@ export type MemoryServiceRememberOpts = MemoryServiceContextOpts & {
   importance?: number | undefined
   metadata?: Record<string, unknown> | undefined
 }
+
+export interface MemoryServiceArtifactListOpts extends MemoryServiceCallOpts {
+  layoutId?: string | undefined
+  prefix?: string | undefined
+  kind?: MemoryArtifactKind | MemoryArtifactKind[] | undefined
+}
+
+export interface MemoryServiceExtractConversationOpts extends MemoryServiceCallOpts {
+  conversationId: string
+  messages: ConversationMemoryMessage[]
+  layoutId?: string | undefined
+  includeRoles?: ConversationMemoryMessage['role'][] | undefined
+  maxTranscriptChars?: number | undefined
+}
+
+export interface MemoryServiceConsolidateOpts extends MemoryServiceCallOpts {
+  layoutId?: string | undefined
+  maxRawMemories?: number | undefined
+}
+
+export interface MemoryServiceContextResult extends MemoryContextResult {}
 
 export interface MemoryRetrievalService {
   recall(query: string, opts?: MemoryServiceRecallOpts | null): Promise<MemoryRecord[]>
@@ -303,6 +358,317 @@ export class MemoryService {
     }
 
     return { invalidated, created }
+  }
+
+  private requireArtifactStore(): Required<Pick<
+    MemoryStoreAdapter,
+    'upsertArtifact' | 'getArtifact' | 'listArtifacts' | 'deleteArtifact'
+  >> {
+    if (!this.store.upsertArtifact || !this.store.getArtifact || !this.store.listArtifacts || !this.store.deleteArtifact) {
+      throw new ConfigError('Memory artifacts require a memory store with artifact persistence.')
+    }
+    return {
+      upsertArtifact: this.store.upsertArtifact.bind(this.store),
+      getArtifact: this.store.getArtifact.bind(this.store),
+      listArtifacts: this.store.listArtifacts.bind(this.store),
+      deleteArtifact: this.store.deleteArtifact.bind(this.store),
+    }
+  }
+
+  private async upsertArtifactInternal(args: {
+    identity: typegraphIdentity
+    layoutId?: string | undefined
+    path: string
+    kind: MemoryArtifactKind
+    content: string
+    metadata?: Record<string, unknown> | undefined
+  }): Promise<MemoryArtifact> {
+    const store = this.requireArtifactStore()
+    return store.upsertArtifact({
+      identity: args.identity,
+      layoutId: normalizeLayoutId(args.layoutId),
+      path: normalizeArtifactPath(args.path),
+      kind: args.kind,
+      content: args.content,
+      contentHash: sha256(args.content),
+      metadata: args.metadata ?? {},
+    })
+  }
+
+  async upsertArtifact(input: MemoryArtifactUpsert, rawOpts: MemoryServiceCallOpts): Promise<MemoryArtifact> {
+    optionalCompactObject<MemoryServiceCallOpts>(rawOpts, 'MemoryService.upsertArtifact')
+    return this.upsertArtifactInternal({
+      identity: rawOpts.identity,
+      layoutId: input.layoutId,
+      path: input.path,
+      kind: input.kind ?? inferArtifactKind(input.path),
+      content: input.content,
+      metadata: input.metadata,
+    })
+  }
+
+  async getArtifact(path: string, rawOpts: MemoryServiceCallOpts & MemoryArtifactGetOpts): Promise<MemoryArtifact | null> {
+    optionalCompactObject(rawOpts, 'MemoryService.getArtifact')
+    const store = this.requireArtifactStore()
+    return store.getArtifact(rawOpts.identity, normalizeLayoutId(rawOpts.layoutId), normalizeArtifactPath(path))
+  }
+
+  async listArtifacts(rawOpts: MemoryServiceArtifactListOpts): Promise<MemoryArtifact[]> {
+    optionalCompactObject(rawOpts, 'MemoryService.listArtifacts')
+    const store = this.requireArtifactStore()
+    return store.listArtifacts({
+      identity: rawOpts.identity,
+      graphIds: rawOpts.graphIds,
+      layoutId: rawOpts.layoutId ? normalizeLayoutId(rawOpts.layoutId) : undefined,
+      prefix: rawOpts.prefix ? normalizeArtifactPath(rawOpts.prefix) : undefined,
+      kind: rawOpts.kind,
+    })
+  }
+
+  async deleteArtifact(path: string, rawOpts: MemoryServiceCallOpts & MemoryArtifactDeleteOpts): Promise<void> {
+    optionalCompactObject(rawOpts, 'MemoryService.deleteArtifact')
+    const store = this.requireArtifactStore()
+    await store.deleteArtifact(rawOpts.identity, normalizeLayoutId(rawOpts.layoutId), normalizeArtifactPath(path))
+  }
+
+  async extractConversation(rawOpts: MemoryServiceExtractConversationOpts): Promise<ConversationMemoryExtraction> {
+    const opts = optionalCompactObject<MemoryServiceExtractConversationOpts>(rawOpts, 'MemoryService.extractConversation') as MemoryServiceExtractConversationOpts
+    if (!this.llm) throw new ConfigError('Conversation memory extraction requires `llm`.')
+    const layoutId = normalizeLayoutId(opts.layoutId)
+    const includeRoles = new Set(opts.includeRoles ?? ['user', 'assistant', 'tool'])
+    const messages = opts.messages
+      .filter(message => includeRoles.has(message.role))
+      .filter(message => message.content.trim().length > 0)
+      .map(message => ({ ...message, content: redactMemorySecrets(message.content) }))
+    const emptyResult: ConversationMemoryExtraction = {
+      conversationId: opts.conversationId,
+      layoutId,
+      noOp: true,
+      keywords: [],
+      artifacts: {},
+    }
+    if (messages.length === 0) return emptyResult
+
+    const transcript = renderConversationTranscript(messages, opts.maxTranscriptChars)
+    let output: {
+      conversation_summary: string
+      conversation_slug: string
+      raw_memory: string
+      task_outcome: 'success' | 'partial' | 'fail' | 'uncertain'
+      keywords: string[]
+      references: string[]
+    }
+    try {
+      output = await this.llm.generateJSON(
+        renderConversationExtractionPrompt({ conversationId: opts.conversationId, transcript }),
+        undefined,
+        { schema: conversationExtractionSchema },
+      )
+    } catch {
+      return emptyResult
+    }
+
+    const hasSummary = output.conversation_summary?.trim().length > 0
+    const hasRaw = output.raw_memory?.trim().length > 0
+    const hasSlug = output.conversation_slug?.trim().length > 0
+    if (!hasSummary && !hasRaw && !hasSlug) return emptyResult
+    if (!hasSummary || !hasRaw) return emptyResult
+
+    const slug = normalizeConversationSlug(output.conversation_slug, opts.conversationId)
+    const rawPath = rawMemoryPath(opts.conversationId)
+    const summaryPath = rolloutSummaryPath(opts.conversationId, slug)
+    const updatedAt = new Date().toISOString()
+    const rawMemoryContent = formatRawConversationMemory({
+      conversationId: opts.conversationId,
+      updatedAt,
+      rolloutSummaryFile: summaryPath,
+      output,
+    })
+    const rolloutSummaryContent = formatConversationSummary({
+      conversationId: opts.conversationId,
+      updatedAt,
+      output,
+    })
+    const rawMemory = await this.upsertArtifactInternal({
+      identity: opts.identity,
+      layoutId,
+      path: rawPath,
+      kind: 'raw_memory',
+      content: rawMemoryContent,
+      metadata: {
+        conversationId: opts.conversationId,
+        rolloutSummaryFile: summaryPath,
+        taskOutcome: output.task_outcome,
+        keywords: output.keywords,
+        references: output.references,
+        description: firstMetadataLine(output.raw_memory, 'description') ?? output.conversation_summary.split('\n').find(Boolean) ?? '',
+      },
+    })
+    const rolloutSummary = await this.upsertArtifactInternal({
+      identity: opts.identity,
+      layoutId,
+      path: summaryPath,
+      kind: 'rollout_summary',
+      content: rolloutSummaryContent,
+      metadata: {
+        conversationId: opts.conversationId,
+        rawMemoryFile: rawPath,
+        taskOutcome: output.task_outcome,
+        keywords: output.keywords,
+        references: output.references,
+      },
+    })
+    const rawMemories = await this.rebuildRawMemoriesArtifact(opts.identity, layoutId)
+    return {
+      conversationId: opts.conversationId,
+      layoutId,
+      noOp: false,
+      taskOutcome: output.task_outcome,
+      keywords: output.keywords,
+      artifacts: { rawMemory, rolloutSummary, rawMemories },
+    }
+  }
+
+  async consolidate(rawOpts: MemoryServiceConsolidateOpts): Promise<MemoryConsolidationResult> {
+    const opts = optionalCompactObject<MemoryServiceConsolidateOpts>(rawOpts, 'MemoryService.consolidate') as MemoryServiceConsolidateOpts
+    const layoutId = normalizeLayoutId(opts.layoutId)
+    const rawArtifacts = await this.selectedRawMemoryArtifacts(opts.identity, layoutId, opts.maxRawMemories)
+    const rawMemories = await this.rebuildRawMemoriesArtifact(opts.identity, layoutId, rawArtifacts)
+    const existingMemory = await this.getArtifact(MEMORY_HANDBOOK_PATH, { identity: opts.identity, layoutId })
+    const existingSummary = await this.getArtifact(MEMORY_SUMMARY_PATH, { identity: opts.identity, layoutId })
+    const selection = {
+      version: 1,
+      updated_at: new Date().toISOString(),
+      selected: rawArtifacts.map(artifact => ({
+        path: artifact.path,
+        updated_at: artifact.updatedAt.toISOString(),
+        conversation_id: artifact.metadata.conversationId,
+        rollout_summary_file: artifact.metadata.rolloutSummaryFile,
+        task_outcome: artifact.metadata.taskOutcome,
+      })),
+    }
+    let consolidated: { memory: string; memory_summary: string; skills?: Array<{ name: string; content: string }> | undefined }
+    if (rawArtifacts.length === 0 || !this.llm) {
+      consolidated = {
+        memory: existingMemory?.content || '# Task Group: Conversation memory\n\nscope: No durable conversation memory has been consolidated yet.\n',
+        memory_summary: fallbackMemorySummary(rawArtifacts),
+      }
+    } else {
+      try {
+        consolidated = await this.llm.generateJSON(
+          renderMemoryConsolidationPrompt({
+            rawMemories: rawArtifacts.map(artifact => artifact.content).join('\n\n'),
+            existingMemory: existingMemory?.content,
+            existingSummary: existingSummary?.content,
+            selectionJson: JSON.stringify(selection, null, 2),
+          }),
+          undefined,
+          { schema: memoryConsolidationSchema },
+        )
+      } catch {
+        consolidated = {
+          memory: fallbackMemoryHandbook(rawArtifacts),
+          memory_summary: fallbackMemorySummary(rawArtifacts),
+        }
+      }
+    }
+
+    const handbook = await this.upsertArtifactInternal({
+      identity: opts.identity,
+      layoutId,
+      path: MEMORY_HANDBOOK_PATH,
+      kind: 'handbook',
+      content: ensureTrailingNewline(consolidated.memory || fallbackMemoryHandbook(rawArtifacts)),
+      metadata: { selected: rawArtifacts.length },
+    })
+    const summary = await this.upsertArtifactInternal({
+      identity: opts.identity,
+      layoutId,
+      path: MEMORY_SUMMARY_PATH,
+      kind: 'summary',
+      content: ensureTrailingNewline(consolidated.memory_summary || fallbackMemorySummary(rawArtifacts)),
+      metadata: { selected: rawArtifacts.length },
+    })
+    for (const skill of consolidated.skills ?? []) {
+      const name = normalizeConversationSlug(skill.name, 'skill')
+      await this.upsertArtifactInternal({
+        identity: opts.identity,
+        layoutId,
+        path: `skills/${name}/SKILL.md`,
+        kind: 'skill',
+        content: ensureTrailingNewline(skill.content),
+        metadata: { name },
+      })
+    }
+    const phaseTwoSelection = await this.upsertArtifactInternal({
+      identity: opts.identity,
+      layoutId,
+      path: PHASE_TWO_SELECTION_PATH,
+      kind: 'phase_two_selection',
+      content: `${JSON.stringify(selection, null, 2)}\n`,
+      metadata: { selected: rawArtifacts.length },
+    })
+    return {
+      layoutId,
+      selected: rawArtifacts.length,
+      artifacts: {
+        handbook,
+        summary,
+        rawMemories,
+        phaseTwoSelection,
+      },
+    }
+  }
+
+  async context(query: string, rawOpts: MemoryServiceRecallOpts & MemoryContextOpts): Promise<MemoryServiceContextResult> {
+    const opts = optionalCompactObject<MemoryServiceRecallOpts & MemoryContextOpts>(rawOpts, 'MemoryService.context') as MemoryServiceRecallOpts & MemoryContextOpts
+    const layoutId = normalizeLayoutId(opts.layoutId)
+    const summary = await this.getArtifact(MEMORY_SUMMARY_PATH, { identity: opts.identity, layoutId })
+    const handbook = await this.getArtifact(MEMORY_HANDBOOK_PATH, { identity: opts.identity, layoutId })
+    const handbookExcerpt = handbook?.content ? selectHandbookBlocks(handbook.content, query, opts.handbookLimit ?? 2) : ''
+    const artifacts = [summary, handbook].filter((artifact): artifact is MemoryArtifact => !!artifact)
+    const prompt = renderMemoryContextPrompt({
+      summary: summary?.content,
+      handbook: handbookExcerpt,
+    })
+    const recall = opts.includeStructuredRecall
+      ? await this.recall(query, {
+        ...opts,
+        format: opts.format,
+      } as MemoryServiceRecallOpts)
+      : undefined
+    return {
+      layoutId,
+      summary: summary?.content,
+      handbook: handbookExcerpt || undefined,
+      recall,
+      artifacts,
+      prompt,
+    }
+  }
+
+  private async selectedRawMemoryArtifacts(identity: typegraphIdentity, layoutId: string, maxRawMemories = 256): Promise<MemoryArtifact[]> {
+    const artifacts = await this.listArtifacts({
+      identity,
+      layoutId,
+      prefix: 'raw_memories',
+      kind: 'raw_memory',
+    })
+    return artifacts
+      .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime() || right.path.localeCompare(left.path))
+      .slice(0, Math.max(1, maxRawMemories))
+  }
+
+  private async rebuildRawMemoriesArtifact(identity: typegraphIdentity, layoutId: string, selected?: MemoryArtifact[]): Promise<MemoryArtifact> {
+    const rawArtifacts = selected ?? await this.selectedRawMemoryArtifacts(identity, layoutId)
+    return this.upsertArtifactInternal({
+      identity,
+      layoutId,
+      path: RAW_MEMORIES_PATH,
+      kind: 'raw_memories',
+      content: rawArtifacts.map(artifact => artifact.content.trimEnd()).filter(Boolean).join('\n\n'),
+      metadata: { selected: rawArtifacts.map(artifact => artifact.path) },
+    })
   }
 
   // ── Store ──
@@ -605,6 +971,146 @@ export class MemoryService {
   async deploy(): Promise<void> {
     await this.store.initialize()
   }
+}
+
+function inferArtifactKind(path: string): MemoryArtifactKind {
+  const normalized = normalizeArtifactPath(path)
+  if (normalized === MEMORY_SUMMARY_PATH) return 'summary'
+  if (normalized === MEMORY_HANDBOOK_PATH) return 'handbook'
+  if (normalized === RAW_MEMORIES_PATH) return 'raw_memories'
+  if (normalized === PHASE_TWO_SELECTION_PATH) return 'phase_two_selection'
+  if (normalized.startsWith('raw_memories/')) return 'raw_memory'
+  if (normalized.startsWith('rollout_summaries/')) return 'rollout_summary'
+  if (normalized.startsWith('skills/')) return 'skill'
+  return 'other'
+}
+
+function ensureTrailingNewline(content: string): string {
+  return content.endsWith('\n') ? content : `${content}\n`
+}
+
+function firstMetadataLine(content: string, key: string): string | undefined {
+  const prefix = `${key}:`
+  for (const line of content.split('\n')) {
+    if (line.startsWith(prefix)) return line.slice(prefix.length).trim()
+  }
+  return undefined
+}
+
+function formatRawConversationMemory(args: {
+  conversationId: string
+  updatedAt: string
+  rolloutSummaryFile: string
+  output: {
+    conversation_summary: string
+    raw_memory: string
+    task_outcome: string
+    keywords: string[]
+    references: string[]
+  }
+}): string {
+  return [
+    `conversation_id: ${args.conversationId}`,
+    `updated_at: ${args.updatedAt}`,
+    `rollout_summary_file: ${args.rolloutSummaryFile}`,
+    `task_outcome: ${args.output.task_outcome}`,
+    `keywords: ${args.output.keywords.join(', ')}`,
+    '',
+    args.output.raw_memory.trimEnd(),
+    '',
+  ].join('\n')
+}
+
+function formatConversationSummary(args: {
+  conversationId: string
+  updatedAt: string
+  output: {
+    conversation_summary: string
+    task_outcome: string
+    keywords: string[]
+    references: string[]
+  }
+}): string {
+  return [
+    `conversation_id: ${args.conversationId}`,
+    `updated_at: ${args.updatedAt}`,
+    `task_outcome: ${args.output.task_outcome}`,
+    `keywords: ${args.output.keywords.join(', ')}`,
+    '',
+    args.output.conversation_summary.trimEnd(),
+    '',
+    '## References',
+    '',
+    ...args.output.references.map(reference => `- ${reference}`),
+    '',
+  ].join('\n')
+}
+
+function fallbackMemoryHandbook(rawArtifacts: MemoryArtifact[]): string {
+  if (rawArtifacts.length === 0) {
+    return '# Task Group: Conversation memory\n\nscope: No durable conversation memory has been consolidated yet.\n'
+  }
+  return rawArtifacts.map((artifact, index) => {
+    const description = typeof artifact.metadata.description === 'string'
+      ? artifact.metadata.description
+      : artifact.path
+    const keywords = Array.isArray(artifact.metadata.keywords)
+      ? artifact.metadata.keywords.join(', ')
+      : artifact.path
+    return [
+      `# Task Group: ${description || `Conversation memory ${index + 1}`}`,
+      '',
+      `scope: Use when the task relates to ${keywords || artifact.path}.`,
+      '',
+      `## Task 1: ${description || artifact.path}`,
+      '',
+      '### rollout_summary_files',
+      '',
+      `- ${String(artifact.metadata.rolloutSummaryFile ?? artifact.path)} (conversation_id=${String(artifact.metadata.conversationId ?? '')}, updated_at=${artifact.updatedAt.toISOString()}, task_outcome=${String(artifact.metadata.taskOutcome ?? 'uncertain')})`,
+      '',
+      '### keywords',
+      '',
+      `- ${keywords}`,
+      '',
+      '## Reusable knowledge',
+      '',
+      artifact.content.trimEnd(),
+      '',
+    ].join('\n')
+  }).join('\n')
+}
+
+function selectHandbookBlocks(memory: string, query: string, limit: number): string {
+  const blocks = memory
+    .split(/\n(?=# Task Group: )/g)
+    .map(block => block.trim())
+    .filter(Boolean)
+  if (blocks.length === 0) return ''
+  const terms = query.toLowerCase().split(/[^a-z0-9_/-]+/).filter(term => term.length > 2)
+  const scored = blocks.map((block, index) => {
+    const haystack = block.toLowerCase()
+    const score = terms.reduce((sum, term) => sum + (haystack.includes(term) ? 1 : 0), 0)
+    return { block, score, index }
+  })
+  const selected = scored
+    .filter(item => item.score > 0)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, Math.max(1, limit))
+  return selected.map(item => item.block).join('\n\n')
+}
+
+function renderMemoryContextPrompt(args: {
+  summary?: string | undefined
+  handbook?: string | undefined
+}): string {
+  const sections: string[] = []
+  if (args.summary?.trim()) {
+    sections.push(`## Memory Summary\n\n${args.summary.trim()}`)
+  }
+  if (args.handbook?.trim()) {
+    sections.push(`## Relevant Memory Handbook\n\n${args.handbook.trim()}`)
+  }
+  return sections.length > 0 ? sections.join('\n\n') : ''
 }
 
 // ── Formatter ──

@@ -19,6 +19,15 @@ export interface MemoryMiddlewareOpts {
   limit?: number | undefined
   /** Output format. Default: 'xml' */
   format?: 'xml' | 'markdown' | 'plain' | undefined
+  /** Opt-in conversation artifact extraction and consolidation after turns are captured. */
+  conversationMemory?: {
+    enabled?: boolean | undefined
+    mode?: 'extract' | 'extract_and_consolidate' | undefined
+    layoutId?: string | undefined
+    includeRoles?: Array<'user' | 'assistant' | 'tool' | 'system'> | undefined
+    maxTranscriptChars?: number | undefined
+    maxRawMemories?: number | undefined
+  } | undefined
 }
 
 function typesFor(opts: MemoryMiddlewareOpts): ('semantic' | 'episodic' | 'procedural')[] {
@@ -65,7 +74,7 @@ export function typegraphMemoryMiddleware(typegraph: Pick<typegraphInstance, 'me
      * After a response, ingest the thread turn into memory.
      */
     async afterResponse(
-      messages: { role: 'user' | 'assistant'; content: string }[],
+      messages: { role: 'user' | 'assistant' | 'tool' | 'system'; content: string }[],
       threadId?: string,
     ): Promise<void> {
       const resolvedThreadId = threadId ?? opts.context?.threadId
@@ -80,6 +89,22 @@ export function typegraphMemoryMiddleware(typegraph: Pick<typegraphInstance, 'me
           context: opts.context,
           graphExtraction: opts.graphExtraction,
         })
+      }
+      const conversationMemory = opts.conversationMemory
+      if (conversationMemory?.enabled) {
+        await typegraph.memory.extractThread(String(resolvedThreadId), {
+          context: opts.context,
+          layoutId: conversationMemory.layoutId,
+          includeRoles: conversationMemory.includeRoles,
+          maxTranscriptChars: conversationMemory.maxTranscriptChars,
+        })
+        if (conversationMemory.mode === 'extract_and_consolidate') {
+          await typegraph.memory.consolidate({
+            context: opts.context,
+            layoutId: conversationMemory.layoutId,
+            maxRawMemories: conversationMemory.maxRawMemories,
+          })
+        }
       }
     },
   }

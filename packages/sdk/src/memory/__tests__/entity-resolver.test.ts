@@ -65,6 +65,45 @@ describe('EntityResolver', () => {
       expect(entity.embedding).toEqual([0.1, 0.2, 0.3])
     })
 
+    it('filters bare given-name aliases when creating person entities', async () => {
+      const resolver = new EntityResolver({
+        store: mockStore([]),
+        embedding: mockEmbedding(),
+      })
+
+      const { entity, isNew } = await resolver.resolve(
+        'Ada Lovelace',
+        'person',
+        ['Ada', 'Dr Ada'],
+        testScope,
+      )
+
+      expect(isNew).toBe(true)
+      expect(entity.name).toBe('Ada Lovelace')
+      expect(entity.aliases).toEqual([])
+    })
+
+    it('does not merge through stale bare given-name aliases', async () => {
+      const existing: SemanticEntity = {
+        id: 'entity-ada-lovelace',
+        name: 'Ada Lovelace',
+        entityType: 'person',
+        aliases: ['Ada'],
+        metadata: { _similarity: 0.99 },
+        embedding: [0.9, 0.9, 0.9],
+        scope: testScope,
+        temporal: { validAt: new Date(), createdAt: new Date() },
+      }
+      const store = mockStore([existing])
+      ;(store.searchEntities as ReturnType<typeof vi.fn>).mockResolvedValue([existing])
+
+      const resolver = new EntityResolver({ store, embedding: mockEmbedding() })
+
+      const { entity, isNew } = await resolver.resolve('Ada', 'person', [], testScope)
+      expect(isNew).toBe(true)
+      expect(entity.id).not.toBe('entity-ada-lovelace')
+    })
+
     it('stores description embedding at entity creation', async () => {
       const embedding = mockEmbedding()
       let callCount = 0
@@ -538,6 +577,31 @@ describe('EntityResolver', () => {
       expect(merged.aliases).toContain('ACME')
       // No duplicate 'Acme Corp'
       expect(merged.aliases.filter(a => a.toLowerCase() === 'acme corp')).toHaveLength(1)
+    })
+
+    it('does not persist incoming bare given-name aliases for fuller person entities', async () => {
+      const resolver = new EntityResolver({
+        store: mockStore(),
+        embedding: mockEmbedding(),
+      })
+
+      const existing: SemanticEntity = {
+        id: 'e-ada',
+        name: 'Ada Lovelace',
+        entityType: 'person',
+        aliases: ['Ada'],
+        metadata: {},
+        scope: testScope,
+        temporal: { validAt: new Date(), createdAt: new Date() },
+      }
+
+      const merged = await resolver.merge(existing, {
+        name: 'Ada',
+        entityType: 'person',
+        aliases: ['Ada', 'Dr Ada'],
+      })
+
+      expect(merged.aliases).toEqual([])
     })
 
     it('updates entityType from "other" to more specific', async () => {

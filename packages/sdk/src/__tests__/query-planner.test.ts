@@ -9,6 +9,22 @@ import { defaultChunker } from '../index-engine/chunker.js'
 import type { Embedder } from '../embedding/provider.js'
 import type { KnowledgeGraphBridge } from '../types/graph-bridge.js'
 import type { typegraphEvent, typegraphEventSink } from '../types/events.js'
+import type { Reranker } from '../types/extractor.js'
+import type { QueryChunkResult } from '../types/query.js'
+import type { typegraphLogger } from '../types/logger.js'
+
+function chunkKey(chunk: QueryChunkResult): string {
+  return `${chunk.document.bucketId}:${chunk.document.id}:${chunk.chunk.index}`
+}
+
+function createTestLogger(): typegraphLogger {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  }
+}
 
 describe('QueryPlanner', () => {
   let adapter: ReturnType<typeof createMockAdapter>
@@ -54,6 +70,164 @@ describe('QueryPlanner', () => {
     const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings)
     const response = await planner.execute('test query', { limit: 1 })
     expect(response.results.chunks).toHaveLength(1)
+  })
+
+  it('warns and returns normal results when rerank is requested without a reranker', async () => {
+    const logger = createTestLogger()
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, logger)
+
+    const response = await planner.execute('Documents 1', { limit: 2, rerank: true, explain: true })
+
+    expect(response.results.chunks).toHaveLength(2)
+    expect(response.query.mergeStrategy).toBe('rrf')
+    expect(response.warnings).toEqual(expect.arrayContaining([
+      'Search rerank was requested but no reranker is configured; returning non-reranked results.',
+    ]))
+    expect(logger.warn).toHaveBeenCalledWith('Search rerank was requested but no reranker is configured; returning non-reranked results.')
+    expect(response.explanation?.rerank).toMatchObject({
+      requested: true,
+      applied: false,
+      topK: 2,
+      finalCount: 2,
+    })
+  })
+
+  it('passes QueryChunkResult candidates and rerank options to the configured reranker', async () => {
+    const abortController = new AbortController()
+    const reranker: Reranker<QueryChunkResult> = {
+      name: 'reverse-reranker',
+      rerank: vi.fn(async (_query, candidates) => [...candidates].reverse()),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, undefined, 'tenant-1', reranker)
+
+    const response = await planner.execute('Documents', {
+      limit: 1,
+      rerank: { topK: 2 },
+      abortSignal: abortController.signal,
+      explain: true,
+    })
+    const rerankCall = vi.mocked(reranker.rerank).mock.calls[0]!
+    const candidates = rerankCall[1]
+
+    expect(reranker.rerank).toHaveBeenCalledWith('Documents', expect.any(Array), {
+      topK: 2,
+      abortSignal: abortController.signal,
+    })
+    expect(candidates.length).toBeGreaterThan(response.results.chunks.length)
+    expect(candidates[0]).toHaveProperty('content')
+    expect(candidates[0]).toHaveProperty('document.id')
+    expect(candidates[0]).toHaveProperty('chunk.index')
+    expect(response.query.mergeStrategy).toBe('rrf+rerank')
+    expect(response.explanation?.rerank).toMatchObject({
+      requested: true,
+      applied: true,
+      reranker: 'reverse-reranker',
+      topK: 2,
+      candidateCount: candidates.length,
+      finalCount: 1,
+    })
+  })
+
+  it('reranks chunk order while preserving the final limit and fused scores', async () => {
+    let seenCandidates: QueryChunkResult[] = []
+    const reranker: Reranker<QueryChunkResult> = {
+      name: 'reverse-reranker',
+      rerank: vi.fn(async (_query, candidates) => {
+        seenCandidates = [...candidates]
+        return [...candidates].reverse()
+      }),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, undefined, 'tenant-1', reranker)
+
+    const response = await planner.execute('Documents', { limit: 1, rerank: true })
+
+    expect(response.results.chunks).toHaveLength(1)
+    expect(chunkKey(response.results.chunks[0]!)).toBe(chunkKey(seenCandidates.at(-1)!))
+    expect(response.results.chunks[0]!.score).toBe(1)
+    expect(response.results.chunks[0]!.scores.output.reranker).toBe(1)
+    expect(response.results.chunks[0]!.scores.output.fused).toBeDefined()
+  })
+
+  it('overfetches candidates before reranking with the capped 3x policy', async () => {
+    let candidateCount = 0
+    const reranker: Reranker<QueryChunkResult> = {
+      name: 'counting-reranker',
+      rerank: vi.fn(async (_query, candidates) => {
+        candidateCount = candidates.length
+        return candidates
+      }),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, undefined, 'tenant-1', reranker)
+
+    const response = await planner.execute('Documents', { limit: 1, rerank: { topK: 1 }, explain: true })
+
+    expect(candidateCount).toBeGreaterThan(response.results.chunks.length)
+    expect(response.results.chunks).toHaveLength(1)
+    expect(response.explanation?.rerank?.candidateCount).toBe(candidateCount)
+    expect(response.explanation?.rerank?.finalCount).toBe(1)
+  })
+
+  it('uses rerank topK as the final count when limit is omitted', async () => {
+    const reranker: Reranker<QueryChunkResult> = {
+      name: 'identity-reranker',
+      rerank: vi.fn(async (_query, candidates) => candidates),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, undefined, 'tenant-1', reranker)
+
+    const response = await planner.execute('Documents', { rerank: { topK: 2 }, explain: true })
+
+    expect(response.results.chunks).toHaveLength(2)
+    expect(response.explanation?.rerank).toMatchObject({
+      topK: 2,
+      finalCount: 2,
+    })
+  })
+
+  it('warns and falls back to pre-rerank results when the reranker throws', async () => {
+    const logger = createTestLogger()
+    const baselinePlanner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings)
+    const baseline = await baselinePlanner.execute('Documents', { limit: 2 })
+    const reranker: Reranker<QueryChunkResult> = {
+      name: 'failing-reranker',
+      rerank: vi.fn(async () => {
+        throw new Error('reranker unavailable')
+      }),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, logger, 'tenant-1', reranker)
+
+    const response = await planner.execute('Documents', { limit: 2, rerank: true, explain: true })
+
+    expect(response.results.chunks.map(chunkKey)).toEqual(baseline.results.chunks.map(chunkKey))
+    expect(response.query.mergeStrategy).toBe('rrf')
+    expect(response.results.chunks[0]!.scores.output.reranker).toBeUndefined()
+    expect(response.warnings?.[0]).toContain('Search reranker failed: reranker unavailable')
+    expect(logger.warn).toHaveBeenCalledWith('Search reranker failed: reranker unavailable; returning non-reranked results.')
+    expect(response.explanation?.rerank).toMatchObject({
+      requested: true,
+      applied: false,
+      reranker: 'failing-reranker',
+    })
+  })
+
+  it('deduplicates reranker output, ignores unknown candidates, and appends omitted candidates', async () => {
+    const reranker: Reranker<QueryChunkResult> = {
+      name: 'messy-reranker',
+      rerank: vi.fn(async (_query, candidates) => [
+        { ...candidates[0]!, document: { ...candidates[0]!.document, id: 'unknown-document' } },
+        candidates[1]!,
+        candidates[1]!,
+      ]),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, undefined, 'tenant-1', reranker)
+
+    const response = await planner.execute('Documents', { limit: 3, rerank: true })
+    const candidates = vi.mocked(reranker.rerank).mock.calls[0]![1]
+
+    expect(response.results.chunks.map(chunkKey)).toEqual([
+      chunkKey(candidates[1]!),
+      chunkKey(candidates[0]!),
+      chunkKey(candidates[2]!),
+    ])
   })
 
   it('runs true keyword-only indexed search when semantic is explicitly disabled', async () => {
@@ -135,6 +309,9 @@ describe('QueryPlanner', () => {
       fact_count: 0,
       entity_count: 0,
       bucket_count: bucketIds.length,
+      requested_graph: 'public',
+      graph_closure: ['public'],
+      active_bucket_ids: bucketIds,
     })
     expect(queryEvents[0]!.payload).not.toHaveProperty('resultCount')
     expect(queryEvents[0]!.payload).not.toHaveProperty('bucketCount')
@@ -447,6 +624,74 @@ describe('QueryPlanner', () => {
     expect(merged!.matchedBy).toContain('graph')
     expect(merged!.scores.raw.ppr).toBe(0.36)
     expect(merged!.scores.normalized.graph).toBeGreaterThan(0)
+    expect(response.results.facts).toEqual([expect.objectContaining({ id: 'fact-1', description: 'Tennyson wrote Maud' })])
+    expect(response.results.entities).toEqual([expect.objectContaining({ id: 'ent-1', name: 'Tennyson' })])
+  })
+
+  it('reranks mixed indexed and graph chunk results without dropping facts or entities', async () => {
+    const firstChunk = [...adapter._chunks.values()][0]![0]!
+    const reranker: Reranker<QueryChunkResult> = {
+      name: 'identity-reranker',
+      rerank: vi.fn(async (_query, candidates) => candidates),
+    }
+    const knowledgeGraph: KnowledgeGraphBridge = {
+      searchGraphChunks: vi.fn().mockResolvedValue({
+        results: [{
+          chunkId: 'chunk-test',
+          content: firstChunk.content,
+          bucketId: firstChunk.bucketId,
+          documentId: firstChunk.documentId,
+          chunkIndex: firstChunk.chunkIndex,
+          totalChunks: firstChunk.totalChunks,
+          score: 0.36,
+          metadata: {},
+        }],
+        facts: [{
+          id: 'fact-1',
+          edgeId: 'edge-1',
+          sourceEntityId: 'ent-1',
+          sourceEntityName: 'Tennyson',
+          targetEntityId: 'ent-2',
+          targetEntityName: 'Maud',
+          relation: 'AUTHORED',
+          description: 'Tennyson wrote Maud',
+          weight: 1,
+        }],
+        entities: [{
+          id: 'ent-1',
+          name: 'Tennyson',
+          entityType: 'person',
+          aliases: [],
+          edgeCount: 1,
+        }],
+        trace: {
+          entitySeedCount: 1,
+          factSeedCount: 1,
+          chunkSeedCount: 1,
+          graphNodeCount: 3,
+          graphEdgeCount: 2,
+          pprNonzeroCount: 3,
+          candidatesBeforeMerge: 1,
+          candidatesAfterMerge: 1,
+          topGraphScores: [0.36],
+          selectedFactIds: ['fact-1'],
+          selectedEntityIds: ['ent-1'],
+          selectedChunkIds: ['chunk-test'],
+        },
+      }),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, knowledgeGraph, undefined, undefined, 'tenant-1', reranker)
+
+    const response = await planner.execute('Documents 1', {
+      resources: ['documents', 'entities', 'facts'],
+      weights: { bm25: false, graph: 1, recency: false },
+      limit: 1,
+      rerank: true,
+    })
+
+    expect(reranker.rerank).toHaveBeenCalled()
+    expect(response.query.mergeStrategy).toBe('rrf+rerank')
+    expect(response.results.chunks).toHaveLength(1)
     expect(response.results.facts).toEqual([expect.objectContaining({ id: 'fact-1', description: 'Tennyson wrote Maud' })])
     expect(response.results.entities).toEqual([expect.objectContaining({ id: 'ent-1', name: 'Tennyson' })])
   })

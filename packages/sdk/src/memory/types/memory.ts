@@ -5,6 +5,18 @@ import type { ChunkRef } from '../../types/chunk.js'
 
 export type MemoryCategory = 'episodic' | 'semantic' | 'procedural'
 
+// ── Agent-Facing Memory Artifacts ──
+
+export type MemoryArtifactKind =
+  | 'summary'
+  | 'handbook'
+  | 'raw_memory'
+  | 'raw_memories'
+  | 'rollout_summary'
+  | 'phase_two_selection'
+  | 'skill'
+  | 'other'
+
 // ── Memory Lifecycle Status ──
 // Explicit state machine for memory records.
 // Transitions: pending→active, active→consolidated|invalidated|archived,
@@ -73,6 +85,19 @@ export interface MemoryRecord extends TemporalRecord {
   scope: typegraphIdentity
   /** Optional record access scope. Empty or omitted means tenant-wide recall. */
   accessScope?: AccessScope | undefined
+}
+
+export interface MemoryArtifact {
+  tenantId: string
+  graphId: string
+  layoutId: string
+  path: string
+  kind: MemoryArtifactKind
+  content: string
+  contentHash: string
+  metadata: Record<string, unknown>
+  createdAt: Date
+  updatedAt: Date
 }
 
 // ── Episodic Memory ──

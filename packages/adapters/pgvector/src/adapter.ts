@@ -1204,6 +1204,12 @@ export class PgVectorAdapter implements VectorStoreAdapter {
     if (filter?.userId) { params.push(filter.userId); conditions.push(`user_id = $${params.length}`) }
     if (filter?.agentId) { params.push(filter.agentId); conditions.push(`agent_id = $${params.length}`) }
     if (filter?.threadId) { params.push(filter.threadId); conditions.push(`thread_id = $${params.length}`) }
+    if (filter?.graphIds?.length) { params.push(filter.graphIds); conditions.push(`graph_id = ANY($${params.length}::text[])`) }
+    if (filter?.status) {
+      const statuses = Array.isArray(filter.status) ? filter.status : [filter.status]
+      params.push(statuses)
+      conditions.push(`status = ANY($${params.length}::text[])`)
+    }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
 
     if (pagination) {

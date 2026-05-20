@@ -19,6 +19,7 @@ import {
   canonicalizeEntityName,
   hasOcrEditorialNoise,
   isCoordinateListAlias,
+  isPersonGivenNameAlias,
   isUnsafeEntityAlias,
   sanitizeEntityAliases,
   sanitizeEntityBatch,
@@ -231,15 +232,16 @@ function lastToken(value: string): string {
 }
 
 const COMMON_FIRST_NAMES = new Set([
-  'alice', 'anne', 'anna', 'bertha', 'bill', 'bob', 'charles', 'david', 'edmund',
-  'elizabeth', 'frank', 'george', 'harry', 'henry', 'jack', 'james', 'john',
-  'mary', 'michael', 'nancy', 'paul', 'peter', 'rose', 'sam', 'sarah', 'steve',
+  'ada', 'adarsh', 'alan', 'alice', 'anne', 'anna', 'bertha', 'bill', 'bob',
+  'charles', 'chris', 'christopher', 'david', 'edmund', 'elizabeth', 'frank',
+  'george', 'harry', 'henry', 'jack', 'james', 'john', 'kevin', 'mary',
+  'michael', 'nancy', 'paul', 'peter', 'rose', 'sam', 'sarah', 'steve',
   'thomas', 'william',
 ])
 
 const MONONYM_ALLOWLIST = new Set([
-  'aristotle', 'caesar', 'cicero', 'homer', 'madonna', 'napoleon', 'plato',
-  'socrates', 'voltaire',
+  'aristotle', 'caesar', 'cher', 'cicero', 'homer', 'madonna', 'napoleon',
+  'plato', 'socrates', 'voltaire',
 ])
 
 const ALIAS_LEADING_FRAGMENT_WORDS = new Set([
@@ -520,6 +522,34 @@ function buildPersonAliasContexts(entities: ExtractedEntity[]): PersonAliasConte
     })
 }
 
+function personGivenTokens(value: string): string[] {
+  const tokens = nameTokens(value).filter(token => !PERSON_TITLE_TOKENS.has(token))
+  return tokens.length >= 2 ? tokens.slice(0, -1) : []
+}
+
+function blockedSinglePersonNameTokens(
+  entities: readonly ExtractedEntity[],
+  entityContext: readonly EntityContext[],
+): Set<string> {
+  const blocked = new Set<string>()
+  for (const entity of entities) {
+    if (entity.type !== 'person') continue
+    for (const token of personGivenTokens(entity.name)) blocked.add(token)
+    for (const alias of entity.aliases ?? []) {
+      for (const token of personGivenTokens(alias)) blocked.add(token)
+    }
+  }
+  for (const entity of entityContext) {
+    if (entity.type !== 'person') continue
+    for (const token of personGivenTokens(entity.name)) blocked.add(token)
+    for (const alias of entity.aliases ?? []) {
+      for (const token of personGivenTokens(alias)) blocked.add(token)
+    }
+  }
+  for (const token of MONONYM_ALLOWLIST) blocked.delete(token)
+  return blocked
+}
+
 function hasCompatibleGivenNameEvidence(aliasTokens: string[], ownerTokens: string[]): boolean {
   const filteredAliasTokens = aliasTokens.filter(token => !PERSON_TITLE_TOKENS.has(token))
   const filteredOwnerTokens = ownerTokens.filter(token => !PERSON_TITLE_TOKENS.has(token))
@@ -556,6 +586,7 @@ function isEntityAwarePersonAlias(
 
   const aliasTokens = nameTokens(alias)
   if (aliasTokens.length === 0) return false
+  if (isPersonGivenNameAlias(alias, owner.name)) return false
 
   const explicitCue = explicitAliasKeys.has(aliasKey)
 
@@ -694,7 +725,10 @@ function splitCoordinateEntity(entity: ExtractedEntity, ontology?: CompiledOntol
   }, [], ontology))
 }
 
-function promoteOrRejectEntity(entity: ExtractedEntity): ExtractedEntity | undefined {
+function promoteOrRejectEntity(
+  entity: ExtractedEntity,
+  blockedSinglePersonNames: Set<string> = new Set(),
+): ExtractedEntity | undefined {
   if (isWorkLikeType(entity.type)) {
     if (isGeneratedStorageLabel(entity.name)) return undefined
     if (isUntitledStructuralHeading(entity.name)) return undefined
@@ -710,8 +744,10 @@ function promoteOrRejectEntity(entity: ExtractedEntity): ExtractedEntity | undef
       const oldName = entity.name
       entity.name = betterAlias
       entity.aliases = entity.aliases.filter(a => normalizeName(a) !== normalizeName(betterAlias))
-      addUniqueAlias(entity.aliases, oldName, entity.name)
-    } else if (COMMON_FIRST_NAMES.has(key) && !MONONYM_ALLOWLIST.has(key)) {
+      if (!isPersonGivenNameAlias(oldName, entity.name)) {
+        addUniqueAlias(entity.aliases, oldName, entity.name)
+      }
+    } else if ((COMMON_FIRST_NAMES.has(key) || blockedSinglePersonNames.has(key)) && !MONONYM_ALLOWLIST.has(key)) {
       return undefined
     }
   }
@@ -812,6 +848,7 @@ function postProcessExtraction(
   ontology?: CompiledOntology,
 ): ExtractionResult {
   const cleanEntityContext = sanitizeEntityBatch(entityContext ?? [], ontology)
+  const blockedPersonGivenNames = blockedSinglePersonNameTokens(entities, cleanEntityContext)
   const processed: ExtractedEntity[] = []
   const rawNameToCanonical = new Map<string, string>()
   const allowedTypes = allowedEntityTypes(ontology)
@@ -844,7 +881,7 @@ function postProcessExtraction(
 
     if (entity.type === 'location' || entity.type === 'place') augmentLocationAliases(entity, content)
 
-    const promoted = promoteOrRejectEntity(entity)
+    const promoted = promoteOrRejectEntity(entity, blockedPersonGivenNames)
     if (!promoted) continue
 
     const guarded = applyWorkPublicationGuards(promoted, content, ontology)
@@ -869,6 +906,7 @@ function postProcessExtraction(
 
     finalEntity.aliases = [...new Map(finalEntity.aliases.map(a => [normalizeName(a), a])).values()]
       .filter(alias => normalizeName(alias) !== normalizeName(finalEntity.name))
+      .filter(alias => finalEntity.type !== 'person' || !isPersonGivenNameAlias(alias, finalEntity.name))
 
     const splits = splitCoordinateEntity(finalEntity, ontology)
     for (const split of splits) {
@@ -1024,6 +1062,7 @@ For each entity, provide:
   NEVER include as aliases:
   - Pronouns or pronoun phrases (he, she, it, they, them, we, his, her, its)
   - Generic references (the team, the roster, the company, the city, the league, the organization, the event, the protocol, the framework, the ingredient)
+  - Bare first/given names as person aliases when a fuller person name exists. "Ada" is NOT an alias for "Ada Lovelace"; "Kevin" is NOT an alias for "Kevin Durant"; "Adarsh" is NOT an alias for "Adarsh Tadimari". Title+given-name forms such as "Dr Ada" are also not aliases for fuller names.
   - Surnames or first names alone as canonical entity names (Curry, Obama, Kevin, Marie). A bare surname may be an alias only when the same chunk or prior context clearly ties it to a full person entity, e.g. "Conway" after "Cole Conway"
   - Names of DIFFERENT entities — "FIBA Hall of Fame" and "Naismith Hall of Fame" are SEPARATE entities; "React" and "React Native" are SEPARATE; "Python 2" and "Python 3" are SEPARATE
   - Descriptive phrases (the American team, the defending champions, the former president, the lead researcher, the main ingredient)
@@ -1043,7 +1082,8 @@ Entity rules:
 - Include important entities even if they only appear once
 - Preserve complete person surface forms exactly when present. If the text says a person is "calling himself Cole Conway" or "known as Cole Conway", include "Cole Conway" as the entity name or alias — not only "Conway".
 - For people, prefer complete first+last names, titled names, and pseudonyms over bare first names or surnames.
-- Never create a standalone PERSON entity from a bare first name or surname when a fuller person name appears in the text or prior context. Promote it to the fuller entity and store the bare form as an alias only if it is clearly used as a reference.
+- Never create a standalone PERSON entity from a bare first name or surname when a fuller person name appears in the text or prior context. Promote it to the fuller entity. Do not store bare first/given names as aliases; safe surname or pseudonym aliases remain allowed when explicit and unambiguous.
+- Mononyms such as "Madonna" and "Cher" may be canonical person names when the text uses them as standalone public names rather than as shorthand for a fuller local name.
 - Treat "called", "calling himself", "known as", "alias", "under the name", "styled himself", and "went by" constructions as alias evidence for the same entity unless the text clearly describes two different people.
 - Do not add a shared family surname as an alias when several related people use that surname. For example, "Simon" alone is not a safe alias for "Cæsar Simon" when "S. S. Simon" or "Young Simon" may also appear.
 - For locations, use the fullest location span stated in the text. If the source says "Paducah, Kentucky" or "Cairo, Egypt", the entity name should include the qualifier; the bare city may be an alias. Do not invent missing qualifiers.
@@ -1162,6 +1202,7 @@ ${ontologyGuidelinesSection(ontology)}${canonicalizationGuardSection()}
     -- NEVER include as aliases:
     --- Pronouns or pronoun phrases (he, she, it, they, them, we, his, her, its)
     --- Generic references (the team, the roster, the company, the city, the league, the organization, the event, the protocol, the framework, the ingredient)
+    --- Bare first/given names as person aliases when a fuller person name exists. "Ada" is NOT an alias for "Ada Lovelace"; "Kevin" is NOT an alias for "Kevin Durant"; "Adarsh" is NOT an alias for "Adarsh Tadimari". Title+given-name forms such as "Dr Ada" are also not aliases for fuller names.
     --- Surnames or first names alone as canonical entity names (Curry, Obama, Kevin, Marie). A bare surname may be an alias only when the same chunk or prior context clearly ties it to a full person entity, e.g. "Conway" after "Cole Conway"
     --- Names of DIFFERENT entities — "FIBA Hall of Fame" and "Naismith Hall of Fame" are SEPARATE entities; "React" and "React Native" are SEPARATE; "Python 2" and "Python 3" are SEPARATE
     --- Descriptive phrases (the American team, the defending champions, the former president, the lead researcher, the main ingredient)
@@ -1184,7 +1225,8 @@ ${ontologyGuidelinesSection(ontology)}${canonicalizationGuardSection()}
     - Include important entities even if they only appear once
     - Preserve complete person surface forms exactly when present. If the text says a person is "calling himself Cole Conway" or "known as Cole Conway", include "Cole Conway" as the entity name or alias — not only "Conway".
     - For people, prefer complete first+last names, titled names, and pseudonyms over bare first names or surnames.
-    - Never create a standalone PERSON entity from a bare first name or surname when a fuller person name appears in the text or prior context. Promote it to the fuller entity and store the bare form as an alias only if it is clearly used as a reference.
+    - Never create a standalone PERSON entity from a bare first name or surname when a fuller person name appears in the text or prior context. Promote it to the fuller entity. Do not store bare first/given names as aliases; safe surname or pseudonym aliases remain allowed when explicit and unambiguous.
+    - Mononyms such as "Madonna" and "Cher" may be canonical person names when the text uses them as standalone public names rather than as shorthand for a fuller local name.
     - Treat "called", "calling himself", "known as", "alias", "under the name", "styled himself", and "went by" constructions as alias evidence for the same entity unless the text clearly describes two different people.
     - Do not add a shared family surname as an alias when several related people use that surname. For example, "Simon" alone is not a safe alias for "Cæsar Simon" when "S. S. Simon" or "Young Simon" may also appear.
     - For locations, use the fullest location span stated in the text. If the source says "Paducah, Kentucky" or "Cairo, Egypt", the entity name should include the qualifier; the bare city may be an alias. Do not invent missing qualifiers.

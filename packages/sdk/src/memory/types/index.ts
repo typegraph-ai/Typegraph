@@ -4,6 +4,8 @@ export type {
   TemporalRecord,
   ExternalId,
   ExternalIdEncoding,
+  MemoryArtifact,
+  MemoryArtifactKind,
   MemoryRecord,
   EpisodicMemory,
   SemanticEntity,
@@ -32,5 +34,7 @@ export type {
   ChunkMentionBackfillRow,
   MemoryFilter,
   MemorySearchOpts,
+  MemoryArtifactUpsertInput,
+  MemoryArtifactFilter,
   MemoryStoreAdapter,
 } from './adapter.js'

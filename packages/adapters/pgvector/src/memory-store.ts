@@ -8,6 +8,10 @@
 
 import type {
   MemoryStoreAdapter,
+  MemoryArtifact,
+  MemoryArtifactFilter,
+  MemoryArtifactKind,
+  MemoryArtifactUpsertInput,
   MemoryFilter,
   MemorySearchOpts,
   MemoryRecord,
@@ -26,6 +30,8 @@ import type {
   MergeGraphEntitiesResult,
   DeleteGraphEntityOpts,
   DeleteGraphEntityResult,
+  GraphFactLookupOptions,
+  GraphFactTripleLookup,
   GraphInvalidationOptions,
   GraphTemporalQueryOptions,
 } from '@typegraph-ai/sdk'
@@ -57,6 +63,7 @@ export interface PgMemoryAdapterConfig {
   entityExternalIdsTable?: string | undefined
   chunkMentionsTable?: string | undefined
   factRecordsTable?: string | undefined
+  artifactsTable?: string | undefined
   /** Embedding vector dimensions (e.g. 1536 for text-embedding-3-small). Used for HNSW index creation. */
   embeddingDimensions?: number | undefined
 }
@@ -116,6 +123,11 @@ const FACT_ROW_COLUMNS = [
   'user_id', 'agent_id', 'thread_id', 'graph_id', 'valid_at', 'invalid_at',
   'expired_at', 'supersession_key', 'superseded_by_id', 'superseded_at',
   'created_at', 'updated_at',
+]
+
+const ARTIFACT_ROW_COLUMNS = [
+  'tenant_id', 'graph_id', 'layout_id', 'path', 'kind', 'content',
+  'metadata', 'content_hash', 'created_at', 'updated_at',
 ]
 
 function selectColumns(columns: string[], alias?: string): string {
@@ -436,6 +448,32 @@ const FACT_RECORDS_DDL = (t: string, dims?: number) => {
 `
 }
 
+const ARTIFACTS_DDL = (t: string) => {
+  const i = idxPrefix(t)
+  const idx = (suffix: string) => safeIdx(i, suffix)
+  return `
+  CREATE TABLE IF NOT EXISTS ${t} (
+    tenant_id     TEXT NOT NULL,
+    graph_id      TEXT NOT NULL DEFAULT 'public',
+    layout_id     TEXT NOT NULL,
+    path          TEXT NOT NULL,
+    kind          TEXT NOT NULL CHECK (kind IN ('summary', 'handbook', 'raw_memory', 'raw_memories', 'rollout_summary', 'phase_two_selection', 'skill', 'other')),
+    content       TEXT NOT NULL,
+    metadata      JSONB NOT NULL DEFAULT '{}',
+    content_hash  TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    search_vector TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
+    PRIMARY KEY (tenant_id, graph_id, layout_id, path)
+  );
+
+  CREATE INDEX IF NOT EXISTS ${idx('layout_kind_idx')} ON ${t} (tenant_id, graph_id, layout_id, kind);
+  CREATE INDEX IF NOT EXISTS ${idx('layout_updated_idx')} ON ${t} (tenant_id, graph_id, layout_id, updated_at DESC);
+  CREATE INDEX IF NOT EXISTS ${idx('path_pattern_idx')} ON ${t} (path text_pattern_ops);
+  CREATE INDEX IF NOT EXISTS ${idx('search_vector_idx')} ON ${t} USING gin (search_vector);
+`
+}
+
 // ── Adapter Implementation ──
 
 /** Strip schema prefix from a qualified table name for use in ON CONFLICT column refs. */
@@ -449,6 +487,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
   private edgesTable: string
   private chunkMentionsTable: string
   private factRecordsTable: string
+  private artifactsTable: string
   private schema: string | undefined
   private hnswEntityIndexCreated = false
   private hnswMemoryIndexCreated = false
@@ -464,6 +503,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
     this.edgesTable = config.edgesTable ?? `${prefix}typegraph_graph_edges`
     this.chunkMentionsTable = config.chunkMentionsTable ?? `${prefix}typegraph_entity_chunk_mentions`
     this.factRecordsTable = config.factRecordsTable ?? `${prefix}typegraph_fact_records`
+    this.artifactsTable = config.artifactsTable ?? `${prefix}typegraph_memory_artifacts`
     this.embeddingDimensions = config.embeddingDimensions ?? 1536
   }
 
@@ -483,6 +523,7 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       EDGES_DDL(this.edgesTable),
       CHUNK_MENTIONS_DDL(this.chunkMentionsTable),
       FACT_RECORDS_DDL(this.factRecordsTable, this.embeddingDimensions),
+      ARTIFACTS_DDL(this.artifactsTable),
     ]
     for (const ddl of allDdl) {
       const statements = ddl
@@ -781,6 +822,84 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
        SET access_count = access_count + 1, last_accessed_at = NOW(), updated_at = NOW()
        WHERE id = $1`,
       [id]
+    )
+  }
+
+  // ── Agent-Facing Memory Artifacts ──
+
+  async upsertArtifact(input: MemoryArtifactUpsertInput): Promise<MemoryArtifact> {
+    const tenantId = input.identity.tenantId ?? 'public'
+    const graphId = input.identity.graphId ?? 'public'
+    const rows = await this.sqlWithRetry(
+      `INSERT INTO ${this.artifactsTable}
+        (tenant_id, graph_id, layout_id, path, kind, content, metadata, content_hash, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+       ON CONFLICT (tenant_id, graph_id, layout_id, path) DO UPDATE SET
+         kind = EXCLUDED.kind,
+         content = EXCLUDED.content,
+         metadata = EXCLUDED.metadata,
+         content_hash = EXCLUDED.content_hash,
+         updated_at = NOW()
+       RETURNING ${selectColumns(ARTIFACT_ROW_COLUMNS)}`,
+      [
+        tenantId,
+        graphId,
+        input.layoutId,
+        input.path,
+        input.kind,
+        input.content,
+        JSON.stringify(input.metadata ?? {}),
+        input.contentHash,
+      ]
+    )
+    return mapRowToArtifact(rows[0]!)
+  }
+
+  async getArtifact(identity: TypeGraphStorageIdentity, layoutId: string, path: string): Promise<MemoryArtifact | null> {
+    const rows = await this.sqlWithRetry(
+      `SELECT ${selectColumns(ARTIFACT_ROW_COLUMNS)}
+         FROM ${this.artifactsTable}
+        WHERE tenant_id = $1
+          AND graph_id = $2
+          AND layout_id = $3
+          AND path = $4
+        LIMIT 1`,
+      [
+        identity.tenantId ?? 'public',
+        identity.graphId ?? 'public',
+        layoutId,
+        path,
+      ]
+    )
+    return rows[0] ? mapRowToArtifact(rows[0]) : null
+  }
+
+  async listArtifacts(filter: MemoryArtifactFilter): Promise<MemoryArtifact[]> {
+    const { where, params } = buildArtifactWhere(filter)
+    const whereClause = where ? `WHERE ${where}` : ''
+    const rows = await this.sqlWithRetry(
+      `SELECT ${selectColumns(ARTIFACT_ROW_COLUMNS)}
+         FROM ${this.artifactsTable}
+         ${whereClause}
+        ORDER BY updated_at DESC, path ASC`,
+      params
+    )
+    return rows.map(mapRowToArtifact)
+  }
+
+  async deleteArtifact(identity: TypeGraphStorageIdentity, layoutId: string, path: string): Promise<void> {
+    await this.sqlWithRetry(
+      `DELETE FROM ${this.artifactsTable}
+        WHERE tenant_id = $1
+          AND graph_id = $2
+          AND layout_id = $3
+          AND path = $4`,
+      [
+        identity.tenantId ?? 'public',
+        identity.graphId ?? 'public',
+        layoutId,
+        path,
+      ]
     )
   }
 
@@ -1386,6 +1505,81 @@ export class PgMemoryStoreAdapter implements MemoryStoreAdapter {
       [tenantId, graphId, fact.id]
     )
     return rows[0] ? mapRowToFact(rows[0]) : fact
+  }
+
+  private async selectFactRecords(
+    clauses: string[],
+    params: unknown[],
+    scope?: TypeGraphStorageIdentity,
+    temporal?: GraphFactLookupOptions,
+    suffix = '',
+  ): Promise<SemanticFactRecord[]> {
+    const identity = buildGraphVisibilityWhere(scope, params.length)
+    if (identity.where) clauses.push(identity.where)
+    params.push(...identity.params)
+    const temporalWhere = buildGraphTemporalWhere(temporal, params.length)
+    if (temporalWhere.where) clauses.push(temporalWhere.where)
+    params.push(...temporalWhere.params)
+    const where = clauses.length > 0 ? clauses.join(' AND ') : 'TRUE'
+    const rows = await this.sqlWithRetry(
+      `SELECT ${selectColumns(FACT_ROW_COLUMNS)}
+         FROM ${this.factRecordsTable}
+        WHERE ${where}
+        ${suffix}`,
+      params
+    )
+    return rows.map(mapRowToFact)
+  }
+
+  async getFactRecord(id: string, scope?: TypeGraphStorageIdentity, temporal?: GraphFactLookupOptions): Promise<SemanticFactRecord | null> {
+    const factId = id.trim()
+    if (!factId) return null
+    const rows = await this.selectFactRecords(
+      ['id = $1'],
+      [factId],
+      scope,
+      temporal,
+      'LIMIT 1',
+    )
+    return rows[0] ?? null
+  }
+
+  async getFactRecordsByIds(ids: string[], scope?: TypeGraphStorageIdentity, temporal?: GraphFactLookupOptions): Promise<SemanticFactRecord[]> {
+    const factIds = [...new Set(ids.map(id => id.trim()).filter(Boolean))]
+    if (factIds.length === 0) return []
+    return this.selectFactRecords(
+      ['id = ANY($1::text[])'],
+      [factIds],
+      scope,
+      temporal,
+      'ORDER BY array_position($1::text[], id)',
+    )
+  }
+
+  async findFactRecordsBySupersessionKey(key: string, scope?: TypeGraphStorageIdentity, temporal?: GraphFactLookupOptions): Promise<SemanticFactRecord[]> {
+    const supersessionKey = key.trim()
+    if (!supersessionKey) return []
+    return this.selectFactRecords(
+      ['supersession_key = $1'],
+      [supersessionKey],
+      scope,
+      temporal,
+      'ORDER BY valid_at ASC, created_at ASC',
+    )
+  }
+
+  async findFactRecordsByTriple(triple: GraphFactTripleLookup, scope?: TypeGraphStorageIdentity, temporal?: GraphFactLookupOptions): Promise<SemanticFactRecord[]> {
+    const sourceEntityId = triple.sourceEntityId.trim()
+    const relation = triple.relation.trim()
+    const targetEntityId = triple.targetEntityId.trim()
+    if (!sourceEntityId || !relation || !targetEntityId) return []
+    return this.selectFactRecords(
+      ['source_entity_id = $1', 'relation = $2', 'target_entity_id = $3'],
+      [sourceEntityId, relation, targetEntityId],
+      scope,
+      temporal,
+      'ORDER BY valid_at DESC, created_at DESC',
+    )
   }
 
   async searchFacts(embedding: number[], scope: TypeGraphStorageIdentity, limit?: number, temporal?: GraphTemporalQueryOptions): Promise<SemanticFactRecord[]> {
@@ -2483,6 +2677,21 @@ function mapRowToMemory(row: Record<string, unknown>): MemoryRecord {
   return base
 }
 
+function mapRowToArtifact(row: Record<string, unknown>): MemoryArtifact {
+  return {
+    tenantId: row.tenant_id as string,
+    graphId: (row.graph_id as string | null) ?? 'public',
+    layoutId: row.layout_id as string,
+    path: row.path as string,
+    kind: row.kind as MemoryArtifactKind,
+    content: row.content as string,
+    metadata: parseJson(row.metadata),
+    contentHash: row.content_hash as string,
+    createdAt: new Date(row.created_at as string),
+    updatedAt: new Date(row.updated_at as string),
+  }
+}
+
 function mapRowToEntity(row: Record<string, unknown>): SemanticEntity {
   const props = parseJson(row.properties)
   // Stash pgvector similarity score (if present from searchEntities query) as transient property
@@ -2835,6 +3044,60 @@ function buildMemoryWhere(
   if (filter.minImportance !== undefined) {
     params.push(filter.minImportance)
     conditions.push(`importance >= ${p()}`)
+  }
+
+  return {
+    where: conditions.join(' AND '),
+    params,
+  }
+}
+
+function buildArtifactWhere(
+  filter: MemoryArtifactFilter,
+  paramOffset = 0
+): { where: string; params: unknown[] } {
+  const conditions: string[] = []
+  const params: unknown[] = []
+  const p = () => `$${paramOffset + params.length}`
+  const identity = filter.identity
+
+  params.push(identity.tenantId ?? 'public')
+  conditions.push(`tenant_id = ${p()}`)
+
+  const graphIds = filter.graphIds
+    ?? identity.graphIds
+    ?? (identity.graphId ? [identity.graphId] : ['public'])
+  if (graphIds.length === 0) {
+    conditions.push('FALSE')
+  } else {
+    params.push(graphIds)
+    conditions.push(`graph_id = ANY(${p()}::text[])`)
+  }
+
+  if (filter.layoutId) {
+    params.push(filter.layoutId)
+    conditions.push(`layout_id = ${p()}`)
+  }
+  if (filter.path) {
+    params.push(filter.path)
+    conditions.push(`path = ${p()}`)
+  }
+  if (filter.prefix) {
+    params.push(`${escapeLike(filter.prefix)}%`)
+    conditions.push(`path LIKE ${p()} ESCAPE '\\'`)
+  }
+  if (filter.kind) {
+    if (Array.isArray(filter.kind)) {
+      if (filter.kind.length === 0) {
+        conditions.push('FALSE')
+      } else {
+        params.push(filter.kind)
+        conditions.push(`kind = ANY(${p()}::text[])`)
+      }
+    } else {
+      params.push(filter.kind)
+      conditions.push(`kind = ${p()}`)
+    }
   }
 
   return {

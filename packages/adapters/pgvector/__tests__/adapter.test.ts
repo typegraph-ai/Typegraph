@@ -3,7 +3,41 @@ import type { EmbeddedChunk } from '@typegraph-ai/sdk'
 import { PgVectorAdapter } from '../src/adapter.js'
 import { PgDocumentStore } from '../src/document-store.js'
 import { PgEventStore } from '../src/event-store.js'
+import { PgMemoryStoreAdapter } from '../src/memory-store.js'
 import { PgThreadStore } from '../src/thread-store.js'
+
+function factRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'fact_1',
+    edge_id: 'edge_1',
+    source_entity_id: 'person_1',
+    target_entity_id: 'team_1',
+    relation: 'WORKS_FOR',
+    fact_text: 'Alice works for Data Team',
+    description: 'Alice works for Data Team',
+    evidence_text: 'HRIS record',
+    fact_search_text: 'Alice works for Data Team',
+    from_chunk_id: null,
+    weight: 1,
+    evidence_count: 1,
+    tenant_id: 'tenant_1',
+    organization_id: 'org_1',
+    group_id: null,
+    user_id: null,
+    agent_id: null,
+    thread_id: null,
+    graph_id: 'employee',
+    valid_at: '2026-01-01T00:00:00.000Z',
+    invalid_at: null,
+    expired_at: null,
+    supersession_key: null,
+    superseded_by_id: null,
+    superseded_at: null,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  }
+}
 
 describe('PgVectorAdapter graph records', () => {
   it('maps public graph access when Postgres returns a jsonb scalar as a string', async () => {
@@ -214,6 +248,28 @@ describe('PgVectorAdapter graph records', () => {
     expect(sql.mock.calls[2]?.[1]).toEqual(['tenant_a', ['public']])
   })
 
+  it('lists buckets with graph and status filters', async () => {
+    let capturedQuery = ''
+    let capturedParams: unknown[] | undefined
+    const sql = vi.fn(async (query: string, params?: unknown[]) => {
+      capturedQuery = query
+      capturedParams = params
+      return []
+    })
+    const adapter = new PgVectorAdapter({ sql })
+
+    await adapter.listBuckets({
+      tenantId: 'tenant_a',
+      graphIds: ['employee', 'public'],
+      status: 'active',
+    })
+
+    expect(capturedQuery).toContain('tenant_id = $1')
+    expect(capturedQuery).toContain('graph_id = ANY($2::text[])')
+    expect(capturedQuery).toContain('status = ANY($3::text[])')
+    expect(capturedParams).toEqual(['tenant_a', ['employee', 'public'], ['active']])
+  })
+
   it('bulk-upserts chunks without record-level access scope columns', async () => {
     let capturedQuery = ''
     let capturedParams: unknown[] | undefined
@@ -327,5 +383,78 @@ describe('PgVectorAdapter graph records', () => {
     expect(combined).toContain('DELETE FROM typegraph_links')
     expect(combined).toContain("l.from_kind = 'event'")
     expect(combined).toContain("l.to_kind = 'event'")
+  })
+
+  it('looks up fact records by id with scoped identity and invalidated-row inclusion', async () => {
+    let capturedQuery = ''
+    let capturedParams: unknown[] | undefined
+    const sql = vi.fn(async (query: string, params?: unknown[]) => {
+      capturedQuery = query
+      capturedParams = params
+      return [factRow({ id: params?.[0] })]
+    })
+    const store = new PgMemoryStoreAdapter({ sql })
+
+    const fact = await store.getFactRecord('fact_1', {
+      tenantId: 'tenant_1',
+      graphId: 'employee',
+    }, {
+      includeInvalidated: true,
+    })
+
+    expect(fact?.id).toBe('fact_1')
+    expect(capturedQuery).toContain('FROM typegraph_fact_records')
+    expect(capturedQuery).toContain('id = $1')
+    expect(capturedQuery).toContain('tenant_id = $2')
+    expect(capturedQuery).toContain('graph_id = $3')
+    expect(capturedQuery).not.toContain('valid_at <=')
+    expect(capturedParams).toEqual(['fact_1', 'tenant_1', 'employee'])
+  })
+
+  it('looks up fact records by ids, supersession key, and exact triple with temporal filters', async () => {
+    const queries: string[] = []
+    const paramsList: Array<unknown[] | undefined> = []
+    const sql = vi.fn(async (query: string, params?: unknown[]) => {
+      queries.push(query)
+      paramsList.push(params)
+      return [factRow({ id: Array.isArray(params?.[0]) ? params?.[0][0] : 'fact_1' })]
+    })
+    const store = new PgMemoryStoreAdapter({ sql })
+    const scope = { tenantId: 'tenant_1', graphId: 'employee' }
+    const temporal = { asOf: new Date('2026-05-19T00:00:00.000Z') }
+
+    await store.getFactRecordsByIds(['fact_1', 'fact_2'], scope, temporal)
+    await store.findFactRecordsBySupersessionKey('curated:employee:person:WORKS_FOR:team', scope, temporal)
+    await store.findFactRecordsByTriple({
+      sourceEntityId: 'person_1',
+      relation: 'WORKS_FOR',
+      targetEntityId: 'team_1',
+    }, scope, temporal)
+
+    expect(queries[0]).toContain('id = ANY($1::text[])')
+    expect(queries[0]).toContain('ORDER BY array_position($1::text[], id)')
+    expect(queries[0]).toContain('valid_at <= $4::timestamptz')
+    expect(paramsList[0]).toEqual([
+      ['fact_1', 'fact_2'],
+      'tenant_1',
+      'employee',
+      '2026-05-19T00:00:00.000Z',
+    ])
+    expect(queries[1]).toContain('supersession_key = $1')
+    expect(queries[1]).toContain('ORDER BY valid_at ASC, created_at ASC')
+    expect(queries[2]).toContain('source_entity_id = $1')
+    expect(queries[2]).toContain('relation = $2')
+    expect(queries[2]).toContain('target_entity_id = $3')
+    expect(queries[2]).toContain('tenant_id = $4')
+    expect(queries[2]).toContain('graph_id = $5')
+    expect(queries[2]).toContain('valid_at <= $6::timestamptz')
+    expect(paramsList[2]).toEqual([
+      'person_1',
+      'WORKS_FOR',
+      'team_1',
+      'tenant_1',
+      'employee',
+      '2026-05-19T00:00:00.000Z',
+    ])
   })
 })

@@ -1,4 +1,5 @@
 import type { TemporalRecord, MemoryStatus } from './types/memory.js'
+import type { BuildCuratedSupersessionKeyInput, GraphTemporalInput } from '../types/graph-bridge.js'
 
 /**
  * Check if a temporal record is active (valid and not expired) at a given point in time.
@@ -64,6 +65,68 @@ export function createTemporal(validAt?: Date): TemporalRecord {
     validAt: validAt ?? now,
     createdAt: now,
   }
+}
+
+/**
+ * Parse a graph temporal field using canonical graph field names only.
+ * Returns undefined for omitted/blank input and throws on invalid dates.
+ */
+export function parseGraphTemporalDate(
+  value: Date | string | undefined,
+  field: keyof GraphTemporalInput | 'date' = 'date',
+): Date | undefined {
+  if (value === undefined) return undefined
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) throw new Error(`Invalid graph temporal ${field}`)
+    return value
+  }
+  const cleaned = value.trim()
+  if (!cleaned) return undefined
+  const parsed = new Date(cleaned)
+  if (Number.isNaN(parsed.getTime())) throw new Error(`Invalid graph temporal ${field}: ${cleaned}`)
+  return parsed
+}
+
+/**
+ * Normalize canonical graph temporal inputs and validate that stop times do
+ * not precede validAt. This intentionally does not accept legacy aliases.
+ */
+export function normalizeGraphTemporalInput(input: GraphTemporalInput): {
+  validAt?: Date | undefined
+  invalidAt?: Date | undefined
+  expiredAt?: Date | undefined
+} {
+  const validAt = parseGraphTemporalDate(input.validAt, 'validAt')
+  const invalidAt = parseGraphTemporalDate(input.invalidAt, 'invalidAt')
+  const expiredAt = parseGraphTemporalDate(input.expiredAt, 'expiredAt')
+  if (validAt && invalidAt && invalidAt < validAt) {
+    throw new Error('Invalid graph temporal invalidAt: must be on or after validAt')
+  }
+  if (validAt && expiredAt && expiredAt < validAt) {
+    throw new Error('Invalid graph temporal expiredAt: must be on or after validAt')
+  }
+  return { validAt, invalidAt, expiredAt }
+}
+
+function curatedKeySegment(value: string, field: string): string {
+  const cleaned = value.trim().replace(/\s+/g, '_')
+  if (!cleaned) throw new Error(`Missing graph supersession key ${field}`)
+  return cleaned
+}
+
+/**
+ * Build the deterministic curated timeline key used for human-approved
+ * reconciliation of mutable graph slots.
+ */
+export function buildCuratedSupersessionKey(input: BuildCuratedSupersessionKeyInput): string {
+  const slotKey = input.slotKey ?? input.relation
+  return [
+    'curated',
+    curatedKeySegment(input.graphId, 'graphId'),
+    curatedKeySegment(input.sourceEntityId, 'sourceEntityId'),
+    curatedKeySegment(input.relation, 'relation'),
+    curatedKeySegment(slotKey, 'slotKey'),
+  ].join(':')
 }
 
 /**

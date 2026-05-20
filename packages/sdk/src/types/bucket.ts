@@ -85,6 +85,8 @@ export interface BucketStorageFilter extends BucketListFilter {
   userId?: string | undefined
   agentId?: string | undefined
   threadId?: string | undefined
+  graphIds?: string[] | undefined
+  status?: Bucket['status'] | Bucket['status'][] | undefined
 }
 
 export type EmbeddingConfig = Embedder | AISDKEmbeddingInput

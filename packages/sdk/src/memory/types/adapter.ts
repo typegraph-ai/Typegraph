@@ -1,6 +1,8 @@
 import type { AccessScope, typegraphIdentity } from '../../types/identity.js'
 import type {
   MemoryRecord,
+  MemoryArtifact,
+  MemoryArtifactKind,
   MemoryCategory,
   MemoryStatus,
   ExternalId,
@@ -16,6 +18,8 @@ import type { ChunkRef } from '../../types/chunk.js'
 import type {
   DeleteGraphEntityOpts,
   DeleteGraphEntityResult,
+  GraphFactLookupOptions,
+  GraphFactTripleLookup,
   GraphInvalidationOptions,
   GraphTemporalQueryOptions,
   MergeGraphEntitiesInput,
@@ -57,6 +61,25 @@ export interface MemorySearchOpts {
   includeExpired?: boolean | undefined
   /** Point-in-time query: only return records valid at this timestamp */
   temporalAt?: Date | undefined
+}
+
+export interface MemoryArtifactUpsertInput {
+  identity: typegraphIdentity
+  layoutId: string
+  path: string
+  kind: MemoryArtifactKind
+  content: string
+  contentHash: string
+  metadata?: Record<string, unknown> | undefined
+}
+
+export interface MemoryArtifactFilter {
+  identity: typegraphIdentity
+  graphIds?: string[] | undefined
+  layoutId?: string | undefined
+  path?: string | undefined
+  prefix?: string | undefined
+  kind?: MemoryArtifactKind | MemoryArtifactKind[] | undefined
 }
 
 export interface GraphBackfillPageOpts {
@@ -131,6 +154,13 @@ export interface MemoryStoreAdapter {
   /** Increment access count and update lastAccessedAt for a record */
   recordAccess?(id: string): Promise<void>
 
+  // ── Agent-Facing Memory Artifacts (optional - needed for conversation memory) ──
+
+  upsertArtifact?(artifact: MemoryArtifactUpsertInput): Promise<MemoryArtifact>
+  getArtifact?(identity: typegraphIdentity, layoutId: string, path: string): Promise<MemoryArtifact | null>
+  listArtifacts?(filter: MemoryArtifactFilter): Promise<MemoryArtifact[]>
+  deleteArtifact?(identity: typegraphIdentity, layoutId: string, path: string): Promise<void>
+
   // ── Entity Storage (optional - needed for semantic memory graph) ──
 
   upsertEntity?(entity: SemanticEntity): Promise<SemanticEntity>
@@ -149,6 +179,11 @@ export interface MemoryStoreAdapter {
   upsertGraphEdges?(edges: SemanticGraphEdge[]): Promise<void>
 
   upsertFactRecord?(fact: SemanticFactRecord): Promise<SemanticFactRecord>
+
+  getFactRecord?(id: string, scope?: typegraphIdentity, temporal?: GraphFactLookupOptions): Promise<SemanticFactRecord | null>
+  getFactRecordsByIds?(ids: string[], scope?: typegraphIdentity, temporal?: GraphFactLookupOptions): Promise<SemanticFactRecord[]>
+  findFactRecordsBySupersessionKey?(key: string, scope?: typegraphIdentity, temporal?: GraphFactLookupOptions): Promise<SemanticFactRecord[]>
+  findFactRecordsByTriple?(triple: GraphFactTripleLookup, scope?: typegraphIdentity, temporal?: GraphFactLookupOptions): Promise<SemanticFactRecord[]>
 
   searchFacts?(embedding: number[], scope: typegraphIdentity, limit?: number, temporal?: GraphTemporalQueryOptions): Promise<SemanticFactRecord[]>
   searchFactsHybrid?(query: string, embedding: number[] | undefined, scope: typegraphIdentity, limit?: number, temporal?: GraphTemporalQueryOptions): Promise<SemanticFactRecord[]>

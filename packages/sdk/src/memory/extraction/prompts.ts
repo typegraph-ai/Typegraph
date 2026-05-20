@@ -36,6 +36,12 @@ For each entity, provide:
 - "entityType": The type (one of: "person", "organization", "location", "product", "concept", "tool", "event", "other")
 - "aliases": Array of alternative names or spellings mentioned in the text
 
+Person name rules:
+- Prefer the fullest person name supported by the text.
+- Do not include bare first/given names as aliases when a fuller person name exists. "Ada" is not an alias for "Ada Lovelace"; "Kevin" is not an alias for "Kevin Durant".
+- Do not create first-name-only person entities unless the text clearly uses the name as a standalone mononym, such as "Madonna" or "Cher".
+- Bare surnames or pseudonyms may be aliases only when the text explicitly and unambiguously uses them for the same person.
+
 Return a JSON array of entities. If no entities are found, return an empty array.
 
 Text:

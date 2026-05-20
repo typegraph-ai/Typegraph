@@ -1,6 +1,6 @@
 import type { AccessScope, TypeGraphOptions, typegraphIdentity } from './identity.js'
 import type { MemoryHealthReport } from './memory.js'
-import type { ExternalId } from '../memory/types/memory.js'
+import type { ExternalId, MemoryArtifact, MemoryArtifactKind, MemoryRecord } from '../memory/types/memory.js'
 import type { ChunkRef } from './chunk.js'
 import type { QueryEntityScope, RetrievalSwitches } from './query.js'
 import type { PaginationOpts } from './pagination.js'
@@ -37,6 +37,75 @@ export interface RecallOpts extends TypeGraphOptions {
 }
 
 export interface HealthCheckOpts extends TypeGraphOptions {}
+
+export interface MemoryLayoutOpts extends TypeGraphOptions {
+  layoutId?: string | undefined
+}
+
+export interface MemoryArtifactUpsert {
+  layoutId?: string | undefined
+  path: string
+  kind?: MemoryArtifactKind | undefined
+  content: string
+  metadata?: Record<string, unknown> | undefined
+}
+
+export interface MemoryArtifactListOpts extends MemoryLayoutOpts {
+  prefix?: string | undefined
+  kind?: MemoryArtifactKind | MemoryArtifactKind[] | undefined
+}
+
+export interface MemoryArtifactGetOpts extends MemoryLayoutOpts {}
+
+export interface MemoryArtifactDeleteOpts extends MemoryLayoutOpts {}
+
+export interface ExtractThreadOpts extends MemoryLayoutOpts {
+  includeRoles?: Array<'user' | 'assistant' | 'tool' | 'system'> | undefined
+  maxTranscriptChars?: number | undefined
+}
+
+export interface ConversationMemoryExtraction {
+  conversationId: string
+  layoutId: string
+  noOp: boolean
+  taskOutcome?: 'success' | 'partial' | 'fail' | 'uncertain' | undefined
+  keywords: string[]
+  artifacts: {
+    rawMemory?: MemoryArtifact | undefined
+    rolloutSummary?: MemoryArtifact | undefined
+    rawMemories?: MemoryArtifact | undefined
+  }
+}
+
+export interface ConsolidateMemoryOpts extends MemoryLayoutOpts {
+  maxRawMemories?: number | undefined
+}
+
+export interface MemoryConsolidationResult {
+  layoutId: string
+  selected: number
+  artifacts: {
+    handbook: MemoryArtifact
+    summary: MemoryArtifact
+    rawMemories?: MemoryArtifact | undefined
+    phaseTwoSelection: MemoryArtifact
+  }
+}
+
+export interface MemoryContextOpts extends RecallOpts {
+  layoutId?: string | undefined
+  handbookLimit?: number | undefined
+  includeStructuredRecall?: boolean | undefined
+}
+
+export interface MemoryContextResult {
+  layoutId: string
+  summary?: string | undefined
+  handbook?: string | undefined
+  recall?: MemoryRecord[] | string | undefined
+  artifacts: MemoryArtifact[]
+  prompt: string
+}
 
 export interface MemorySubject {
   entityId?: string | undefined
@@ -140,6 +209,98 @@ export interface UpsertGraphFactInput {
   chunkId?: string | undefined
   confidence?: number | undefined
   metadata?: Record<string, unknown> | undefined
+}
+
+export interface GraphFactLookupOptions extends GraphTemporalQueryOptions {}
+
+export interface GraphFactTripleLookup {
+  sourceEntityId: string
+  relation: string
+  targetEntityId: string
+}
+
+export type FactReconciliationCandidateKind =
+  | 'exact_duplicate'
+  | 'same_timeline'
+  | 'same_slot_conflict'
+  | 'older_version'
+  | 'newer_version'
+  | 'semantic_overlap'
+  | 'entity_merge_candidate'
+  | 'uncertain'
+
+export type FactReconciliationRecommendedAction =
+  | 'ignore'
+  | 'merge_duplicate'
+  | 'invalidate_candidate'
+  | 'supersede_candidate'
+  | 'attach_supersession_key'
+  | 'manual_review'
+
+export interface FactReconciliationCandidate {
+  fact: FactResult
+  score: number
+  kind: FactReconciliationCandidateKind
+  recommendedAction: FactReconciliationRecommendedAction
+  reasons: string[]
+  risks: string[]
+}
+
+export type FactReconciliationAction =
+  | 'ignore'
+  | 'mark_duplicate'
+  | 'invalidate_candidate'
+  | 'supersede_candidate'
+  | 'attach_supersession_key'
+
+export interface FactReconciliationDecision {
+  candidateId: string
+  action: FactReconciliationAction
+  invalidAt?: Date | string | undefined
+  supersessionKey?: string | undefined
+  slotKey?: string | undefined
+  canonicalFactId?: string | undefined
+  reason?: string | undefined
+}
+
+export interface FactReconciliationOptions extends GraphTemporalQueryOptions {
+  limit?: number | undefined
+  semanticLimit?: number | undefined
+  mutableSlotRelations?: string[] | undefined
+  slotKey?: string | undefined
+  includeSemanticCandidates?: boolean | undefined
+}
+
+export type FactReconciliationInput = UpsertGraphFactInput | FactResult
+
+export interface FactReconciliationAppliedAction {
+  candidateId: string
+  action: FactReconciliationAction
+  status: 'planned' | 'applied' | 'skipped' | 'failed'
+  fact?: FactResult | undefined
+  createdFact?: FactResult | undefined
+  invalidatedFactId?: string | undefined
+  invalidatedEdgeId?: string | undefined
+  supersessionKey?: string | undefined
+  reason?: string | undefined
+  warnings?: string[] | undefined
+  error?: string | undefined
+}
+
+export interface FactReconciliationResult {
+  dryRun: boolean
+  inputFact?: FactResult | undefined
+  candidates: FactReconciliationCandidate[]
+  actions: FactReconciliationAppliedAction[]
+  warnings: string[]
+}
+
+export interface BuildCuratedSupersessionKeyInput {
+  graphId: string
+  sourceEntityId: string
+  relation: string
+  slotKey?: string | undefined
+  targetEntityId?: string | undefined
 }
 
 export interface MergeGraphEntitiesInput {
@@ -249,6 +410,27 @@ export interface KnowledgeGraphBridge {
 
   /** Create or update many developer-seeded facts. */
   upsertFacts?(inputs: UpsertGraphFactInput[]): Promise<FactResult[]>
+
+  /** Fetch a single persisted fact record by ID. */
+  getFact?(id: string, opts?: (GraphFactLookupOptions & typegraphIdentity) | null): Promise<FactResult | null>
+
+  /** Fetch persisted fact records by ID. */
+  getFactsByIds?(ids: string[], opts?: (GraphFactLookupOptions & typegraphIdentity) | null): Promise<FactResult[]>
+
+  /** Fetch all facts that share a mutable timeline key. */
+  findFactsBySupersessionKey?(key: string, opts?: (GraphFactLookupOptions & typegraphIdentity) | null): Promise<FactResult[]>
+
+  /** Fetch facts matching an exact entity-relation-entity triple. */
+  findFactsByTriple?(triple: GraphFactTripleLookup, opts?: (GraphFactLookupOptions & typegraphIdentity) | null): Promise<FactResult[]>
+
+  /** Find duplicate, conflicting, temporal, and semantic reconciliation candidates for a fact. */
+  findFactReconciliationCandidates?(inputFact: FactReconciliationInput, opts?: (FactReconciliationOptions & typegraphIdentity) | null): Promise<FactReconciliationCandidate[]>
+
+  /** Preview explicit reconciliation decisions without mutating graph state. */
+  previewFactReconciliation?(inputFact: FactReconciliationInput, decisions: FactReconciliationDecision[], opts?: (FactReconciliationOptions & typegraphIdentity) | null): Promise<FactReconciliationResult>
+
+  /** Apply explicit reconciliation decisions to persisted fact/edge state. */
+  applyFactReconciliation?(inputFact: FactReconciliationInput, decisions: FactReconciliationDecision[], opts?: (FactReconciliationOptions & typegraphIdentity) | null): Promise<FactReconciliationResult>
 
   /** Mark a fact as invalid at a real-world time while preserving it for history. */
   invalidateFact?(id: string, opts?: GraphInvalidationOptions | null): Promise<void>

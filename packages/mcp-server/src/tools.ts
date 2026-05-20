@@ -1,4 +1,4 @@
-import type { TypeGraphContext, typegraphEventSink, typegraphInstance } from '@typegraph-ai/sdk'
+import type { MemoryArtifactKind, TypeGraphContext, typegraphEventSink, typegraphInstance } from '@typegraph-ai/sdk'
 
 // ── MCP Tool Definitions ──
 // These define the tools that the MCP server exposes to AI agents.
@@ -47,6 +47,104 @@ export function getToolDefinitions(): MCPToolDefinition[] {
           limit: { type: 'number', description: 'Max results. Default: 10' },
         },
         required: ['query'],
+      },
+    },
+    {
+      name: 'typegraph_memory_context',
+      description: 'Return progressive agent memory context: memory_summary.md first, relevant MEMORY.md blocks, and optional structured recall.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Task or question to retrieve memory context for' },
+          layoutId: { type: 'string', description: 'Memory artifact layout. Default: default' },
+          handbookLimit: { type: 'number', description: 'Max relevant MEMORY.md task groups. Default: 2' },
+          includeStructuredRecall: { type: 'boolean', description: 'Also run structured memory recall' },
+          types: { type: 'array', items: { type: 'string', enum: ['episodic', 'semantic', 'procedural'] }, description: 'Structured recall memory types' },
+          limit: { type: 'number', description: 'Structured recall limit' },
+          format: { type: 'string', enum: ['xml', 'markdown', 'plain'], description: 'Structured recall output format' },
+        },
+        required: ['query'],
+      },
+    },
+    {
+      name: 'typegraph_memory_extract_thread',
+      description: 'Extract reusable conversation memory from a stored thread into raw memory and rollout summary artifacts.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          threadId: { type: 'string', description: 'Thread identifier' },
+          layoutId: { type: 'string', description: 'Memory artifact layout. Default: default' },
+          includeRoles: { type: 'array', items: { type: 'string', enum: ['user', 'assistant', 'tool', 'system'] }, description: 'Roles to include. Default excludes system' },
+          maxTranscriptChars: { type: 'number', description: 'Maximum transcript characters sent to extraction' },
+        },
+        required: ['threadId'],
+      },
+    },
+    {
+      name: 'typegraph_memory_consolidate',
+      description: 'Consolidate raw conversation memories into MEMORY.md, memory_summary.md, and phase_two_selection.json artifacts.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          layoutId: { type: 'string', description: 'Memory artifact layout. Default: default' },
+          maxRawMemories: { type: 'number', description: 'Maximum raw memory artifacts to consolidate' },
+        },
+      },
+    },
+    {
+      name: 'typegraph_memory_artifact_get',
+      description: 'Get a database-backed memory artifact by path.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Artifact path such as memory_summary.md or MEMORY.md' },
+          layoutId: { type: 'string', description: 'Memory artifact layout. Default: default' },
+        },
+        required: ['path'],
+      },
+    },
+    {
+      name: 'typegraph_memory_artifact_list',
+      description: 'List database-backed memory artifacts by layout, prefix, or kind.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          layoutId: { type: 'string', description: 'Memory artifact layout. Default: default' },
+          prefix: { type: 'string', description: 'Path prefix such as raw_memories or rollout_summaries' },
+          kind: {
+            oneOf: [
+              { type: 'string', enum: ['summary', 'handbook', 'raw_memory', 'raw_memories', 'rollout_summary', 'phase_two_selection', 'skill', 'other'] },
+              { type: 'array', items: { type: 'string', enum: ['summary', 'handbook', 'raw_memory', 'raw_memories', 'rollout_summary', 'phase_two_selection', 'skill', 'other'] } },
+            ],
+          },
+        },
+      },
+    },
+    {
+      name: 'typegraph_memory_artifact_upsert',
+      description: 'Create or replace a database-backed memory artifact.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          kind: { type: 'string', enum: ['summary', 'handbook', 'raw_memory', 'raw_memories', 'rollout_summary', 'phase_two_selection', 'skill', 'other'] },
+          content: { type: 'string' },
+          layoutId: { type: 'string', description: 'Memory artifact layout. Default: default' },
+          metadata: { type: 'object', additionalProperties: true },
+        },
+        required: ['path', 'content'],
+      },
+    },
+    {
+      name: 'typegraph_memory_artifact_delete',
+      description: 'Delete a database-backed memory artifact by path.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          layoutId: { type: 'string', description: 'Memory artifact layout. Default: default' },
+        },
+        required: ['path'],
       },
     },
     {
@@ -164,6 +262,69 @@ export async function executeTool(
           types: ['semantic'],
           limit: (args['limit'] as number) ?? 10,
         })
+        break
+
+      case 'typegraph_memory_context':
+        result = await typegraph.memory.context(args['query'] as string, {
+          ...scoped,
+          layoutId: args['layoutId'] as string | undefined,
+          handbookLimit: args['handbookLimit'] as number | undefined,
+          includeStructuredRecall: args['includeStructuredRecall'] as boolean | undefined,
+          types: args['types'] as ('episodic' | 'semantic' | 'procedural')[] | undefined,
+          limit: args['limit'] as number | undefined,
+          format: args['format'] as 'xml' | 'markdown' | 'plain' | undefined,
+        })
+        break
+
+      case 'typegraph_memory_extract_thread':
+        result = await typegraph.memory.extractThread(args['threadId'] as string, {
+          ...scoped,
+          layoutId: args['layoutId'] as string | undefined,
+          includeRoles: args['includeRoles'] as Array<'user' | 'assistant' | 'tool' | 'system'> | undefined,
+          maxTranscriptChars: args['maxTranscriptChars'] as number | undefined,
+        })
+        break
+
+      case 'typegraph_memory_consolidate':
+        result = await typegraph.memory.consolidate({
+          ...scoped,
+          layoutId: args['layoutId'] as string | undefined,
+          maxRawMemories: args['maxRawMemories'] as number | undefined,
+        })
+        break
+
+      case 'typegraph_memory_artifact_get':
+        result = await typegraph.memory.artifacts.get(args['path'] as string, {
+          ...scoped,
+          layoutId: args['layoutId'] as string | undefined,
+        })
+        break
+
+      case 'typegraph_memory_artifact_list':
+        result = await typegraph.memory.artifacts.list({
+          ...scoped,
+          layoutId: args['layoutId'] as string | undefined,
+          prefix: args['prefix'] as string | undefined,
+          kind: args['kind'] as MemoryArtifactKind | MemoryArtifactKind[] | undefined,
+        })
+        break
+
+      case 'typegraph_memory_artifact_upsert':
+        result = await typegraph.memory.artifacts.upsert({
+          path: args['path'] as string,
+          content: args['content'] as string,
+          ...(args['kind'] ? { kind: args['kind'] as MemoryArtifactKind } : {}),
+          ...(args['layoutId'] ? { layoutId: args['layoutId'] as string } : {}),
+          ...(args['metadata'] ? { metadata: args['metadata'] as Record<string, unknown> } : {}),
+        }, scoped)
+        break
+
+      case 'typegraph_memory_artifact_delete':
+        await typegraph.memory.artifacts.delete(args['path'] as string, {
+          ...scoped,
+          layoutId: args['layoutId'] as string | undefined,
+        })
+        result = { success: true }
         break
 
       case 'typegraph_forget':

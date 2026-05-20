@@ -88,7 +88,6 @@ export interface Extractor {
 
 export interface RerankerOptions {
   topK?: number | undefined
-  domain?: 'general' | 'legal' | 'code' | 'medical' | undefined
   abortSignal?: AbortSignal | undefined
 }
 

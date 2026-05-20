@@ -18,11 +18,9 @@ documents, events, threads, entities, facts, memory, search, jobs, policies,
 ontology, and telemetry. It runs against TypeGraph Cloud or self-hosted
 Postgres with pgvector.
 
-This branch reflects the current breaking SDK shape. The old `source` and
-`query` surfaces have been replaced by `document` and `search`, `tenantId` is
-client-scoped, per-call actor identity lives under `context`, graph access lives
-on graph config, and SQLite vector
-storage is no longer supported.
+The current SDK uses `document` for durable content, `search` for retrieval,
+tenant-scoped clients, per-call actor identity under `context`, graph access on
+graph config, and Postgres/pgvector for self-hosted vector storage.
 
 For deeper guides and production patterns, use the docs:
 [typegraph.ai/docs](https://typegraph.ai/docs).
@@ -181,7 +179,7 @@ The main public namespaces are:
 | `tg.thread` | Ordered containers; turns are stored as linked events. |
 | `tg.search` | Unified retrieval over selected resources. |
 | `tg.graph` | Entity, fact, edge, external ID, merge, explore, and graph search APIs. |
-| `tg.memory` | Private memory operations: remember, recall, correct, forget, healthCheck. |
+| `tg.memory` | Private memory, conversation extraction, progressive memory context, and database-backed memory artifacts. |
 | `tg.job` | Job tracking primitives. |
 | `tg.policy` | Governance policy CRUD when a policy store is configured. |
 
@@ -350,7 +348,7 @@ const response = await tg.search('How are Alice and Acme related?', {
   resources: ['documents', 'events', 'facts', 'entities'],
   weights: { semantic: 1, bm25: 0.7, graph: 0.8, recency: 0.2 },
   fusion: { method: 'rrf', k: 60 },
-  rerank: { topK: 20, domain: 'general' },
+  rerank: { topK: 20 },
   explain: true,
   promptBuilder: {
     format: 'markdown',
@@ -366,6 +364,19 @@ response.results.entities
 response.explanation
 response.prompt
 ```
+
+In self-hosted mode, `rerank` uses the `reranker` passed to
+`typegraphInit()`. If reranking is requested without a configured reranker,
+TypeGraph logs a warning and returns the normal fused search results. Reranking
+is internal ordering over `QueryChunkResult[]`; `tg.search()` still returns the
+normal `QueryResponse`.
+
+Reranker wrappers should map provider output back to the original candidates.
+For example, Vercel AI SDK `rerank()` returns `ranking[].originalIndex`/`score`/
+`document`, and raw Cohere returns `results[].index`/`relevance_score`. A
+TypeGraph `Reranker<QueryChunkResult>` should return reordered chunk results,
+not the raw provider response. `scores.output.reranker` is TypeGraph's
+normalized rank-position score.
 
 Hits expose output scores, not input weights:
 
@@ -461,6 +472,52 @@ await tg.graph.upsertFact(
 ```
 
 Facts use `description` as their assertion and search text.
+
+## Memory
+
+TypeGraph memory has two layers:
+
+- Structured memory records for `remember`, `recall`, `correct`, `forget`, and `healthCheck`.
+- Agent-facing artifact memory for conversation extraction and progressive context.
+
+```ts
+await tg.memory.remember('Dana prefers concise renewal risk summaries.', {
+  context: { userId: UserId('dana') },
+  graphExtraction: true,
+})
+
+await tg.thread.addTurn('thread_support_123', {
+  role: 'user',
+  content: 'Please keep the rollout plan short and implementation-ready.',
+}, {
+  context: {
+    userId: UserId('dana'),
+    threadId: ThreadId('thread_support_123'),
+  },
+})
+
+await tg.memory.extractThread('thread_support_123', {
+  context: { userId: UserId('dana') },
+})
+
+await tg.memory.consolidate({
+  context: { userId: UserId('dana') },
+})
+
+const memory = await tg.memory.context('rollout plan style', {
+  context: { userId: UserId('dana') },
+  includeStructuredRecall: true,
+})
+
+console.log(memory.prompt)
+```
+
+Conversation memory writes database-backed artifacts such as
+`raw_memories/<thread-id>.md`, `rollout_summaries/*.md`, `MEMORY.md`,
+`memory_summary.md`, and `phase_two_selection.json`. Use
+`tg.memory.artifacts.get/list/upsert/delete` when you need direct access to
+those files. Self-hosted deployments store them in Postgres through the
+pgvector memory store; no local Markdown files are written.
 
 ## Packages
 

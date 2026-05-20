@@ -6,6 +6,8 @@ export type {
   TemporalRecord,
   ExternalId,
   ExternalIdEncoding,
+  MemoryArtifact,
+  MemoryArtifactKind,
   MemoryRecord,
   EpisodicMemory,
   SemanticEntity,
@@ -21,6 +23,8 @@ export type {
   ProceduralMemory,
   MemoryFilter,
   MemorySearchOpts,
+  MemoryArtifactUpsertInput,
+  MemoryArtifactFilter,
   MemoryStoreAdapter,
 } from './types/index.js'
 
@@ -39,6 +43,9 @@ export {
   invalidateRecord,
   expireRecord,
   createTemporal,
+  parseGraphTemporalDate,
+  normalizeGraphTemporalInput,
+  buildCuratedSupersessionKey,
   temporalOverlaps,
   transitionStatus,
 } from './temporal.js'

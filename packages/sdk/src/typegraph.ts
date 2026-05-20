@@ -1,6 +1,6 @@
 import type { VectorStoreAdapter, UndeployResult } from './types/adapter.js'
 import type { Bucket, CreateBucketInput, BucketListFilter, BucketStorageFilter, EmbeddingConfig } from './types/bucket.js'
-import type { SearchOptions, QueryResponse } from './types/query.js'
+import type { SearchOptions, QueryResponse, QueryChunkResult } from './types/query.js'
 import type { IngestOptions, IndexResult } from './types/index-types.js'
 import type { Embedder } from './embedding/provider.js'
 import { embeddingModelKey } from './embedding/provider.js'
@@ -15,15 +15,17 @@ import type {
   EntityResult, EntityDetail, EdgeResult, FactResult, FactSearchOpts, GraphExploreOpts, GraphExploreResult, GraphBackfillOpts, GraphBackfillResult, GraphExplainOpts, GraphSearchOpts, GraphSearchTrace, ChunkResult,
   SubgraphOpts, SubgraphResult, GraphStats, GraphEntityRef, UpsertGraphEdgeInput, UpsertGraphEntityInput, UpsertGraphFactInput,
   MergeGraphEntitiesInput, MergeGraphEntitiesResult, DeleteGraphEntityOpts, DeleteGraphEntityResult, GraphInvalidationOptions,
+  GraphFactLookupOptions, GraphFactTripleLookup, FactReconciliationInput, FactReconciliationOptions, FactReconciliationCandidate, FactReconciliationDecision, FactReconciliationResult,
   RememberOpts, ForgetOpts, CorrectOpts,
-  RecallOpts, HealthCheckOpts,
+  RecallOpts, HealthCheckOpts, MemoryArtifactUpsert, MemoryArtifactListOpts, MemoryArtifactGetOpts, MemoryArtifactDeleteOpts,
+  ExtractThreadOpts, ConversationMemoryExtraction, ConsolidateMemoryOpts, MemoryConsolidationResult, MemoryContextOpts, MemoryContextResult,
 } from './types/graph-bridge.js'
 import type { ExtractionCoreferenceCache, ExtractedEntity, Extractor, ExtractorInput, Reranker } from './types/extractor.js'
 import type { TypeGraphOptions, TypeGraphWriteOptions, typegraphIdentity } from './types/identity.js'
 import type { typegraphEventSink, typegraphEventType, TelemetryOpts } from './types/events.js'
 import type { PolicyStoreAdapter, CreatePolicyInput, UpdatePolicyInput, Policy, PolicyType, PolicyAction } from './types/policy.js'
 import type { MemoryHealthReport } from './types/memory.js'
-import type { ExternalId, MemoryRecord } from './memory/types/memory.js'
+import type { ExternalId, MemoryArtifact, MemoryRecord } from './memory/types/memory.js'
 import type { typegraphLogger } from './types/logger.js'
 import type { Job, JobFilter, UpsertJobInput, JobStatusPatch } from './types/job.js'
 import type { PaginationOpts, PaginatedResult } from './types/pagination.js'
@@ -115,6 +117,14 @@ function normalizeRuntimeConfig(config: typegraphConfig): typegraphConfig & { te
   }
 }
 
+function conversationRoleFromEvent(event: typegraphEventRecord): 'user' | 'assistant' | 'tool' | 'system' {
+  const role = event.metadata?.role
+  if (role === 'user' || role === 'assistant' || role === 'tool' || role === 'system') {
+    return role
+  }
+  return 'user'
+}
+
 export interface typegraphConfig {
   // ── Cloud mode (mutually exclusive with vectorStore/embedding) ──
   /** API key for typegraph cloud. When provided, vectorStore and embedding are not required. */
@@ -148,7 +158,7 @@ export interface typegraphConfig {
   /** Optional short-lived cache for cross-source entity coreference context. */
   extractionCoreferenceCache?: ExtractionCoreferenceCache | undefined
   /** Optional reranker for search result post-processing. */
-  reranker?: Reranker | undefined
+  reranker?: Reranker<QueryChunkResult> | undefined
   /** Config-driven ontology for deploy/init; cloud can cache this, self-hosted can pass it at process init. */
   ontology?: OntologyConfig | undefined
   /** Optional event sink for observability. Events are emitted fire-and-forget. */
@@ -278,6 +288,19 @@ export interface MemoryApi {
   /** Search memories by semantic similarity. When `opts.format` is set, returns a formatted string ready for an LLM prompt. */
   recall(query: string, opts: RecallOpts & { format: 'xml' | 'markdown' | 'plain' }): Promise<string>
   recall(query: string, opts?: RecallOpts | null): Promise<MemoryRecord[]>
+  /** Extract reusable conversation memory from a stored thread into database-backed memory artifacts. */
+  extractThread(threadId: string, opts?: ExtractThreadOpts | null): Promise<ConversationMemoryExtraction>
+  /** Consolidate raw conversation memories into handbook and prompt-summary artifacts. */
+  consolidate(opts?: ConsolidateMemoryOpts | null): Promise<MemoryConsolidationResult>
+  /** Return progressive agent memory context: compact summary, relevant handbook excerpts, and optional recall. */
+  context(query: string, opts?: MemoryContextOpts | null): Promise<MemoryContextResult>
+  /** Database-backed markdown-like memory artifacts. */
+  artifacts: {
+    get(path: string, opts?: MemoryArtifactGetOpts | null): Promise<MemoryArtifact | null>
+    list(opts?: MemoryArtifactListOpts | null): Promise<MemoryArtifact[]>
+    upsert(input: MemoryArtifactUpsert, opts?: TypeGraphOptions | null): Promise<MemoryArtifact>
+    delete(path: string, opts?: MemoryArtifactDeleteOpts | null): Promise<void>
+  }
   /** Check memory system health — returns stats about stored memories, entities, and edges. */
   healthCheck(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport>
 }
@@ -293,6 +316,13 @@ export interface GraphApi {
   upsertEdges(inputs: UpsertGraphEdgeInput[], opts?: TypeGraphGraphOptions | null): Promise<EdgeResult[]>
   upsertFact(input: UpsertGraphFactInput, opts?: TypeGraphGraphOptions | null): Promise<FactResult>
   upsertFacts(inputs: UpsertGraphFactInput[], opts?: TypeGraphGraphOptions | null): Promise<FactResult[]>
+  getFact(id: string, opts?: (GraphFactLookupOptions & TypeGraphGraphOptions) | null): Promise<FactResult | null>
+  getFactsByIds(ids: string[], opts?: (GraphFactLookupOptions & TypeGraphGraphOptions) | null): Promise<FactResult[]>
+  findFactsBySupersessionKey(key: string, opts?: (GraphFactLookupOptions & TypeGraphGraphOptions) | null): Promise<FactResult[]>
+  findFactsByTriple(triple: GraphFactTripleLookup, opts?: (GraphFactLookupOptions & TypeGraphGraphOptions) | null): Promise<FactResult[]>
+  findFactReconciliationCandidates(inputFact: FactReconciliationInput, opts?: (FactReconciliationOptions & TypeGraphGraphOptions) | null): Promise<FactReconciliationCandidate[]>
+  previewFactReconciliation(inputFact: FactReconciliationInput, decisions: FactReconciliationDecision[], opts?: (FactReconciliationOptions & TypeGraphGraphOptions) | null): Promise<FactReconciliationResult>
+  applyFactReconciliation(inputFact: FactReconciliationInput, decisions: FactReconciliationDecision[], opts?: (FactReconciliationOptions & TypeGraphGraphOptions) | null): Promise<FactReconciliationResult>
   invalidateFact(id: string, opts?: (GraphInvalidationOptions & TypeGraphGraphOptions) | null): Promise<void>
   invalidateEdge(id: string, opts?: (GraphInvalidationOptions & TypeGraphGraphOptions) | null): Promise<void>
   searchEntities(query: string, opts?: ({
@@ -933,6 +963,88 @@ class TypegraphImpl implements typegraphInstance {
       return results
     },
 
+    getFact: async (id: string, opts?: (GraphFactLookupOptions & TypeGraphGraphOptions) | null): Promise<FactResult | null> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.getFact) throw new ConfigError('Graph storage does not support fact lookup.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.getFact', 'read')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<GraphFactLookupOptions & TypeGraphGraphOptions>(
+        opts,
+        'graph.getFact',
+      ) as GraphFactLookupOptions & TypeGraphGraphOptions
+      return kg.getFact(id, { ...normalizedOpts, ...identity })
+    },
+
+    getFactsByIds: async (ids: string[], opts?: (GraphFactLookupOptions & TypeGraphGraphOptions) | null): Promise<FactResult[]> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.getFactsByIds) throw new ConfigError('Graph storage does not support fact lookup.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.getFactsByIds', 'read')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<GraphFactLookupOptions & TypeGraphGraphOptions>(
+        opts,
+        'graph.getFactsByIds',
+      ) as GraphFactLookupOptions & TypeGraphGraphOptions
+      return kg.getFactsByIds(ids, { ...normalizedOpts, ...identity })
+    },
+
+    findFactsBySupersessionKey: async (key: string, opts?: (GraphFactLookupOptions & TypeGraphGraphOptions) | null): Promise<FactResult[]> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.findFactsBySupersessionKey) throw new ConfigError('Graph storage does not support fact supersession lookup.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.findFactsBySupersessionKey', 'read')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<GraphFactLookupOptions & TypeGraphGraphOptions>(
+        opts,
+        'graph.findFactsBySupersessionKey',
+      ) as GraphFactLookupOptions & TypeGraphGraphOptions
+      return kg.findFactsBySupersessionKey(key, { ...normalizedOpts, ...identity })
+    },
+
+    findFactsByTriple: async (triple: GraphFactTripleLookup, opts?: (GraphFactLookupOptions & TypeGraphGraphOptions) | null): Promise<FactResult[]> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.findFactsByTriple) throw new ConfigError('Graph storage does not support fact triple lookup.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.findFactsByTriple', 'read')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<GraphFactLookupOptions & TypeGraphGraphOptions>(
+        opts,
+        'graph.findFactsByTriple',
+      ) as GraphFactLookupOptions & TypeGraphGraphOptions
+      return kg.findFactsByTriple(triple, { ...normalizedOpts, ...identity })
+    },
+
+    findFactReconciliationCandidates: async (inputFact: FactReconciliationInput, opts?: (FactReconciliationOptions & TypeGraphGraphOptions) | null): Promise<FactReconciliationCandidate[]> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.findFactReconciliationCandidates) throw new ConfigError('Graph storage does not support fact reconciliation.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.findFactReconciliationCandidates', 'read')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<FactReconciliationOptions & TypeGraphGraphOptions>(
+        opts,
+        'graph.findFactReconciliationCandidates',
+      ) as FactReconciliationOptions & TypeGraphGraphOptions
+      return kg.findFactReconciliationCandidates(inputFact, { ...normalizedOpts, ...identity })
+    },
+
+    previewFactReconciliation: async (inputFact: FactReconciliationInput, decisions: FactReconciliationDecision[], opts?: (FactReconciliationOptions & TypeGraphGraphOptions) | null): Promise<FactReconciliationResult> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.previewFactReconciliation) throw new ConfigError('Graph storage does not support fact reconciliation.')
+      const { identity } = this.resolveGraphOptions(opts, 'graph.previewFactReconciliation', 'read')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<FactReconciliationOptions & TypeGraphGraphOptions>(
+        opts,
+        'graph.previewFactReconciliation',
+      ) as FactReconciliationOptions & TypeGraphGraphOptions
+      return kg.previewFactReconciliation(inputFact, decisions, { ...normalizedOpts, ...identity })
+    },
+
+    applyFactReconciliation: async (inputFact: FactReconciliationInput, decisions: FactReconciliationDecision[], opts?: (FactReconciliationOptions & TypeGraphGraphOptions) | null): Promise<FactReconciliationResult> => {
+      const kg = this.requireKnowledgeGraph()
+      if (!kg.applyFactReconciliation) throw new ConfigError('Graph storage does not support fact reconciliation.')
+      const { identity, telemetry } = this.resolveGraphOptions(opts, 'graph.applyFactReconciliation', 'write')
+      const { context: _context, abortSignal: _abortSignal, graph: _graph, ...normalizedOpts } = optionalCompactObject<FactReconciliationOptions & TypeGraphGraphOptions>(
+        opts,
+        'graph.applyFactReconciliation',
+      ) as FactReconciliationOptions & TypeGraphGraphOptions
+      const result = await kg.applyFactReconciliation(inputFact, decisions, { ...normalizedOpts, ...identity })
+      this.emitEvent('graph.fact.reconcile' as typegraphEventType, undefined, {
+        actionCount: result.actions.length,
+        candidateCount: result.candidates.length,
+      }, telemetry)
+      return result
+    },
+
     invalidateFact: async (id: string, opts?: (GraphInvalidationOptions & TypeGraphGraphOptions) | null): Promise<void> => {
       const kg = this.requireKnowledgeGraph()
       if (!kg.invalidateFact) throw new ConfigError('Graph storage does not support fact invalidation.')
@@ -1227,6 +1339,49 @@ class TypegraphImpl implements typegraphInstance {
     return bucket?.graph ?? DEFAULT_GRAPH_ID
   }
 
+  private cacheBucket(bucket: Bucket, refreshEmbeddings = false): void {
+    this._buckets.set(bucket.id, bucket)
+    if (refreshEmbeddings || !this.bucketEmbeddings.has(bucket.id)) {
+      this.resolveBucketEmbeddings(bucket)
+    }
+  }
+
+  private searchBucketRejectionReason(bucket: Bucket, identity: typegraphIdentity & { tenantId: string }, graphIds: string[]): string | undefined {
+    if (bucket.tenantId !== identity.tenantId) return 'tenant_mismatch'
+    if (bucket.status !== 'active') return 'inactive'
+    const graphId = this.bucketGraph(bucket)
+    if (!graphIds.includes(graphId)) return 'outside_graph_closure'
+    if (!this.canAccessGraph(graphId, identity, 'read')) return 'not_readable'
+    return undefined
+  }
+
+  private filterSearchBucketIds(
+    buckets: Bucket[],
+    identity: typegraphIdentity & { tenantId: string },
+    graphIds: string[],
+    warnSkipped: boolean,
+  ): string[] {
+    const ids: string[] = []
+    const seen = new Set<string>()
+    const skipped: Array<{ id: string; graph: string; reason: string }> = []
+
+    for (const bucket of buckets) {
+      const reason = this.searchBucketRejectionReason(bucket, identity, graphIds)
+      if (reason) {
+        if (warnSkipped) skipped.push({ id: bucket.id, graph: this.bucketGraph(bucket), reason })
+        continue
+      }
+      if (seen.has(bucket.id)) continue
+      seen.add(bucket.id)
+      ids.push(bucket.id)
+    }
+
+    if (skipped.length > 0) {
+      this.logger?.warn('Search skipped unreadable or out-of-scope buckets', { graphClosure: graphIds, buckets: skipped })
+    }
+    return ids
+  }
+
   private async getBucketForIdentity(bucketId: string, identity: typegraphIdentity & { tenantId: string }): Promise<Bucket | undefined> {
     const bucket = this.adapter.getBucket
       ? await this.adapter.getBucket(bucketId, identity.tenantId)
@@ -1235,10 +1390,7 @@ class TypegraphImpl implements typegraphInstance {
     if (this.adapter.getBucket && bucket.tenantId !== identity.tenantId) return undefined
     if (!this.canAccessGraph(this.bucketGraph(bucket), identity, 'read')) return undefined
 
-    this._buckets.set(bucket.id, bucket)
-    if (!this.bucketEmbeddings.has(bucket.id)) {
-      this.resolveBucketEmbeddings(bucket)
-    }
+    this.cacheBucket(bucket)
     return bucket
   }
 
@@ -1547,18 +1699,29 @@ class TypegraphImpl implements typegraphInstance {
     }
   }
 
-  /** Lazy-load buckets from DB on first use. No-op after first call. */
+  private async refreshPersistedBuckets(filter: BucketStorageFilter = {}): Promise<Bucket[]> {
+    const isFullTenantLoad = Object.entries(filter).every(([, value]) =>
+      value == null || (Array.isArray(value) && value.length === 0)
+    )
+
+    if (!this.adapter.listBuckets) {
+      this.bucketsLoaded = true
+      return [...this._buckets.values()].filter(bucket => bucket.tenantId === this.config.tenantId)
+    }
+
+    const result = await this.adapter.listBuckets({ ...filter, tenantId: this.config.tenantId })
+    const buckets = Array.isArray(result) ? result : result.items
+    for (const bucket of buckets) {
+      this.cacheBucket(bucket)
+    }
+    if (isFullTenantLoad) this.bucketsLoaded = true
+    return buckets
+  }
+
+  /** Lazy-load buckets from DB on first use. No-op after first full load. */
   private async ensureBucketsLoaded(): Promise<void> {
     if (this.bucketsLoaded) return
-    if (this.adapter.listBuckets) {
-      const result = await this.adapter.listBuckets({ tenantId: this.config.tenantId })
-      const allBuckets = Array.isArray(result) ? result : result.items
-      for (const bucket of allBuckets) {
-        this._buckets.set(bucket.id, bucket)
-        this.resolveBucketEmbeddings(bucket)
-      }
-    }
-    this.bucketsLoaded = true
+    await this.refreshPersistedBuckets()
   }
 
   private defaultBucketRecord(config: typegraphConfig & { tenantId: string }): Bucket {
@@ -1604,10 +1767,8 @@ class TypegraphImpl implements typegraphInstance {
       if (this.adapter.upsertBucket) {
         persisted = await this.adapter.upsertBucket(bucket)
       }
-      this._buckets.set(persisted.id, persisted)
-      this.resolveBucketEmbeddings(persisted)
+      this.cacheBucket(persisted, true)
     }
-    this.bucketsLoaded = true
   }
 
   async deploy(config: typegraphConfig): Promise<this> {
@@ -1756,6 +1917,71 @@ class TypegraphImpl implements typegraphInstance {
     return groups
   }
 
+  private bucketIdsByName(): Map<string, string> {
+    return new Map([...this._buckets.values()].map(bucket => [bucket.name, bucket.id]))
+  }
+
+  private resolveBucketIdentifiersFromCache(identifiers: string[]): string[] {
+    const bucketIdsByName = this.bucketIdsByName()
+    return identifiers.map(identifier =>
+      this._buckets.has(identifier) ? identifier : bucketIdsByName.get(identifier) ?? identifier
+    )
+  }
+
+  private async fetchMissingBucketsById(bucketIds: string[], identity: typegraphIdentity & { tenantId: string }): Promise<void> {
+    if (!this.adapter.getBuckets) return
+    const missing = [...new Set(bucketIds)].filter(id => !this._buckets.has(id))
+    if (missing.length === 0) return
+    const fetched = await this.adapter.getBuckets(missing, identity.tenantId)
+    for (const bucket of fetched) {
+      this.cacheBucket(bucket)
+    }
+  }
+
+  private async fetchBucketsByName(names: string[], identity: typegraphIdentity & { tenantId: string }): Promise<void> {
+    if (!this.adapter.listBuckets) return
+    for (const name of [...new Set(names)]) {
+      const result = await this.adapter.listBuckets({ tenantId: identity.tenantId, name })
+      const buckets = Array.isArray(result) ? result : result.items
+      for (const bucket of buckets) {
+        this.cacheBucket(bucket)
+      }
+    }
+  }
+
+  private async resolveSearchBucketIds(
+    requestedIdentifiers: string[] | undefined,
+    identity: typegraphIdentity & { tenantId: string },
+    graphIds: string[],
+    requestedGraph: string,
+  ): Promise<string[]> {
+    if (!requestedIdentifiers?.length) {
+      const buckets = await this.refreshPersistedBuckets({ graphIds, status: 'active' })
+      return this.filterSearchBucketIds(buckets, identity, graphIds, false)
+    }
+
+    let resolvedIds = this.resolveBucketIdentifiersFromCache(requestedIdentifiers)
+    await this.fetchMissingBucketsById(resolvedIds, identity)
+
+    const unresolvedNames = requestedIdentifiers.filter((_, index) => !this._buckets.has(resolvedIds[index]!))
+    if (unresolvedNames.length > 0) {
+      await this.fetchBucketsByName(unresolvedNames, identity)
+      resolvedIds = this.resolveBucketIdentifiersFromCache(requestedIdentifiers)
+    }
+
+    const buckets = resolvedIds
+      .map(id => this._buckets.get(id))
+      .filter((bucket): bucket is Bucket => Boolean(bucket))
+
+    const foundIds = new Set(buckets.map(bucket => bucket.id))
+    const missing = resolvedIds.filter(id => !foundIds.has(id))
+    if (missing.length > 0) {
+      this.logger?.warn('Search skipped missing buckets', { requestedGraph, graphClosure: graphIds, buckets: missing })
+    }
+
+    return this.filterSearchBucketIds(buckets, identity, graphIds, true)
+  }
+
   private async ingestDocuments(documents: DocumentInput[], opts?: DocumentIngestOptions | null): Promise<IndexResult> {
     await this.ensureInitialized()
     await this.ensureBucketsLoaded()
@@ -1815,43 +2041,32 @@ class TypegraphImpl implements typegraphInstance {
 
   async search(text: string, opts?: SearchOptions | null): Promise<QueryResponse> {
     await this.ensureInitialized()
-    await this.ensureBucketsLoaded()
     const normalizedOpts = optionalCompactObject<SearchOptions>(opts, 'search') as SearchOptions
     const { identity } = this.resolvePublicOptions(normalizedOpts, 'search')
     const requestedGraph = normalizedOpts.graph ?? DEFAULT_GRAPH_ID
     normalizedOpts.graph = requestedGraph
-    normalizedOpts.graphIds = this.requireReadableGraph(requestedGraph, identity)
+    const graphIds = this.requireReadableGraph(requestedGraph, identity)
+    normalizedOpts.graphIds = graphIds
     await this.enforcePolicy('query', identity)
 
-    if (normalizedOpts.buckets?.length) {
-      const bucketIdsByName = new Map([...this._buckets.values()].map(bucket => [bucket.name, bucket.id]))
-      normalizedOpts.buckets = normalizedOpts.buckets.map(identifier =>
-        this._buckets.has(identifier) ? identifier : bucketIdsByName.get(identifier) ?? identifier
-      )
-    }
-
-    // Batched lazy-load: if the caller names buckets we haven't seen, fetch them in one round-trip.
-    // Avoids per-id gets in the hot path without forcing eager load at init.
-    if (normalizedOpts.buckets?.length && this.adapter.getBuckets) {
-      const missing = normalizedOpts.buckets.filter(id => !this._buckets.has(id))
-      if (missing.length > 0) {
-        const fetched = await this.adapter.getBuckets(missing, identity.tenantId)
-        for (const b of fetched) {
-          this._buckets.set(b.id, b)
-          this.resolveBucketEmbeddings(b)
-        }
-      }
-    }
+    const activeBucketIds = await this.resolveSearchBucketIds(
+      normalizedOpts.buckets,
+      identity,
+      graphIds,
+      requestedGraph,
+    )
+    normalizedOpts.buckets = activeBucketIds
 
     const planner = new QueryPlanner(
       this.adapter,
-      [...this._buckets.keys()],
+      activeBucketIds,
       this.bucketEmbeddings,
       this.bucketSearchEmbeddings,
       this.graphBridge,
       this.config.eventSink,
       this.logger,
       this.config.tenantId,
+      this.config.reranker,
     )
     const response = await planner.execute(text, normalizedOpts)
 
@@ -1873,6 +2088,15 @@ class TypegraphImpl implements typegraphInstance {
     forget: (id, opts) => this.forgetMemory(id, opts),
     correct: (correction, opts) => this.correctMemory(correction, opts),
     recall: ((query: string, opts?: RecallOpts | null) => this.recallMemory(query, opts as RecallOpts | null)) as MemoryApi['recall'],
+    extractThread: (threadId, opts) => this.extractThreadMemory(threadId, opts),
+    consolidate: (opts) => this.consolidateMemory(opts),
+    context: (query, opts) => this.memoryContext(query, opts),
+    artifacts: {
+      get: (path, opts) => this.getMemoryArtifact(path, opts),
+      list: (opts) => this.listMemoryArtifacts(opts),
+      upsert: (input, opts) => this.upsertMemoryArtifact(input, opts),
+      delete: (path, opts) => this.deleteMemoryArtifact(path, opts),
+    },
     healthCheck: (opts) => this.memoryHealthCheck(opts),
   }
 
@@ -2102,6 +2326,125 @@ class TypegraphImpl implements typegraphInstance {
       return this.requireMemory().recall(query, runtimeOpts as typeof runtimeOpts & { format: 'xml' | 'markdown' | 'plain' })
     }
     return this.requireMemory().recall(query, runtimeOpts)
+  }
+
+  private async extractThreadMemory(threadId: string, opts?: ExtractThreadOpts | null): Promise<ConversationMemoryExtraction> {
+    const { identity, telemetry } = this.resolvePublicOptions(opts, 'memory.extractThread')
+    if (!this.adapter.listEvents) {
+      throw new ConfigError('Conversation memory extraction requires an adapter with event storage.')
+    }
+    const thread = this.adapter.getThread
+      ? await this.adapter.getThread(identity.tenantId, threadId)
+      : null
+    const threadGraphId = thread?.graphId ?? DEFAULT_GRAPH_ID
+    if (thread && !this.canAccessGraph(thread.graphId, identity, 'read')) {
+      throw new NotFoundError('Thread', threadId)
+    }
+    const graphIds = this.requireReadableGraph(threadGraphId, identity)
+    const events = await this.adapter.listEvents({
+      tenantId: identity.tenantId,
+      threadId,
+      graphIds,
+    } as EventStorageFilter)
+    events.sort((left, right) =>
+      left.occurredAt.getTime() - right.occurredAt.getTime()
+      || left.createdAt.getTime() - right.createdAt.getTime()
+      || left.id.localeCompare(right.id)
+    )
+    const memoryScope = this.memoryGraphForIdentity(identity)
+    await this.enforcePolicy('memory.write', memoryScope.identity)
+    return this.requireMemory().extractConversation({
+      identity: memoryScope.identity,
+      conversationId: threadId,
+      messages: events.map(event => ({
+        role: conversationRoleFromEvent(event),
+        content: event.content ?? event.description ?? event.name,
+        timestamp: event.occurredAt,
+        eventId: event.id,
+        metadata: event.metadata,
+      })),
+      layoutId: opts?.layoutId,
+      includeRoles: opts?.includeRoles,
+      maxTranscriptChars: opts?.maxTranscriptChars,
+      traceId: telemetry.traceId,
+      spanId: telemetry.spanId,
+    })
+  }
+
+  private async consolidateMemory(opts?: ConsolidateMemoryOpts | null): Promise<MemoryConsolidationResult> {
+    const { identity, telemetry } = this.resolvePublicOptions(opts, 'memory.consolidate')
+    const memoryScope = this.memoryGraphForIdentity(identity)
+    await this.enforcePolicy('memory.write', memoryScope.identity)
+    return this.requireMemory().consolidate({
+      identity: memoryScope.identity,
+      layoutId: opts?.layoutId,
+      maxRawMemories: opts?.maxRawMemories,
+      traceId: telemetry.traceId,
+      spanId: telemetry.spanId,
+    })
+  }
+
+  private async memoryContext(query: string, opts?: MemoryContextOpts | null): Promise<MemoryContextResult> {
+    const { identity, telemetry } = this.resolvePublicOptions(opts, 'memory.context')
+    const memoryScope = this.memoryGraphForIdentity(identity)
+    await this.enforcePolicy('memory.read', memoryScope.identity)
+    return this.requireMemory().context(query, {
+      identity: memoryScope.identity,
+      graphIds: this.resolveGraphClosure(memoryScope.graphId),
+      limit: opts?.limit,
+      types: opts?.types as ('episodic' | 'semantic' | 'procedural')[] | undefined,
+      asOf: opts?.temporalAt,
+      includeInvalidated: opts?.includeInvalidated,
+      entityScope: opts?.entityScope,
+      format: opts?.format,
+      layoutId: opts?.layoutId,
+      handbookLimit: opts?.handbookLimit,
+      includeStructuredRecall: opts?.includeStructuredRecall,
+      traceId: telemetry.traceId,
+      spanId: telemetry.spanId,
+    })
+  }
+
+  private async getMemoryArtifact(path: string, opts?: MemoryArtifactGetOpts | null): Promise<MemoryArtifact | null> {
+    const { identity } = this.resolvePublicOptions(opts, 'memory.artifacts.get')
+    const memoryScope = this.memoryGraphForIdentity(identity)
+    await this.enforcePolicy('memory.read', memoryScope.identity)
+    return this.requireMemory().getArtifact(path, {
+      identity: memoryScope.identity,
+      layoutId: opts?.layoutId,
+    })
+  }
+
+  private async listMemoryArtifacts(opts?: MemoryArtifactListOpts | null): Promise<MemoryArtifact[]> {
+    const { identity } = this.resolvePublicOptions(opts, 'memory.artifacts.list')
+    const memoryScope = this.memoryGraphForIdentity(identity)
+    await this.enforcePolicy('memory.read', memoryScope.identity)
+    return this.requireMemory().listArtifacts({
+      identity: memoryScope.identity,
+      graphIds: this.resolveGraphClosure(memoryScope.graphId),
+      layoutId: opts?.layoutId,
+      prefix: opts?.prefix,
+      kind: opts?.kind,
+    })
+  }
+
+  private async upsertMemoryArtifact(input: MemoryArtifactUpsert, opts?: TypeGraphOptions | null): Promise<MemoryArtifact> {
+    const { identity } = this.resolvePublicOptions(opts, 'memory.artifacts.upsert')
+    const memoryScope = this.memoryGraphForIdentity(identity)
+    await this.enforcePolicy('memory.write', memoryScope.identity)
+    return this.requireMemory().upsertArtifact(input, {
+      identity: memoryScope.identity,
+    })
+  }
+
+  private async deleteMemoryArtifact(path: string, opts?: MemoryArtifactDeleteOpts | null): Promise<void> {
+    const { identity } = this.resolvePublicOptions(opts, 'memory.artifacts.delete')
+    const memoryScope = this.memoryGraphForIdentity(identity)
+    await this.enforcePolicy('memory.delete', memoryScope.identity, path)
+    return this.requireMemory().deleteArtifact(path, {
+      identity: memoryScope.identity,
+      layoutId: opts?.layoutId,
+    })
   }
 
   private async memoryHealthCheck(opts?: HealthCheckOpts | null): Promise<MemoryHealthReport> {

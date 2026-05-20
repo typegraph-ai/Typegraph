@@ -1,6 +1,6 @@
 {
   "name": "@typegraph-ai/mcp-server",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "MCP server exposing typegraph cognitive memory as tools and resources for AI agents",
   "type": "module",
   "main": "./dist/index.js",

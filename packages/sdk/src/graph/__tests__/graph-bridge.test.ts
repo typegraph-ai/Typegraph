@@ -39,6 +39,31 @@ function makeEdge(
   }
 }
 
+function makeFact(
+  id: string,
+  edgeId: string,
+  sourceEntityId: string,
+  targetEntityId: string,
+  relation: string,
+  description: string,
+  overrides: Partial<SemanticFactRecord> = {},
+): SemanticFactRecord {
+  return {
+    id,
+    edgeId,
+    sourceEntityId,
+    targetEntityId,
+    relation,
+    description,
+    weight: 1,
+    scope: testScope,
+    validAt: new Date('2026-01-01T00:00:00Z'),
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+    ...overrides,
+  }
+}
+
 interface MockMention {
   entityId: string
   documentId: string
@@ -1792,6 +1817,193 @@ describe('createKnowledgeGraphBridge', () => {
       expect(result.facts.map(fact => fact.id)).not.toContain('fact-shell')
       expect(result.factChains).toEqual([])
       expect(result.trace.selectedFactChains).toEqual([])
+    })
+  })
+
+  describe('fact lookup and reconciliation', () => {
+    function storeWithFacts(entities: Map<string, SemanticEntity>, facts: SemanticFactRecord[]) {
+      const store = mockStore(entities)
+      Object.assign(store, {
+        getFactRecord: vi.fn().mockImplementation(async (id: string) => facts.find(fact => fact.id === id) ?? null),
+        getFactRecordsByIds: vi.fn().mockImplementation(async (ids: string[]) => facts.filter(fact => ids.includes(fact.id))),
+        findFactRecordsBySupersessionKey: vi.fn().mockImplementation(async (key: string) => facts.filter(fact => fact.supersessionKey === key)),
+        findFactRecordsByTriple: vi.fn().mockImplementation(async (triple: { sourceEntityId: string; relation: string; targetEntityId: string }) => facts.filter(fact =>
+          fact.sourceEntityId === triple.sourceEntityId &&
+          fact.relation === triple.relation &&
+          fact.targetEntityId === triple.targetEntityId
+        )),
+        searchFacts: vi.fn().mockImplementation(async () => facts),
+        upsertFactRecord: vi.fn().mockImplementation(async (fact: SemanticFactRecord) => {
+          facts.push(fact)
+          return fact
+        }),
+        invalidateFactRecord: vi.fn().mockResolvedValue(undefined),
+      })
+      return store
+    }
+
+    it('looks up facts by id, ids, supersession key, and exact triple', async () => {
+      const entities = new Map<string, SemanticEntity>([
+        ['alice', makeEntity('alice', 'Alice', 'person')],
+        ['team-data', makeEntity('team-data', 'Data Team', 'organization')],
+      ])
+      const fact = makeFact('fact-1', 'edge-1', 'alice', 'team-data', 'WORKS_FOR', 'Alice works at Data Team', {
+        supersessionKey: 'hr:alice:team',
+      })
+      const store = storeWithFacts(entities, [fact])
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      await expect(bridge.getFact!('fact-1', { includeInvalidated: true })).resolves.toEqual(expect.objectContaining({
+        id: 'fact-1',
+        sourceEntityName: 'Alice',
+        targetEntityName: 'Data Team',
+      }))
+      await expect(bridge.getFactsByIds!(['missing', 'fact-1'], { includeInvalidated: true })).resolves.toHaveLength(1)
+      await expect(bridge.findFactsBySupersessionKey!('hr:alice:team', { includeInvalidated: true })).resolves.toHaveLength(1)
+      await expect(bridge.findFactsByTriple!({
+        sourceEntityId: 'alice',
+        relation: 'WORKS_FOR',
+        targetEntityId: 'team-data',
+      }, { includeInvalidated: true })).resolves.toHaveLength(1)
+
+      expect(store.getFactRecord).toHaveBeenCalledWith('fact-1', expect.any(Object), expect.objectContaining({ includeInvalidated: true }))
+      expect(store.findFactRecordsByTriple).toHaveBeenCalledWith(
+        expect.objectContaining({ sourceEntityId: 'alice', relation: 'WORKS_FOR', targetEntityId: 'team-data' }),
+        expect.any(Object),
+        expect.any(Object),
+      )
+    })
+
+    it('classifies deterministic and semantic reconciliation candidates', async () => {
+      const entities = new Map<string, SemanticEntity>([
+        ['alice', makeEntity('alice', 'Alice', 'person')],
+        ['team-old', makeEntity('team-old', 'Old Team', 'organization')],
+        ['team-new', makeEntity('team-new', 'New Team', 'organization')],
+        ['team-other', makeEntity('team-other', 'Other Team', 'organization')],
+      ])
+      const facts = [
+        makeFact('fact-old', 'edge-old', 'alice', 'team-old', 'WORKS_FOR', 'Alice worked at Old Team', {
+          validAt: new Date('2023-01-01T00:00:00Z'),
+          supersessionKey: 'hr:alice:team',
+        }),
+        makeFact('fact-exact', 'edge-exact', 'alice', 'team-new', 'WORKS_FOR', 'Alice works at New Team'),
+        makeFact('fact-conflict', 'edge-conflict', 'alice', 'team-other', 'WORKS_FOR', 'Alice works at Other Team'),
+        makeFact('fact-semantic', 'edge-semantic', 'team-new', 'alice', 'MENTIONS', 'New Team roster includes Alice', {
+          similarity: 0.7,
+        }),
+      ]
+      const store = storeWithFacts(entities, facts)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+
+      const candidates = await bridge.findFactReconciliationCandidates!({
+        source: { id: 'alice' },
+        target: { id: 'team-new' },
+        relation: 'WORKS_AT',
+        description: 'Alice works at New Team',
+        evidenceText: 'HRIS current team is New Team',
+        validAt: '2026-01-01T00:00:00Z',
+        supersessionKey: 'hr:alice:team',
+      }, {
+        includeInvalidated: true,
+      })
+
+      expect(candidates.map(candidate => candidate.kind)).toEqual(expect.arrayContaining([
+        'older_version',
+        'exact_duplicate',
+        'same_slot_conflict',
+        'semantic_overlap',
+      ]))
+      expect(candidates.find(candidate => candidate.fact.id === 'fact-old')?.recommendedAction).toBe('supersede_candidate')
+      expect(candidates.find(candidate => candidate.fact.id === 'fact-exact')?.recommendedAction).toBe('merge_duplicate')
+    })
+
+    it('previews reconciliation without writes and applies explicit invalidation decisions', async () => {
+      const entities = new Map<string, SemanticEntity>([
+        ['alice', makeEntity('alice', 'Alice', 'person')],
+        ['team-old', makeEntity('team-old', 'Old Team', 'organization')],
+        ['team-new', makeEntity('team-new', 'New Team', 'organization')],
+      ])
+      const facts = [
+        makeFact('fact-old', 'edge-old', 'alice', 'team-old', 'WORKS_FOR', 'Alice worked at Old Team'),
+      ]
+      const store = storeWithFacts(entities, facts)
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+      const inputFact = {
+        source: { id: 'alice' },
+        target: { id: 'team-new' },
+        relation: 'WORKS_AT',
+        description: 'Alice works at New Team',
+        evidenceText: 'HRIS current team is New Team',
+      }
+      const decisions = [{
+        candidateId: 'fact-old',
+        action: 'invalidate_candidate' as const,
+        invalidAt: '2026-01-01T00:00:00Z',
+        reason: 'newer HRIS record',
+      }]
+
+      const preview = await bridge.previewFactReconciliation!(inputFact, decisions, { includeInvalidated: true })
+      expect(preview.dryRun).toBe(true)
+      expect(preview.actions[0]).toEqual(expect.objectContaining({ status: 'planned', candidateId: 'fact-old' }))
+      expect(store.invalidateFactRecord).not.toHaveBeenCalled()
+      expect(store.invalidateEdge).not.toHaveBeenCalled()
+
+      const applied = await bridge.applyFactReconciliation!(inputFact, decisions, { includeInvalidated: true })
+      expect(applied.dryRun).toBe(false)
+      expect(applied.actions[0]).toEqual(expect.objectContaining({
+        status: 'applied',
+        invalidatedFactId: 'fact-old',
+        invalidatedEdgeId: 'edge-old',
+      }))
+      expect(store.invalidateFactRecord).toHaveBeenCalledWith('fact-old', expect.objectContaining({
+        invalidAt: new Date('2026-01-01T00:00:00Z'),
+        reason: 'newer HRIS record',
+      }), expect.any(Object))
+      expect(store.invalidateEdge).toHaveBeenCalledWith('edge-old', new Date('2026-01-01T00:00:00Z'), expect.objectContaining({
+        reason: 'newer HRIS record',
+      }))
+    })
+
+    it('rejects unsafe reconciliation decisions with missing ids or invalid dates', async () => {
+      const entities = new Map<string, SemanticEntity>([
+        ['alice', makeEntity('alice', 'Alice', 'person')],
+        ['team-new', makeEntity('team-new', 'New Team', 'organization')],
+      ])
+      const store = storeWithFacts(entities, [])
+      const bridge = createKnowledgeGraphBridge({
+        memoryStore: store,
+        embedding: mockEmbedding(),
+        scope: testScope,
+      })
+      const inputFact = {
+        source: { id: 'alice' },
+        target: { id: 'team-new' },
+        relation: 'WORKS_AT',
+        description: 'Alice works at New Team',
+        evidenceText: 'HRIS current team is New Team',
+      }
+
+      await expect(bridge.previewFactReconciliation!(inputFact, [{
+        candidateId: '',
+        action: 'ignore',
+      }], null)).rejects.toThrow('candidateId')
+      await expect(bridge.previewFactReconciliation!(inputFact, [{
+        candidateId: 'missing',
+        action: 'invalidate_candidate',
+        invalidAt: 'not-a-date',
+      }], null)).rejects.toThrow('invalidAt')
     })
   })
 

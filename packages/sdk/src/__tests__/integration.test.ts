@@ -14,25 +14,42 @@ import type { BucketStorageFilter } from '../types/bucket.js'
 /** Register a pre-built Bucket + embedding on an instance (bypasses buckets.create UUID generation). */
 function registerTestBucket(instance: typegraphInstance, bucket: Bucket, embedding: Embedder) {
   const impl = instance as any
-  impl._buckets.set(bucket.id, bucket)
+  const registeredBucket = { ...bucket, tenantId: impl.config?.tenantId ?? bucket.tenantId }
+  impl._buckets.set(bucket.id, registeredBucket)
   impl.bucketEmbeddings.set(bucket.id, embedding)
 }
 
-function withBucketStorage(adapter: ReturnType<typeof createMockAdapter>): ReturnType<typeof createMockAdapter> & Pick<VectorStoreAdapter, 'upsertBucket' | 'getBucket' | 'listBuckets'> {
+function withBucketStorage(adapter: ReturnType<typeof createMockAdapter>): ReturnType<typeof createMockAdapter> & Pick<VectorStoreAdapter, 'upsertBucket' | 'getBucket' | 'getBuckets' | 'listBuckets'> {
   const buckets = new Map<string, Bucket>()
   return Object.assign(adapter, {
     async upsertBucket(bucket: Bucket): Promise<Bucket> {
+      adapter.calls.push({ method: 'upsertBucket', args: [bucket] })
       const stored = { ...bucket }
       buckets.set(`${stored.tenantId}:${stored.id}`, stored)
       return stored
     },
     async getBucket(id: string, tenantId?: string): Promise<Bucket | null> {
+      adapter.calls.push({ method: 'getBucket', args: [id, tenantId] })
       return buckets.get(`${tenantId}:${id}`) ?? null
     },
+    async getBuckets(ids: string[], tenantId?: string): Promise<Bucket[]> {
+      adapter.calls.push({ method: 'getBuckets', args: [ids, tenantId] })
+      const idSet = new Set(ids)
+      return [...buckets.values()].filter(bucket =>
+        (!tenantId || bucket.tenantId === tenantId) &&
+        idSet.has(bucket.id)
+      )
+    },
     async listBuckets(filter?: BucketStorageFilter): Promise<Bucket[]> {
+      adapter.calls.push({ method: 'listBuckets', args: [filter] })
+      const statuses = filter?.status
+        ? Array.isArray(filter.status) ? filter.status : [filter.status]
+        : null
       return [...buckets.values()].filter(bucket =>
         (!filter?.tenantId || bucket.tenantId === filter.tenantId) &&
-        (!filter?.name || bucket.name === filter.name)
+        (!filter?.name || bucket.name === filter.name) &&
+        (!filter?.graphIds?.length || filter.graphIds.includes(bucket.graph ?? 'public')) &&
+        (!statuses || statuses.includes(bucket.status))
       )
     },
   })
@@ -353,6 +370,91 @@ describe('integration', () => {
       const storedDocument = [...adapter._documents.values()][0]!
       expect(storedDocument.bucketId).toBe('employee_integration_google-drive')
       expect(storedDocument.graphId).toBe('employee')
+    })
+
+    it('search discovers active persisted buckets in the requested readable graph closure', async () => {
+      const adapter = withBucketStorage(createMockAdapter())
+      const embedding = createMockEmbedding()
+      const config = {
+        vectorStore: adapter,
+        embedding,
+        tenantId,
+        graphs: {
+          public: { access: 'public' },
+          employee: {
+            extends: ['public'],
+            access: {
+              read: { organizations: [OrganizationId('org-1')] },
+              write: { organizations: [OrganizationId('org-1')] },
+            },
+          },
+          'user-1': {
+            extends: ['employee'],
+            access: {
+              read: { users: ['user-1'] },
+              write: { users: ['user-1'] },
+            },
+          },
+        },
+        buckets: {
+          employee: {
+            name: 'Employee',
+            graph: 'employee',
+          },
+        },
+      }
+      const writer = await typegraphInit(config)
+      await adapter.upsertBucket({
+        id: 'employee_integration_google-drive',
+        name: 'Google Drive',
+        status: 'active',
+        graph: 'employee',
+        embeddingModel: 'mock-embed-v1:4',
+        tenantId,
+      })
+
+      await writer.document.ingest([createTestDocument({
+        id: 'soc2-report',
+        name: 'SOC 2 Type II Report',
+        content: 'SOC2Dynamic certification evidence lives in Google Drive.',
+      })], {
+        bucketId: 'employee_integration_google-drive',
+        context: { organizationId: 'org-1' },
+      })
+
+      const reader = await typegraphInit(config)
+      const searchWeights = { semantic: false, bm25: 1, graph: false, recency: false } as const
+
+      const publicResult = await reader.search('SOC2Dynamic', {
+        graph: 'public',
+        weights: searchWeights,
+      })
+      expect(publicResult.results.chunks.map(chunk => chunk.content).join('\n')).not.toContain('SOC2Dynamic')
+
+      const employeeResult = await reader.search('SOC2Dynamic', {
+        graph: 'employee',
+        context: { organizationId: 'org-1' },
+        weights: searchWeights,
+      })
+      expect(employeeResult.results.chunks.map(chunk => chunk.content).join('\n')).toContain('SOC2Dynamic')
+      expect(employeeResult.buckets).toHaveProperty('employee_integration_google-drive')
+
+      const privateResult = await reader.search('SOC2Dynamic', {
+        graph: 'user-1',
+        context: { organizationId: 'org-1', userId: 'user-1' },
+        weights: searchWeights,
+      })
+      expect(privateResult.results.chunks.map(chunk => chunk.content).join('\n')).toContain('SOC2Dynamic')
+
+      const scopedListCalls = adapter.calls
+        .filter(call => call.method === 'listBuckets')
+        .map(call => call.args[0] as BucketStorageFilter | undefined)
+        .filter(filter => filter?.status === 'active')
+      expect(scopedListCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({ tenantId, graphIds: ['public'], status: 'active' }),
+        expect.objectContaining({ tenantId, graphIds: ['employee', 'public'], status: 'active' }),
+        expect.objectContaining({ tenantId, graphIds: ['user-1', 'employee', 'public'], status: 'active' }),
+      ]))
     })
 
     it('adapter-backed employee buckets resolve with pre-chunked ingest context', async () => {

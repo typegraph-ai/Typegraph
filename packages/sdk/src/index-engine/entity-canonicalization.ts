@@ -8,6 +8,11 @@ export interface CanonicalizableEntity {
   aliases?: string[] | undefined
 }
 
+const PERSON_TITLE_TOKENS = new Set([
+  'captain', 'cousin', 'doctor', 'dr', 'judge', 'lady', 'lord', 'miss',
+  'mr', 'mrs', 'ms', 'queen', 'saint', 'sir', 'st',
+])
+
 export function sanitizeEntityText(value: string | undefined): string {
   return (value ?? '').replace(/\s+/g, ' ').trim()
 }
@@ -85,6 +90,32 @@ function entityFamily(type: string | undefined, ontology?: CompiledOntology): st
   return type
 }
 
+function personNameTokens(value: string | undefined): string[] {
+  const normalized = normalizeEntityText(value)
+  return normalized ? normalized.split(/\s+/).filter(Boolean) : []
+}
+
+function stripPersonTitles(tokens: string[]): string[] {
+  return tokens.filter(token => !PERSON_TITLE_TOKENS.has(token))
+}
+
+function isCompatibleGivenNameAlias(aliasToken: string, givenToken: string): boolean {
+  if (!aliasToken || !givenToken) return false
+  if (aliasToken === givenToken) return true
+  if (aliasToken.length === 1) return givenToken.startsWith(aliasToken)
+  return aliasToken.startsWith(givenToken) || givenToken.startsWith(aliasToken)
+}
+
+export function isPersonGivenNameAlias(alias: string, ownerName: string): boolean {
+  const ownerTokens = stripPersonTitles(personNameTokens(ownerName))
+  if (ownerTokens.length < 2) return false
+  const ownerGivenTokens = ownerTokens.slice(0, -1)
+  const aliasTokens = stripPersonTitles(personNameTokens(alias))
+  if (aliasTokens.length !== 1) return false
+  const aliasToken = aliasTokens[0]!
+  return ownerGivenTokens.some(givenToken => isCompatibleGivenNameAlias(aliasToken, givenToken))
+}
+
 export function isCrossEntityAlias(
   alias: string,
   owner: CanonicalizableEntity,
@@ -115,6 +146,12 @@ export function isUnsafeEntityAlias(
   if (hasOcrEditorialNoise(clean)) return true
   if (canonicalizePhrasePrefixName(clean) !== clean) return true
   if (isCoordinateListAlias(clean, owner.type, ontology)) return true
+  if (
+    (typesShareAffinity(owner.type, 'person', ontology) || typesShareAffinity(owner.type, 'character', ontology))
+    && isPersonGivenNameAlias(clean, owner.name)
+  ) {
+    return true
+  }
   if (isCrossEntityAlias(clean, owner, entities, ontology)) return true
   return false
 }

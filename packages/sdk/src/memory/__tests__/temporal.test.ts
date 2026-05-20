@@ -5,6 +5,9 @@ import {
   invalidateRecord,
   expireRecord,
   createTemporal,
+  parseGraphTemporalDate,
+  normalizeGraphTemporalInput,
+  buildCuratedSupersessionKey,
   temporalOverlaps,
   transitionStatus,
 } from '../temporal.js'
@@ -128,6 +131,43 @@ describe('createTemporal', () => {
     const custom = new Date('2020-01-01')
     const record = createTemporal(custom)
     expect(record.validAt).toEqual(custom)
+  })
+})
+
+describe('graph temporal helpers', () => {
+  it('parses canonical graph temporal fields and rejects invalid dates', () => {
+    expect(parseGraphTemporalDate('2026-05-19T00:00:00Z', 'validAt')).toEqual(new Date('2026-05-19T00:00:00Z'))
+    expect(parseGraphTemporalDate('', 'invalidAt')).toBeUndefined()
+    expect(() => parseGraphTemporalDate('not-a-date', 'expiredAt')).toThrow('Invalid graph temporal expiredAt')
+  })
+
+  it('normalizes canonical graph temporal input without legacy aliases', () => {
+    const result = normalizeGraphTemporalInput({
+      validAt: '2026-01-01T00:00:00Z',
+      invalidAt: '2026-06-01T00:00:00Z',
+      expiredAt: '2026-06-02T00:00:00Z',
+    })
+    expect(result.validAt).toEqual(new Date('2026-01-01T00:00:00Z'))
+    expect(result.invalidAt).toEqual(new Date('2026-06-01T00:00:00Z'))
+    expect(result.expiredAt).toEqual(new Date('2026-06-02T00:00:00Z'))
+    expect(() => normalizeGraphTemporalInput({
+      validAt: '2026-06-01T00:00:00Z',
+      invalidAt: '2026-01-01T00:00:00Z',
+    })).toThrow('invalidAt')
+  })
+
+  it('builds deterministic curated supersession keys', () => {
+    expect(buildCuratedSupersessionKey({
+      graphId: 'employee',
+      sourceEntityId: 'person_123',
+      relation: 'WORKS_AT',
+      slotKey: 'current_team',
+    })).toBe('curated:employee:person_123:WORKS_AT:current_team')
+    expect(buildCuratedSupersessionKey({
+      graphId: 'employee',
+      sourceEntityId: 'person_123',
+      relation: 'HAS STATUS',
+    })).toBe('curated:employee:person_123:HAS_STATUS:HAS_STATUS')
   })
 })
 

@@ -120,6 +120,7 @@ export type {
   SearchWeights,
   SearchFusion,
   SearchRerankOptions,
+  SearchRerankExplanation,
   SearchExplanation,
   OutputScores,
   QueryChunkResult,
@@ -155,6 +156,18 @@ export type {
   UpsertGraphFactInput,
   GraphInvalidationOptions,
   GraphTemporalQueryOptions,
+  GraphFactLookupOptions,
+  GraphFactTripleLookup,
+  FactReconciliationCandidateKind,
+  FactReconciliationRecommendedAction,
+  FactReconciliationCandidate,
+  FactReconciliationAction,
+  FactReconciliationDecision,
+  FactReconciliationOptions,
+  FactReconciliationInput,
+  FactReconciliationAppliedAction,
+  FactReconciliationResult,
+  BuildCuratedSupersessionKeyInput,
   MergeGraphEntitiesInput,
   MergeGraphEntitiesResult,
   DeleteGraphEntityOpts,
@@ -188,6 +201,17 @@ export type {
   CorrectOpts,
   RecallOpts,
   HealthCheckOpts,
+  MemoryLayoutOpts,
+  MemoryArtifactUpsert,
+  MemoryArtifactListOpts,
+  MemoryArtifactGetOpts,
+  MemoryArtifactDeleteOpts,
+  ExtractThreadOpts,
+  ConversationMemoryExtraction,
+  ConsolidateMemoryOpts,
+  MemoryConsolidationResult,
+  MemoryContextOpts,
+  MemoryContextResult,
 } from './graph-bridge.js'
 
 export type {
@@ -225,8 +249,14 @@ export type {
 export type {
   ExternalId,
   ExternalIdEncoding,
+  MemoryArtifact,
+  MemoryArtifactKind,
   MemoryRecord,
 } from '../memory/types/memory.js'
+export type {
+  MemoryArtifactUpsertInput,
+  MemoryArtifactFilter,
+} from '../memory/types/adapter.js'
 
 export type { typegraphLogger } from './logger.js'
 

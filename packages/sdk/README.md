@@ -332,7 +332,7 @@ const response = await tg.search('Which customers are blocked by SSO issues?', {
     recency: 0.3,
   },
   fusion: { method: 'rrf', k: 60 },
-  rerank: { topK: 20, domain: 'general' },
+  rerank: { topK: 20 },
   limit: 10,
   promptBuilder: {
     format: 'markdown',
@@ -349,6 +349,45 @@ response.prompt
 response.promptStats
 response.explanation
 ```
+
+In self-hosted mode, `rerank` uses the `reranker` passed to `typegraphInit()`.
+When reranking is requested without a configured reranker, search logs a warning
+and falls back to fused results. When a reranker is configured, TypeGraph
+overfetches candidates before reranking, then slices chunks to `limit`.
+Reranking is an internal ordering step over `QueryChunkResult[]`; `tg.search()`
+still returns the normal `QueryResponse` shape.
+
+Provider wrappers should map provider rankings back to the original chunk
+candidates:
+
+```ts
+import { cohere } from '@ai-sdk/cohere'
+import { rerank } from 'ai'
+import type { QueryChunkResult, Reranker } from '@typegraph-ai/sdk'
+
+const cohereReranker: Reranker<QueryChunkResult> = {
+  name: 'cohere-rerank',
+  async rerank(query, candidates, opts) {
+    const { ranking } = await rerank({
+      model: cohere.reranking('rerank-v3.5'),
+      query,
+      documents: candidates,
+      topN: opts?.topK,
+      abortSignal: opts?.abortSignal,
+    })
+
+    return ranking
+      .map(item => candidates[item.originalIndex])
+      .filter((candidate): candidate is QueryChunkResult => !!candidate)
+  },
+}
+```
+
+Raw Cohere responses expose `results[].index` and `relevance_score`; Vercel AI
+SDK `rerank()` exposes `ranking[].originalIndex`, `score`, and `document`.
+TypeGraph adapters return reordered `QueryChunkResult[]`, not raw provider
+responses. `scores.output.reranker` is TypeGraph's normalized rank-position
+score.
 
 Search resources:
 
@@ -482,7 +521,8 @@ are not expanded into the extraction prompt.
 
 ## Memory
 
-Memory operations share the same `context` and optional `graphExtraction` shape:
+Memory operations share the same `context` and optional `graphExtraction` shape.
+Structured memory records remain the recall layer:
 
 ```ts
 await tg.memory.remember('Dana prefers concise renewal risk summaries.', {
@@ -498,7 +538,83 @@ await tg.memory.correct('Dana no longer owns Acme renewals; Taylor does.', {
   },
   graphExtraction: true,
 })
+
+const recalled = await tg.memory.recall('renewal summary style', {
+  context: { userId: UserId('dana') },
+  types: ['semantic'],
+  limit: 5,
+})
 ```
+
+Conversation memory adds database-backed Markdown-like artifacts for agent
+context. Thread turns are stored as linked events, then `extractThread()` writes
+raw memory and rollout summary artifacts. `consolidate()` rewrites the durable
+handbook and compact prompt summary. `context()` returns the progressive read
+path: summary first, relevant handbook blocks, and optional structured recall.
+
+```ts
+await tg.thread.addTurn('thread_123', {
+  role: 'user',
+  content: 'Keep implementation plans concise and decision complete.',
+}, {
+  context: {
+    userId: UserId('dana'),
+    threadId: 'thread_123',
+  },
+})
+
+await tg.memory.extractThread('thread_123', {
+  context: { userId: UserId('dana') },
+})
+
+await tg.memory.consolidate({
+  context: { userId: UserId('dana') },
+})
+
+const contextMemory = await tg.memory.context('planning style', {
+  context: { userId: UserId('dana') },
+  includeStructuredRecall: true,
+  format: 'markdown',
+})
+
+console.log(contextMemory.prompt)
+```
+
+Artifact paths follow the default layout:
+
+- `memory_summary.md`
+- `MEMORY.md`
+- `raw_memories.md`
+- `raw_memories/<thread-id>.md`
+- `rollout_summaries/<thread-id>_<slug>.md`
+- `phase_two_selection.json`
+- `skills/<skill-name>/SKILL.md`
+
+Direct artifact access is available when you need to inspect or manage the
+database-backed files explicitly:
+
+```ts
+await tg.memory.artifacts.upsert({
+  path: 'MEMORY.md',
+  kind: 'handbook',
+  content: '# Task Group: Planning\n\nscope: Use for implementation plans.\n',
+}, {
+  context: { userId: UserId('dana') },
+})
+
+const summary = await tg.memory.artifacts.get('memory_summary.md', {
+  context: { userId: UserId('dana') },
+})
+
+const raw = await tg.memory.artifacts.list({
+  context: { userId: UserId('dana') },
+  prefix: 'raw_memories',
+})
+```
+
+Cloud clients expose the same typed memory surface. Self-hosted apps need an
+adapter with memory artifact persistence, such as `@typegraph-ai/adapter-pgvector`,
+and an `llm` for extraction and consolidation.
 
 ## Main Exports
 
@@ -511,6 +627,7 @@ await tg.memory.correct('Dana no longer owns Acme renewals; Taylor does.', {
 | `Embedder`, `Extractor`, `Reranker`, `OntologyConfig` | Pluggable model/extraction contracts |
 | `SearchOptions`, `SearchResource`, `SearchWeights`, `QueryResponse`, `PromptBuilderOptions` | Search and prompt assembly types |
 | `DocumentInput`, `EventInput`, `ThreadInput`, `ThreadTurnInput` | Primary write model types |
+| `MemoryArtifact`, `MemoryArtifactKind`, `ConversationMemoryExtraction`, `MemoryContextResult` | Memory artifact and conversation memory types |
 
 ## Learn More
 

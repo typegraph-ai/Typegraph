@@ -10,12 +10,6 @@ README for the product-level overview.
 ## Install
 
 ```bash
-pnpm add @typegraph-ai/sdk
-```
-
-For self-hosted Postgres:
-
-```bash
 pnpm add @typegraph-ai/sdk @typegraph-ai/adapter-pgvector @ai-sdk/gateway @neondatabase/serverless
 ```
 
@@ -29,50 +23,16 @@ separate tenant IDs for customer accounts inside one B2B product intelligence
 graph if you need cross-customer questions like "Which customers are blocked by
 SSO issues?" Model those customers as entities instead.
 
-```ts
-import {
-  AgentId,
-  GroupId,
-  TenantId,
-  UserId,
-  entityRef,
-  typegraphInit,
-} from '@typegraph-ai/sdk'
-
-const tg = await typegraphInit({
-  apiKey: process.env.TYPEGRAPH_API_KEY!,
-})
-```
-
 Graphs are the logical knowledge boundaries inside a tenant. The default bucket
 is `public`, the default graph is `public`, and the `public` bucket writes to
 the `public` graph. Buckets own write routing; ingest calls choose a bucket, not
 an ad hoc graph.
 
-```ts
-const tg = await typegraphInit({
-  apiKey: process.env.TYPEGRAPH_API_KEY!,
-  tenantId: TenantId('tenant_acme'),
-  graphs: {
-    public: { access: 'public' },
-    internal: {
-      extends: ['public'],
-      access: {
-        read: { groups: [GroupId('employees')] },
-        write: { groups: [GroupId('employees')] },
-      },
-    },
-  },
-  buckets: {
-    public: { graph: 'public' },
-    gong: { name: 'Gong Calls', graph: 'internal', graphExtraction: true },
-  },
-})
-```
-
 Per-call actor identity lives under one key: `context`.
 
 ```ts
+import { AgentId, GroupId, UserId } from '@typegraph-ai/sdk'
+
 const context = {
   userId: UserId('dana'),
   groupId: GroupId('success'),
@@ -84,70 +44,21 @@ Graph access belongs on graph config, not on individual records. Event
 participants are provenance and business graph context only; they never grant
 read access automatically.
 
-## Cloud Quick Start
-
-```ts
-import { GroupId, UserId, typegraphInit } from '@typegraph-ai/sdk'
-
-const tg = await typegraphInit({
-  apiKey: process.env.TYPEGRAPH_API_KEY!,
-  graphs: {
-    public: { access: 'public' },
-    internal: {
-      extends: ['public'],
-      access: {
-        read: { groups: [GroupId('it')] },
-        write: { groups: [GroupId('it')] },
-      },
-    },
-  },
-  buckets: {
-    public: { graph: 'public' },
-    it: { name: 'IT Knowledge', graph: 'internal', graphExtraction: true },
-  },
-})
-
-await tg.document.ingest(
-  {
-    id: 'notion:sso-handbook',
-    name: 'SSO setup handbook',
-    description: 'Internal handbook section for SSO setup.',
-    content: 'Employees configure SSO from Admin > Security > SSO.',
-    metadata: { provider: 'notion', space: 'internal-it' },
-  },
-  {
-    context: {
-      userId: UserId('dana'),
-      groupId: GroupId('it'),
-    },
-    bucketId: 'it',
-  },
-)
-
-const response = await tg.search('How do employees configure SSO?', {
-  graph: 'internal',
-  context: {
-    userId: UserId('dana'),
-    groupId: GroupId('it'),
-  },
-  resources: ['documents', 'facts', 'entities'],
-  weights: { semantic: 1, bm25: 0.7, graph: 0.5, recency: 0.3 },
-  promptBuilder: {
-    format: 'xml',
-    sections: ['chunks', 'facts', 'entities'],
-  },
-})
-
-console.log(response.prompt)
-```
-
-## Self-Hosted Quick Start
+## Quick Start
 
 ```ts
 import { gateway } from '@ai-sdk/gateway'
 import { neon } from '@neondatabase/serverless'
 import { PgVectorAdapter } from '@typegraph-ai/adapter-pgvector'
-import { TenantId, typegraphDeploy, typegraphInit } from '@typegraph-ai/sdk'
+import {
+  AgentId,
+  GroupId,
+  TenantId,
+  UserId,
+  entityRef,
+  typegraphDeploy,
+  typegraphInit,
+} from '@typegraph-ai/sdk'
 
 const sql = neon(process.env.DATABASE_URL!)
 const vectorStore = new PgVectorAdapter({ sql })
@@ -164,7 +75,25 @@ const config = {
     dimensions: 1536,
   },
   llm: {
-    model: gateway.languageModel('openai/gpt-4.1-mini'),
+    model: gateway('openai/gpt-5.4-mini'),
+  },
+  graphs: {
+    public: { access: 'public' },
+    internal: {
+      extends: ['public'],
+      access: {
+        read: { groups: [GroupId('employees')] },
+        write: { groups: [GroupId('employees')] },
+      },
+    },
+  },
+  buckets: {
+    public: { graph: 'public' },
+    gong: { name: 'Gong Calls', graph: 'internal', graphExtraction: true },
+  },
+  ontology: {
+    version: '2026-05-08',
+    profiles: ['saas'],
   },
 }
 
@@ -173,8 +102,8 @@ const tg = await typegraphInit(config)
 ```
 
 `typegraphDeploy(config)` creates storage objects. `typegraphInit(config)` is
-the lightweight app-runtime initializer. Self-hosted users should not call public
-graph or memory bridge constructors; `vectorStore + embedding + llm` is enough
+the lightweight app-runtime initializer. Applications should not call graph or
+memory bridge constructors; `vectorStore + embedding + llm` is enough
 for graph extraction, graph APIs, and memory APIs when the adapter supports the
 required storage capabilities.
 
@@ -350,7 +279,7 @@ response.promptStats
 response.explanation
 ```
 
-In self-hosted mode, `rerank` uses the `reranker` passed to `typegraphInit()`.
+`rerank` uses the `reranker` passed to `typegraphInit()`.
 When reranking is requested without a configured reranker, search logs a warning
 and falls back to fused results. When a reranker is configured, TypeGraph
 overfetches candidates before reranking, then slices chunks to `limit`.
@@ -434,7 +363,7 @@ await tg.document.ingest(document, {
 
 ## Embedding
 
-Self-hosted config uses final `Embedder` naming. Ingest and search embedders can
+TypeGraph uses final `Embedder` naming. Ingest and search embedders can
 be configured separately as long as they produce vectors in the same space.
 
 ```ts
@@ -510,8 +439,8 @@ interface Extractor {
 }
 ```
 
-Ontology is supplied on deploy/init so cloud and self-hosted deployments can use
-the same config-driven model. Built-in profiles are `general`, `literary`,
+Ontology is supplied on deploy/init so every process uses the same
+config-driven model. Built-in profiles are `general`, `literary`,
 `medical`, `legal`, and `saas`. They use the same config shape as custom
 ontologies and include lightweight references to mature vocabularies such as
 Schema.org, Wikidata, HL7 FHIR, SNOMED CT, LOINC, RxNorm, ELI, Akoma Ntoso,
@@ -612,16 +541,15 @@ const raw = await tg.memory.artifacts.list({
 })
 ```
 
-Cloud clients expose the same typed memory surface. Self-hosted apps need an
-adapter with memory artifact persistence, such as `@typegraph-ai/adapter-pgvector`,
-and an `llm` for extraction and consolidation.
+Conversation memory needs an adapter with artifact persistence, such as
+`@typegraph-ai/adapter-pgvector`, and an `llm` for extraction and consolidation.
 
 ## Main Exports
 
 | Export | Purpose |
 | --- | --- |
 | `typegraphInit` | Initialize a TypeGraph runtime instance |
-| `typegraphDeploy` | Create required storage objects for self-hosted mode |
+| `typegraphDeploy` | Create required storage objects in Postgres |
 | `TenantId`, `UserId`, `GroupId`, `AgentId`, `ThreadId`, `EntityId`, `entityRef` | Branded identity helpers |
 | `aiSdkEmbedder`, `aiSdkLlmProvider` | Explicit AI SDK wrappers when needed |
 | `Embedder`, `Extractor`, `Reranker`, `OntologyConfig` | Pluggable model/extraction contracts |

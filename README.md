@@ -15,8 +15,8 @@
 
 TypeGraph gives AI apps a typed layer for business context: buckets,
 documents, events, threads, entities, facts, memory, search, jobs, policies,
-ontology, and telemetry. It runs against TypeGraph Cloud or self-hosted
-Postgres with pgvector.
+ontology, and telemetry. It is MIT-licensed and runs in your application
+against Postgres with pgvector.
 
 The current SDK uses `document` for durable content, `search` for retrieval,
 tenant-scoped clients, per-call actor identity under `context`, graph access on
@@ -27,14 +27,8 @@ For deeper guides and production patterns, use the docs:
 
 ## Install
 
-Cloud projects usually need only the SDK:
-
-```bash
-pnpm add @typegraph-ai/sdk
-```
-
-Self-hosted projects need the SDK, the pgvector adapter, a Postgres client, and
-the AI provider package used by your app:
+Install the SDK, the pgvector adapter, a Postgres client, and the AI provider
+package used by your app:
 
 ```bash
 pnpm add @typegraph-ai/sdk @typegraph-ai/adapter-pgvector @ai-sdk/gateway @neondatabase/serverless
@@ -42,76 +36,23 @@ pnpm add @typegraph-ai/sdk @typegraph-ai/adapter-pgvector @ai-sdk/gateway @neond
 
 ## Quick Start
 
-Cloud mode runs storage, embedding, indexing, graph, and memory server-side.
-`tenantId` defaults to `public`; pass a tenant only when you need separate
-customer/account graphs.
-
-```ts
-import { typegraphInit, GroupId, UserId } from '@typegraph-ai/sdk'
-
-const tg = await typegraphInit({
-  apiKey: process.env.TYPEGRAPH_API_KEY!,
-  graphs: {
-    public: { access: 'public' },
-    internal: {
-      extends: ['public'],
-      access: {
-        read: { groups: [GroupId('employees')] },
-        write: { groups: [GroupId('employees')] },
-      },
-    },
-  },
-  buckets: {
-    public: { graph: 'public' },
-    handbook: { name: 'Employee Handbook', graph: 'internal', graphExtraction: true },
-  },
-})
-
-await tg.document.ingest(
-  {
-    id: 'handbook:sso',
-    name: 'Employee handbook',
-    description: 'Internal handbook section for SSO setup.',
-    content: 'Acme employees configure SSO from the admin security page.',
-    metadata: { system: 'notion' },
-  },
-  {
-    context: {
-      userId: UserId('dana'),
-      groupId: GroupId('employees'),
-    },
-    bucketId: 'handbook',
-  },
-)
-
-const response = await tg.search('How do employees configure SSO?', {
-  graph: 'internal',
-  context: {
-    userId: UserId('dana'),
-    groupId: GroupId('employees'),
-  },
-  resources: ['documents', 'facts', 'entities'],
-  weights: { semantic: 1, bm25: 0.7, graph: 0.5, recency: 0.3 },
-  promptBuilder: {
-    format: 'xml',
-    sections: ['chunks', 'facts', 'entities'],
-    maxTotalTokens: 4000,
-  },
-})
-
-console.log(response.prompt)
-```
-
-Self-hosted mode uses the same runtime API, but you provide storage, embedding,
-and LLM configuration. `vectorStore + embedding + llm` is enough to enable
-document ingest, search, graph extraction, graph APIs, and memory APIs when the
-adapter supports those capabilities.
+TypeGraph runs inside your application. You provide storage, embedding, and LLM
+configuration. `vectorStore + embedding + llm` enables document ingest, search,
+graph extraction, graph APIs, and memory APIs when the adapter supports those
+capabilities.
 
 ```ts
 import { gateway } from '@ai-sdk/gateway'
 import { neon } from '@neondatabase/serverless'
 import { PgVectorAdapter } from '@typegraph-ai/adapter-pgvector'
-import { typegraphDeploy, typegraphInit } from '@typegraph-ai/sdk'
+import {
+  GroupId,
+  ThreadId,
+  UserId,
+  entityRef,
+  typegraphDeploy,
+  typegraphInit,
+} from '@typegraph-ai/sdk'
 
 const sql = neon(process.env.DATABASE_URL!)
 const vectorStore = new PgVectorAdapter({ sql })
@@ -127,7 +68,22 @@ const config = {
     dimensions: 1536,
   },
   llm: {
-    model: gateway.languageModel('openai/gpt-4.1-mini'),
+    model: gateway('openai/gpt-5.4-mini'),
+  },
+  graphs: {
+    public: { access: 'public' },
+    internal: {
+      extends: ['public'],
+      access: {
+        read: { groups: [GroupId('employees')] },
+        write: { groups: [GroupId('employees')] },
+      },
+    },
+  },
+  buckets: {
+    public: { graph: 'public' },
+    handbook: { name: 'Employee Handbook', graph: 'internal', graphExtraction: true },
+    gong: { name: 'Gong Calls', graph: 'internal', graphExtraction: true },
   },
   ontology: {
     version: '2026-05-08',
@@ -154,7 +110,7 @@ const tg = await typegraphInit(config)
 
 `typegraphDeploy(config)` provisions storage and is intended for deploy scripts.
 `typegraphInit(config)` is the lightweight runtime initializer for app boot.
-Self-hosted users do not need to call bridge constructors.
+Applications do not need to call graph or memory bridge constructors.
 
 ## Core Model
 
@@ -341,8 +297,38 @@ type SearchResource =
 
 Set a weight to `false` to disable that signal.
 
+Configure an optional reranker at initialization time. A provider wrapper
+receives TypeGraph's `QueryChunkResult[]` candidates and must return those
+candidates in the desired order:
+
 ```ts
-const response = await tg.search('How are Alice and Acme related?', {
+import { cohere } from '@ai-sdk/cohere'
+import { rerank } from 'ai'
+import type { QueryChunkResult, Reranker } from '@typegraph-ai/sdk'
+
+const cohereReranker: Reranker<QueryChunkResult> = {
+  name: 'cohere-rerank-v3.5',
+  async rerank(query, candidates, opts) {
+    const { ranking } = await rerank({
+      model: cohere.reranking('rerank-v3.5'),
+      query,
+      documents: candidates,
+      topN: opts?.topK,
+      abortSignal: opts?.abortSignal,
+    })
+
+    return ranking
+      .map(item => candidates[item.originalIndex])
+      .filter((candidate): candidate is QueryChunkResult => candidate !== undefined)
+  },
+}
+
+const rerankedTypegraph = await typegraphInit({
+  ...config,
+  reranker: cohereReranker,
+})
+
+const response = await rerankedTypegraph.search('How are Alice and Acme related?', {
   context: { userId: UserId('dana') },
   buckets: ['salesforce', 'slack'],
   resources: ['documents', 'events', 'facts', 'entities'],
@@ -365,11 +351,11 @@ response.explanation
 response.prompt
 ```
 
-In self-hosted mode, `rerank` uses the `reranker` passed to
-`typegraphInit()`. If reranking is requested without a configured reranker,
-TypeGraph logs a warning and returns the normal fused search results. Reranking
-is internal ordering over `QueryChunkResult[]`; `tg.search()` still returns the
-normal `QueryResponse`.
+`rerank` uses the `reranker` passed to `typegraphInit()`. TypeGraph overfetches
+candidates before reranking, applies the configured `topK`, and then returns the
+normal `QueryResponse`. If reranking is requested without a configured
+reranker, or the reranker fails, TypeGraph logs a warning and returns the normal
+fused search results.
 
 Reranker wrappers should map provider output back to the original candidates.
 For example, Vercel AI SDK `rerank()` returns `ranking[].originalIndex`/`score`/
@@ -516,8 +502,8 @@ Conversation memory writes database-backed artifacts such as
 `raw_memories/<thread-id>.md`, `rollout_summaries/*.md`, `MEMORY.md`,
 `memory_summary.md`, and `phase_two_selection.json`. Use
 `tg.memory.artifacts.get/list/upsert/delete` when you need direct access to
-those files. Self-hosted deployments store them in Postgres through the
-pgvector memory store; no local Markdown files are written.
+those files. The pgvector memory store persists them in Postgres; no local
+Markdown files are written.
 
 ## Packages
 

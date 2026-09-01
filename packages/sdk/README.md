@@ -261,7 +261,14 @@ const response = await tg.search('Which customers are blocked by SSO issues?', {
     recency: 0.3,
   },
   fusion: { method: 'rrf', k: 60 },
-  rerank: { topK: 20 },
+  subqueries: [
+    'customers reporting SAML or login blockers',
+    'open enterprise deals with authentication issues',
+  ],
+  rerank: {
+    topK: 20,
+    query: 'Which customers are blocked by SSO issues?',
+  },
   limit: 10,
   promptBuilder: {
     format: 'markdown',
@@ -286,8 +293,15 @@ overfetches candidates before reranking, then slices chunks to `limit`.
 Reranking is an internal ordering step over `QueryChunkResult[]`; `tg.search()`
 still returns the normal `QueryResponse` shape.
 
+`subqueries` are caller-supplied supplemental retrieval queries. TypeGraph
+normalizes and deduplicates up to eight of them, runs the primary and
+supplemental searches concurrently, and reranks every pass against
+`rerank.query` (or the primary search text by default). It then deduplicates and
+merges the per-pass results without making a final network reranker call. Omit
+`subqueries` for the unchanged single-search path.
+
 Provider wrappers should map provider rankings back to the original chunk
-candidates:
+candidates and retain real provider relevance scores:
 
 ```ts
 import { cohere } from '@ai-sdk/cohere'
@@ -305,18 +319,23 @@ const cohereReranker: Reranker<QueryChunkResult> = {
       abortSignal: opts?.abortSignal,
     })
 
-    return ranking
-      .map(item => candidates[item.originalIndex])
-      .filter((candidate): candidate is QueryChunkResult => !!candidate)
+    return ranking.flatMap(item => {
+      const candidate = candidates[item.originalIndex]
+      return candidate ? [{ candidate, score: item.score }] : []
+    })
   },
 }
 ```
 
 Raw Cohere responses expose `results[].index` and `relevance_score`; Vercel AI
 SDK `rerank()` exposes `ranking[].originalIndex`, `score`, and `document`.
-TypeGraph adapters return reordered `QueryChunkResult[]`, not raw provider
-responses. `scores.output.reranker` is TypeGraph's normalized rank-position
-score.
+TypeGraph accepts both the scored wrapper above and legacy reordered
+`QueryChunkResult[]` results. Scores must be finite values in `[0, 1]`. With
+scored results, TypeGraph preserves the provider value in
+`scores.raw.reranker`, `scores.output.reranker`, and the result's top-level
+`score`; `scores.output.fused` continues to hold the original retrieval score.
+Legacy ordered arrays—and scored arrays containing invalid scores—use the
+existing deterministic rank-position score.
 
 Search resources:
 

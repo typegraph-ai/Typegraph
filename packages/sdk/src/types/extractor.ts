@@ -91,7 +91,17 @@ export interface RerankerOptions {
   abortSignal?: AbortSignal | undefined
 }
 
+export interface RerankedCandidate<TCandidate> {
+  candidate: TCandidate
+  /** Provider relevance score normalized to the inclusive [0, 1] range. */
+  score: number
+}
+
 export interface Reranker<TCandidate = unknown> {
   name: string
-  rerank(query: string, candidates: TCandidate[], opts?: RerankerOptions): Promise<TCandidate[]>
+  rerank(
+    query: string,
+    candidates: TCandidate[],
+    opts?: RerankerOptions,
+  ): Promise<TCandidate[] | RerankedCandidate<TCandidate>[]>
 }

@@ -148,6 +148,214 @@ describe('QueryPlanner', () => {
     expect(response.results.chunks[0]!.scores.output.fused).toBeDefined()
   })
 
+  it('preserves normalized provider reranker scores and marks their source', async () => {
+    const reranker: Reranker<QueryChunkResult> = {
+      name: 'scored-reranker',
+      rerank: vi.fn(async (_query, candidates) => candidates.slice(0, 2).map((candidate, index) => ({
+        candidate,
+        score: index === 0 ? 0.93 : 0.41,
+      }))),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, undefined, 'tenant-1', reranker)
+
+    const response = await planner.execute('Documents', { limit: 2, rerank: true, explain: true })
+
+    expect(response.results.chunks.map(chunk => chunk.score)).toEqual([0.93, 0.41])
+    expect(response.results.chunks[0]!.scores.raw.reranker).toBe(0.93)
+    expect(response.results.chunks[0]!.scores.output.reranker).toBe(0.93)
+    expect(response.results.chunks[0]!.scores.output.fused).toBeDefined()
+    expect(response.query.scoreSource).toBe('provider')
+    expect(response.explanation?.rerank?.scoreSource).toBe('provider')
+  })
+
+  it('runs fanout passes concurrently and reranks every pass against canonical intent without a final rerank', async () => {
+    let activeReranks = 0
+    let maxActiveReranks = 0
+    let rerankPass = 0
+    const abortController = new AbortController()
+    const asOf = new Date('2030-01-01T00:00:00.000Z')
+    const documentIds = [...adapter._documents.values()].map(document => document.id)
+    const events: typegraphEvent[] = []
+    const eventSink: typegraphEventSink = {
+      emit: event => { events.push(event) },
+    }
+    const reranker: Reranker<QueryChunkResult> = {
+      name: 'fanout-reranker',
+      rerank: vi.fn(async (_query, candidates) => {
+        const pass = rerankPass++
+        activeReranks += 1
+        maxActiveReranks = Math.max(maxActiveReranks, activeReranks)
+        await new Promise(resolve => setTimeout(resolve, 10))
+        activeReranks -= 1
+        const stableCandidates = [...candidates].sort((a, b) => chunkKey(a).localeCompare(chunkKey(b)))
+        return stableCandidates.slice(0, 2).map((candidate, index) => ({
+          candidate,
+          score: Math.max(0, [0.5, 0.9, 0.8][pass]! - index * 0.2),
+        }))
+      }),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, eventSink, undefined, 'tenant-1', reranker)
+    adapter.calls.length = 0
+
+    const response = await planner.execute('canonical customer intent', {
+      subqueries: ['supplement alpha', 'supplement beta', '  SUPPLEMENT ALPHA  ', 'canonical customer intent'],
+      limit: 2,
+      rerank: { topK: 2, query: 'canonical customer intent' },
+      abortSignal: abortController.signal,
+      documentFilter: { documentIds },
+      asOf,
+      explain: true,
+    })
+
+    expect(reranker.rerank).toHaveBeenCalledTimes(3)
+    expect(vi.mocked(reranker.rerank).mock.calls.map(call => call[0])).toEqual([
+      'canonical customer intent',
+      'canonical customer intent',
+      'canonical customer intent',
+    ])
+    expect(maxActiveReranks).toBeGreaterThan(1)
+    expect(adapter.calls.filter(call => call.method === 'searchWithDocuments').map(call => call.args[2])).toEqual(expect.arrayContaining([
+      'canonical customer intent',
+      'supplement alpha',
+      'supplement beta',
+    ]))
+    for (const call of adapter.calls.filter(call => call.method === 'searchWithDocuments')) {
+      expect(call.args[3]).toMatchObject({
+        documentFilter: { documentIds },
+        temporalAt: asOf,
+      })
+    }
+    for (const call of vi.mocked(reranker.rerank).mock.calls) {
+      expect(call[2]?.abortSignal).toBe(abortController.signal)
+    }
+    expect(response.results.chunks).toHaveLength(2)
+    expect(response.explanation?.fanout?.preDeduplicationCount).toBeLessThanOrEqual(6)
+    expect(response.explanation?.fanout?.mergeStrategy).toBe('fanout-provider-score')
+    expect(response.results.chunks[0]!.score).toBe(0.9)
+    expect(response.results.chunks[0]!.queryMatches?.length).toBeGreaterThanOrEqual(2)
+    expect(response.query.retrievalQueries).toEqual([
+      'canonical customer intent',
+      'supplement alpha',
+      'supplement beta',
+    ])
+    const queryEvents = events.filter(event => event.eventType === 'query.execute')
+    expect(queryEvents).toHaveLength(1)
+    expect(events.map(event => event.eventType)).toEqual(['query.execute'])
+    expect(queryEvents[0]!.payload).toMatchObject({
+      query: 'canonical customer intent',
+      fanout: true,
+      merge_strategy: 'fanout-provider-score',
+      result_count: 2,
+    })
+    expect(JSON.stringify(queryEvents[0]!.payload)).not.toContain(response.results.chunks[0]!.content)
+  })
+
+  it('uses deterministic position merging for legacy plain-array rerankers', async () => {
+    const reranker: Reranker<QueryChunkResult> = {
+      name: 'legacy-reranker',
+      rerank: vi.fn(async (_query, candidates) => candidates.slice(0, 2).reverse()),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, undefined, 'tenant-1', reranker)
+
+    const response = await planner.execute('canonical intent', {
+      subqueries: ['supplemental intent'],
+      limit: 2,
+      rerank: { topK: 2, query: 'canonical intent' },
+      explain: true,
+    })
+
+    expect(reranker.rerank).toHaveBeenCalledTimes(2)
+    expect(response.query.mergeStrategy).toBe('fanout-rrf-position')
+    expect(response.query.scoreSource).toBe('position')
+    expect(response.explanation?.fanout?.scoreSource).toBe('position')
+    expect(response.results.chunks.every(chunk => (chunk.queryMatches?.length ?? 0) > 0)).toBe(true)
+  })
+
+  it('excludes a failed supplemental pass and merges successful canonical reranks', async () => {
+    const originalSearchWithDocuments = adapter.searchWithDocuments!.bind(adapter)
+    adapter.searchWithDocuments = async (model, queryEmbedding, query, searchOpts) => {
+      if (query === 'broken supplement') throw new Error('supplement unavailable')
+      return originalSearchWithDocuments(model, queryEmbedding, query, searchOpts)
+    }
+    const reranker: Reranker<QueryChunkResult> = {
+      name: 'scored-reranker',
+      rerank: vi.fn(async (_query, candidates) => candidates.slice(0, 2).map((candidate, index) => ({
+        candidate,
+        score: 0.9 - index * 0.2,
+      }))),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, undefined, 'tenant-1', reranker)
+
+    const response = await planner.execute('canonical intent', {
+      subqueries: ['broken supplement', 'working supplement'],
+      limit: 2,
+      rerank: { topK: 2, query: 'canonical intent' },
+      explain: true,
+    })
+
+    expect(reranker.rerank).toHaveBeenCalledTimes(2)
+    expect(response.results.chunks).toHaveLength(2)
+    expect(response.explanation?.fanout?.passes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ query: 'broken supplement', status: 'rejected', error: 'supplement unavailable' }),
+      expect.objectContaining({ query: 'working supplement', status: 'fulfilled', scoreSource: 'provider' }),
+    ]))
+    expect(response.warnings).toContain('Search pass failed for "broken supplement": supplement unavailable')
+  })
+
+  it('merges canonically reranked supplements when the primary search fails', async () => {
+    const originalSearchWithDocuments = adapter.searchWithDocuments!.bind(adapter)
+    adapter.searchWithDocuments = async (model, queryEmbedding, query, searchOpts) => {
+      if (query === 'broken primary') throw new Error('primary unavailable')
+      return originalSearchWithDocuments(model, queryEmbedding, query, searchOpts)
+    }
+    const reranker: Reranker<QueryChunkResult> = {
+      name: 'scored-reranker',
+      rerank: vi.fn(async (_query, candidates) => candidates.slice(0, 2).map((candidate, index) => ({
+        candidate,
+        score: 0.8 - index * 0.2,
+      }))),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, undefined, 'tenant-1', reranker)
+
+    const response = await planner.execute('broken primary', {
+      subqueries: ['working supplement one', 'working supplement two'],
+      limit: 2,
+      rerank: { topK: 2, query: 'broken primary' },
+      explain: true,
+    })
+
+    expect(reranker.rerank).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(reranker.rerank).mock.calls.map(call => call[0])).toEqual([
+      'broken primary',
+      'broken primary',
+    ])
+    expect(response.results.chunks).toHaveLength(2)
+    expect(response.query.canonicalQuery).toBe('broken primary')
+    expect(response.explanation?.fanout?.passes[0]).toMatchObject({
+      query: 'broken primary',
+      kind: 'primary',
+      status: 'rejected',
+    })
+  })
+
+  it('falls back to legacy positional scores when scored reranker values are invalid', async () => {
+    const reranker: Reranker<QueryChunkResult> = {
+      name: 'invalid-scored-reranker',
+      rerank: vi.fn(async (_query, candidates) => candidates.slice(0, 2).map((candidate, index) => ({
+        candidate,
+        score: index === 0 ? Number.NaN : 1.2,
+      }))),
+    }
+    const planner = new QueryPlanner(adapter, bucketIds, bucketEmbeddings, bucketEmbeddings, undefined, undefined, undefined, 'tenant-1', reranker)
+
+    const response = await planner.execute('Documents', { limit: 2, rerank: true, explain: true })
+
+    expect(response.query.scoreSource).toBe('position')
+    expect(response.explanation?.rerank?.scoreSource).toBe('position')
+    expect(response.results.chunks[0]!.scores.raw.reranker).toBeUndefined()
+    expect(response.results.chunks[0]!.scores.output.reranker).toBe(1)
+  })
+
   it('overfetches candidates before reranking with the capped 3x policy', async () => {
     let candidateCount = 0
     const reranker: Reranker<QueryChunkResult> = {

@@ -53,6 +53,8 @@ export type SearchRerankOptions =
   | boolean
   | {
       topK?: number | undefined
+      /** Query used only for reranking. Defaults to the primary search text. */
+      query?: string | undefined
     }
 
 export interface SearchRerankExplanation {
@@ -62,7 +64,31 @@ export interface SearchRerankExplanation {
   candidateCount: number
   finalCount: number
   reranker?: string | undefined
+  scoreSource?: 'provider' | 'position' | undefined
   warning?: string | undefined
+}
+
+export interface SearchFanoutPassExplanation {
+  query: string
+  kind: 'primary' | 'subquery'
+  status: 'fulfilled' | 'rejected' | 'excluded'
+  resultCount: number
+  durationMs: number
+  rerankApplied: boolean
+  scoreSource?: 'provider' | 'position' | undefined
+  graphTrace?: GraphSearchTrace | undefined
+  error?: string | undefined
+}
+
+export interface SearchFanoutExplanation {
+  canonicalQuery: string
+  retrievalQueries: string[]
+  rerankQuery: string
+  passes: SearchFanoutPassExplanation[]
+  preDeduplicationCount: number
+  postDeduplicationCount: number
+  scoreSource?: 'provider' | 'position' | undefined
+  mergeStrategy: string
 }
 
 export interface SearchExplanation {
@@ -76,6 +102,7 @@ export interface SearchExplanation {
   timings: Record<string, number>
   graphTrace?: GraphSearchTrace | undefined
   rerank?: SearchRerankExplanation | undefined
+  fanout?: SearchFanoutExplanation | undefined
   warnings?: string[] | undefined
   skippedResources?: Partial<Record<SearchResource, string>> | undefined
 }
@@ -100,6 +127,8 @@ export interface RawScores {
   ppr?: number | undefined
   importance?: number | undefined
   recency?: number | undefined
+  /** Real normalized relevance returned by a scored reranker. */
+  reranker?: number | undefined
 }
 
 /** Normalized capability-level scores — all 0-1, cross-query comparable */
@@ -133,6 +162,15 @@ export interface QueryChunkResult {
   }
   /** Which retrieval systems contributed to this result (e.g. ["semantic"], ["semantic", "graph"]) */
   matchedBy: string[]
+
+  /** Per-query provenance for TypeGraph-native search fanout. */
+  queryMatches?: Array<{
+    query: string
+    kind: 'primary' | 'subquery'
+    rank: number
+    fusedScore: number
+    rerankerScore?: number | undefined
+  }> | undefined
 
   document: {
     id: string
@@ -175,6 +213,8 @@ export interface SearchOptions {
   weights?: SearchWeights | undefined
   fusion?: SearchFusion | undefined
   rerank?: SearchRerankOptions | undefined
+  /** Supplemental retrieval queries. TypeGraph accepts at most eight. */
+  subqueries?: string[] | undefined
   buckets?: string[] | undefined
   limit?: number | undefined
   offset?: number | undefined
@@ -239,6 +279,11 @@ export interface QueryResponse {
     text: string
     durationMs: number
     mergeStrategy: string
+    canonicalQuery?: string | undefined
+    retrievalQueries?: string[] | undefined
+    rerankQuery?: string | undefined
+    scoreSource?: 'provider' | 'position' | undefined
+    fanoutPasses?: SearchFanoutPassExplanation[] | undefined
   }
   /** Formatted prompt string. Present when `promptBuilder` is specified in search opts. */
   prompt?: string | undefined

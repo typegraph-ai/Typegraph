@@ -1,5 +1,6 @@
 import type { Bucket } from '../types/bucket.js'
-import type { QueryChunkResult, QueryResponse, QueryResults, RetrievalSwitches, RawScores, NormalizedScores, SearchOptions, SearchResource, SearchWeights, SearchFusion, OutputScores, SearchRerankExplanation } from '../types/query.js'
+import { createHash } from 'crypto'
+import type { QueryChunkResult, QueryResponse, QueryResults, RetrievalSwitches, RawScores, NormalizedScores, SearchOptions, SearchResource, SearchWeights, SearchFusion, OutputScores, SearchRerankExplanation, SearchFanoutPassExplanation } from '../types/query.js'
 import type { VectorStoreAdapter } from '../types/adapter.js'
 import type { Embedder } from '../embedding/provider.js'
 import { embeddingModelKey } from '../embedding/provider.js'
@@ -7,7 +8,7 @@ import type { EntityResult, FactResult, GraphSearchTrace, KnowledgeGraphBridge }
 import type { typegraphEvent, typegraphEventSink } from '../types/events.js'
 import type { typegraphLogger } from '../types/logger.js'
 import type { ChunkRef } from '../types/chunk.js'
-import type { Reranker } from '../types/extractor.js'
+import type { RerankedCandidate, Reranker } from '../types/extractor.js'
 import { ConfigError } from '../types/errors.js'
 import { compactTypeGraphContext, contextTelemetry, contextToIdentity, optionalCompactObject } from '../utils/input.js'
 import { IndexedRunner } from './runners/indexed.js'
@@ -27,6 +28,7 @@ const DEFAULT_SEARCH_WEIGHTS: Required<Record<keyof SearchWeights, number | fals
 const DEFAULT_FUSION: Required<SearchFusion> = { method: 'rrf', k: 60 }
 const DEFAULT_SEARCH_LIMIT = 10
 const MAX_RERANK_CANDIDATES = 100
+const MAX_SEARCH_SUBQUERIES = 8
 
 function resolveResources(opts?: SearchOptions | null): SearchResource[] {
   const resources = opts?.resources ?? DEFAULT_SEARCH_RESOURCES
@@ -80,6 +82,38 @@ function resolveRerankTopK(opts: SearchOptions, finalCount: number): number {
 
 function rerankRequested(opts: SearchOptions): boolean {
   return opts.rerank === true || (typeof opts.rerank === 'object' && opts.rerank !== null)
+}
+
+function resolveRerankQuery(opts: SearchOptions, primaryQuery: string): string {
+  if (typeof opts.rerank === 'object' && opts.rerank !== null) {
+    const query = opts.rerank.query?.trim()
+    if (query) return query
+  }
+  return primaryQuery
+}
+
+function normalizedQueryKey(value: string): string {
+  return value
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+}
+
+function normalizeSubqueries(primaryQuery: string, subqueries?: string[]): string[] {
+  const primaryKey = normalizedQueryKey(primaryQuery)
+  const seen = new Set(primaryKey ? [primaryKey] : [])
+  const normalized: string[] = []
+
+  for (const value of Array.isArray(subqueries) ? subqueries : []) {
+    if (normalized.length >= MAX_SEARCH_SUBQUERIES) break
+    const query = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : ''
+    const key = normalizedQueryKey(query)
+    if (!query || !key || seen.has(key)) continue
+    seen.add(key)
+    normalized.push(query)
+  }
+  return normalized
 }
 
 function resolveRerankCandidateLimit(topK: number): number {
@@ -203,6 +237,7 @@ interface RerankState {
   candidateCount: number
   finalCount: number
   reranker?: string | undefined
+  scoreSource?: 'provider' | 'position' | undefined
   warning?: string | undefined
 }
 
@@ -318,7 +353,7 @@ function chunkResultIdentityKey(result: QueryChunkResult): string {
   if (result.document.id && result.chunk.index !== undefined && result.document.bucketId) {
     return `${result.document.bucketId}:${result.document.id}:${result.chunk.index}`
   }
-  return result.content
+  return createHash('sha256').update(result.content).digest('hex')
 }
 
 function isQueryChunkResult(value: unknown): value is QueryChunkResult {
@@ -356,6 +391,51 @@ function normalizeRerankedChunks(original: QueryChunkResult[], returned: unknown
   return ordered
 }
 
+function isRerankedCandidateValue(value: unknown): value is RerankedCandidate<unknown> {
+  return Boolean(value && typeof value === 'object' && 'candidate' in value && 'score' in value)
+}
+
+function isValidProviderScore(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+}
+
+function normalizeScoredRerankedChunks(
+  original: QueryChunkResult[],
+  returned: RerankedCandidate<unknown>[],
+): QueryChunkResult[] | undefined {
+  if (!returned.every(item => isValidProviderScore(item.score))) return undefined
+
+  const byKey = new Map(original.map(chunk => [chunkResultIdentityKey(chunk), chunk]))
+  const used = new Set<string>()
+  const ordered: QueryChunkResult[] = []
+
+  for (const item of returned) {
+    if (!isQueryChunkResult(item.candidate)) continue
+    const key = chunkResultIdentityKey(item.candidate)
+    if (used.has(key)) continue
+    const originalChunk = byKey.get(key)
+    if (!originalChunk) continue
+    used.add(key)
+    ordered.push({
+      ...originalChunk,
+      score: item.score,
+      scores: {
+        ...originalChunk.scores,
+        raw: {
+          ...originalChunk.scores.raw,
+          reranker: item.score,
+        },
+        output: {
+          ...originalChunk.scores.output,
+          reranker: item.score,
+        },
+      },
+    })
+  }
+
+  return ordered.length > 0 ? ordered : undefined
+}
+
 function rerankScore(index: number, total: number): number {
   if (total <= 1) return 1
   return (total - index) / total
@@ -391,9 +471,25 @@ async function applyReranker(
     abortSignal,
   })
   const returned = Array.isArray(reranked) ? reranked : []
-  const ordered = normalizeRerankedChunks(chunks, returned)
   state.applied = true
   state.candidateCount = chunks.length
+
+  if (returned.length > 0 && returned.every(isRerankedCandidateValue)) {
+    const scoredReturned = returned as RerankedCandidate<QueryChunkResult>[]
+    const scored = normalizeScoredRerankedChunks(chunks, scoredReturned)
+    if (scored) {
+      state.scoreSource = 'provider'
+      return scored
+    }
+
+    // Invalid provider scores are treated exactly like the legacy ordered-candidate contract.
+    const ordered = normalizeRerankedChunks(chunks, scoredReturned.map(item => item.candidate))
+    state.scoreSource = 'position'
+    return applyRerankScores(ordered)
+  }
+
+  const ordered = normalizeRerankedChunks(chunks, returned)
+  state.scoreSource = 'position'
   return applyRerankScores(ordered)
 }
 
@@ -407,6 +503,7 @@ function rerankExplanation(state: RerankState): SearchRerankExplanation | undefi
     finalCount: state.finalCount,
   }
   if (state.reranker) explanation.reranker = state.reranker
+  if (state.scoreSource) explanation.scoreSource = state.scoreSource
   if (state.warning) explanation.warning = state.warning
   return explanation
 }
@@ -474,6 +571,153 @@ function boostScopedCandidates(candidates: RetrievalCandidate[], chunkRefs: Chun
   }
 }
 
+interface SuccessfulFanoutPass {
+  query: string
+  kind: 'primary' | 'subquery'
+  response: QueryResponse
+}
+
+function fanoutRerankOptions(opts: SearchOptions, canonicalQuery: string): SearchOptions['rerank'] {
+  if (opts.rerank === true) return { query: canonicalQuery }
+  if (typeof opts.rerank === 'object' && opts.rerank !== null) {
+    return { ...opts.rerank, query: opts.rerank.query?.trim() || canonicalQuery }
+  }
+  return opts.rerank
+}
+
+function mergeGraphResults<T extends { id: string }>(
+  passes: SuccessfulFanoutPass[],
+  itemsForPass: (pass: SuccessfulFanoutPass) => T[],
+  relevance: (item: T) => number,
+): T[] {
+  const merged = new Map<string, { item: T; relevance: number }>()
+  for (const pass of passes) {
+    for (const item of itemsForPass(pass)) {
+      const score = relevance(item)
+      const existing = merged.get(item.id)
+      if (!existing || score > existing.relevance) merged.set(item.id, { item, relevance: score })
+    }
+  }
+  return [...merged.values()].map(entry => entry.item)
+}
+
+function fanoutQueryMatch(pass: SuccessfulFanoutPass, chunk: QueryChunkResult, rank: number) {
+  return {
+    query: pass.query,
+    kind: pass.kind,
+    rank,
+    fusedScore: chunk.scores.output.fused,
+    ...(typeof chunk.scores.output.reranker === 'number'
+      ? { rerankerScore: chunk.scores.output.reranker }
+      : {}),
+  }
+}
+
+function mergeFanoutChunks(
+  passes: SuccessfulFanoutPass[],
+  limit: number,
+  scoreSource: 'provider' | 'position',
+): { chunks: QueryChunkResult[]; preDeduplicationCount: number; postDeduplicationCount: number } {
+  const groups = new Map<string, {
+    key: string
+    best: QueryChunkResult
+    bestScore: number
+    bestRank: number
+    primary: boolean
+    rrfScore: number
+    matches: NonNullable<QueryChunkResult['queryMatches']>
+  }>()
+  let preDeduplicationCount = 0
+
+  for (const pass of passes) {
+    pass.response.results.chunks.forEach((chunk, index) => {
+      preDeduplicationCount += 1
+      const rank = index + 1
+      const key = chunkResultIdentityKey(chunk)
+      const rerankerScore = chunk.scores.output.reranker ?? chunk.score
+      const existing = groups.get(key)
+      if (!existing) {
+        groups.set(key, {
+          key,
+          best: chunk,
+          bestScore: rerankerScore,
+          bestRank: rank,
+          primary: pass.kind === 'primary',
+          rrfScore: 1 / (60 + rank),
+          matches: [fanoutQueryMatch(pass, chunk, rank)],
+        })
+        return
+      }
+
+      existing.primary ||= pass.kind === 'primary'
+      existing.bestRank = Math.min(existing.bestRank, rank)
+      existing.rrfScore += 1 / (60 + rank)
+      existing.matches.push(fanoutQueryMatch(pass, chunk, rank))
+      if (rerankerScore > existing.bestScore) {
+        existing.best = chunk
+        existing.bestScore = rerankerScore
+      }
+    })
+  }
+
+  const ordered = [...groups.values()].sort((a, b) => {
+    if (scoreSource === 'provider' && b.bestScore !== a.bestScore) return b.bestScore - a.bestScore
+    if (scoreSource === 'position' && b.rrfScore !== a.rrfScore) return b.rrfScore - a.rrfScore
+    if (a.primary !== b.primary) return a.primary ? -1 : 1
+    if (a.bestRank !== b.bestRank) return a.bestRank - b.bestRank
+    if (a.matches.length !== b.matches.length) return b.matches.length - a.matches.length
+    return a.key.localeCompare(b.key)
+  })
+
+  return {
+    chunks: ordered.slice(0, limit).map(entry => ({
+      ...entry.best,
+      ...(scoreSource === 'position'
+        ? {
+            score: entry.rrfScore,
+            scores: {
+              ...entry.best.scores,
+              output: { ...entry.best.scores.output, reranker: entry.rrfScore },
+            },
+          }
+        : {}),
+      queryMatches: entry.matches,
+    })),
+    preDeduplicationCount,
+    postDeduplicationCount: groups.size,
+  }
+}
+
+function fanoutPassExplanation(
+  query: string,
+  kind: 'primary' | 'subquery',
+  settled: PromiseSettledResult<QueryResponse>,
+  fallbackDurationMs: number,
+  included: boolean,
+): SearchFanoutPassExplanation {
+  if (settled.status === 'rejected') {
+    return {
+      query,
+      kind,
+      status: 'rejected',
+      resultCount: 0,
+      durationMs: fallbackDurationMs,
+      rerankApplied: false,
+      error: settled.reason instanceof Error ? settled.reason.message : String(settled.reason),
+    }
+  }
+  return {
+    query,
+    kind,
+    status: included ? 'fulfilled' : 'excluded',
+    resultCount: settled.value.results.chunks.length,
+    durationMs: settled.value.query.durationMs,
+    rerankApplied: Boolean(settled.value.query.scoreSource),
+    ...(settled.value.query.scoreSource ? { scoreSource: settled.value.query.scoreSource } : {}),
+    ...(settled.value.results.graphTrace ? { graphTrace: settled.value.results.graphTrace } : {}),
+  }
+}
+
 export class QueryPlanner {
   constructor(
     private adapter: VectorStoreAdapter,
@@ -489,6 +733,226 @@ export class QueryPlanner {
 
   async execute(text: string, opts?: SearchOptions | null): Promise<QueryResponse> {
     const normalizedOpts = optionalCompactObject<SearchOptions>(opts, 'QueryPlanner.execute') as SearchOptions
+    const subqueries = normalizeSubqueries(
+      text,
+      Array.isArray(normalizedOpts.subqueries) ? normalizedOpts.subqueries : undefined,
+    )
+    if (subqueries.length === 0) {
+      return this.executeSingle(text, { ...normalizedOpts, subqueries: undefined })
+    }
+    return this.executeFanout(text, subqueries, normalizedOpts)
+  }
+
+  private emitFanoutTelemetry(
+    canonicalQuery: string,
+    opts: SearchOptions,
+    passes: SearchFanoutPassExplanation[],
+    successfulPasses: SuccessfulFanoutPass[],
+    selectedChunks: QueryChunkResult[],
+    durationMs: number,
+    mergeStrategy: string,
+  ): void {
+    if (!this.eventSink) return
+    const context = compactTypeGraphContext(opts.context, 'search')
+    const telemetry = contextTelemetry(context)
+    const identity = contextToIdentity(context, this.tenantId)
+    const event: typegraphEvent = {
+      id: crypto.randomUUID(),
+      eventType: 'query.execute',
+      identity,
+      payload: {
+        query: canonicalQuery,
+        queries: passes.map(pass => ({ query: pass.query, kind: pass.kind })),
+        fanout: true,
+        passes: passes.map(pass => ({
+          query: pass.query,
+          kind: pass.kind,
+          status: pass.status,
+          result_count: pass.resultCount,
+          duration_ms: pass.durationMs,
+          rerank_applied: pass.rerankApplied,
+          ...(pass.scoreSource ? { score_source: pass.scoreSource } : {}),
+          ...(pass.error ? { error: pass.error } : {}),
+        })),
+        merge_strategy: mergeStrategy,
+        candidates: successfulPasses.flatMap(pass => pass.response.results.chunks.map((chunk, index) => ({
+          identity: chunkResultIdentityKey(chunk),
+          query: pass.query,
+          kind: pass.kind,
+          rank: index + 1,
+          fused_score: chunk.scores.output.fused,
+          reranker_score: chunk.scores.output.reranker,
+        }))),
+        final_selection: selectedChunks.map((chunk, index) => ({
+          identity: chunkResultIdentityKey(chunk),
+          rank: index + 1,
+          fused_score: chunk.scores.output.fused,
+          reranker_score: chunk.scores.output.reranker,
+        })),
+        requested_count: resolveRequestedCount(opts),
+        result_count: selectedChunks.length,
+      },
+      durationMs,
+      traceId: telemetry.traceId,
+      spanId: telemetry.spanId,
+      timestamp: new Date(),
+    }
+    void this.eventSink.emit(event)
+  }
+
+  private async executeFanout(
+    canonicalQuery: string,
+    subqueries: string[],
+    opts: SearchOptions,
+  ): Promise<QueryResponse> {
+    const startedAt = Date.now()
+    const retrievalQueries = [canonicalQuery, ...subqueries]
+    const rerankQuery = resolveRerankQuery(opts, canonicalQuery)
+    const perPassOpts: SearchOptions = {
+      ...opts,
+      subqueries: undefined,
+      rerank: fanoutRerankOptions(opts, canonicalQuery),
+    }
+    const settled = await Promise.allSettled(
+      retrievalQueries.map(query => this.executeSingle(query, perPassOpts, false)),
+    )
+    const fallbackDurationMs = Date.now() - startedAt
+    const fulfilledIndexes = settled
+      .map((result, index) => result.status === 'fulfilled' ? index : -1)
+      .filter(index => index >= 0)
+
+    if (fulfilledIndexes.length === 0) {
+      const passes = settled.map((result, index) => fanoutPassExplanation(
+        retrievalQueries[index]!,
+        index === 0 ? 'primary' : 'subquery',
+        result,
+        fallbackDurationMs,
+        false,
+      ))
+      this.emitFanoutTelemetry(canonicalQuery, opts, passes, [], [], fallbackDurationMs, 'fanout-failed')
+      const first = settled[0]
+      throw first?.status === 'rejected' ? first.reason : new Error('All TypeGraph fanout searches failed.')
+    }
+
+    const canonicalIndexes = fulfilledIndexes.filter(index => {
+      const result = settled[index]
+      return result?.status === 'fulfilled' && Boolean(result.value.query.scoreSource)
+    })
+    const includedIndexes = canonicalIndexes.length > 0
+      ? canonicalIndexes
+      : [fulfilledIndexes.includes(0) ? 0 : fulfilledIndexes[0]!]
+    const includedSet = new Set(includedIndexes)
+    const passes = settled.map((result, index) => fanoutPassExplanation(
+      retrievalQueries[index]!,
+      index === 0 ? 'primary' : 'subquery',
+      result,
+      fallbackDurationMs,
+      includedSet.has(index),
+    ))
+    const successfulPasses: SuccessfulFanoutPass[] = includedIndexes.map(index => ({
+      query: retrievalQueries[index]!,
+      kind: index === 0 ? 'primary' : 'subquery',
+      response: (settled[index] as PromiseFulfilledResult<QueryResponse>).value,
+    }))
+    const baseIndex = fulfilledIndexes.includes(0) ? 0 : includedIndexes[0]!
+    const baseResponse = (settled[baseIndex] as PromiseFulfilledResult<QueryResponse>).value
+
+    if (canonicalIndexes.length === 0) {
+      const durationMs = Date.now() - startedAt
+      const mergeStrategy = baseIndex === 0 ? 'fanout-primary-fallback' : 'fanout-search-fallback'
+      baseResponse.query = {
+        ...baseResponse.query,
+        text: canonicalQuery,
+        canonicalQuery,
+        retrievalQueries,
+        rerankQuery,
+        durationMs,
+        mergeStrategy,
+        fanoutPasses: passes,
+      }
+      if (opts.explain && baseResponse.explanation) {
+        baseResponse.explanation.fanout = {
+          canonicalQuery,
+          retrievalQueries,
+          rerankQuery,
+          passes,
+          preDeduplicationCount: baseResponse.results.chunks.length,
+          postDeduplicationCount: baseResponse.results.chunks.length,
+          mergeStrategy,
+        }
+      }
+      this.emitFanoutTelemetry(canonicalQuery, opts, passes, successfulPasses, baseResponse.results.chunks, durationMs, mergeStrategy)
+      return baseResponse
+    }
+
+    const scoreSource: 'provider' | 'position' = successfulPasses.every(pass => pass.response.query.scoreSource === 'provider')
+      ? 'provider'
+      : 'position'
+    const limit = resolveRequestedCount(opts)
+    const merged = mergeFanoutChunks(successfulPasses, limit, scoreSource)
+    const primaryResponse = settled[0]?.status === 'fulfilled' ? settled[0].value : undefined
+    const results: QueryResults = {
+      chunks: merged.chunks,
+      facts: mergeGraphResults(
+        successfulPasses,
+        pass => pass.response.results.facts,
+        fact => fact.similarity ?? fact.weight ?? 0,
+      ),
+      entities: mergeGraphResults(
+        successfulPasses,
+        pass => pass.response.results.entities,
+        entity => entity.similarity ?? 0,
+      ),
+      ...(primaryResponse?.results.graphTrace ? { graphTrace: primaryResponse.results.graphTrace } : {}),
+    }
+    const durationMs = Date.now() - startedAt
+    const mergeStrategy = scoreSource === 'provider'
+      ? 'fanout-provider-score'
+      : 'fanout-rrf-position'
+    const warnings = [
+      ...new Set([
+        ...successfulPasses.flatMap(pass => pass.response.warnings ?? []),
+        ...passes.filter(pass => pass.status === 'rejected').map(pass => `Search pass failed for "${pass.query}": ${pass.error}`),
+        ...passes.filter(pass => pass.status === 'excluded').map(pass => `Search pass excluded because canonical reranking was not applied: "${pass.query}".`),
+      ]),
+    ]
+    const response: QueryResponse = {
+      results,
+      buckets: baseResponse.buckets,
+      query: {
+        text: canonicalQuery,
+        canonicalQuery,
+        retrievalQueries,
+        rerankQuery,
+        durationMs,
+        mergeStrategy,
+        scoreSource,
+        fanoutPasses: passes,
+      },
+      explanation: opts.explain && baseResponse.explanation
+        ? {
+            ...baseResponse.explanation,
+            graphTrace: primaryResponse?.results.graphTrace,
+            fanout: {
+              canonicalQuery,
+              retrievalQueries,
+              rerankQuery,
+              passes,
+              preDeduplicationCount: merged.preDeduplicationCount,
+              postDeduplicationCount: merged.postDeduplicationCount,
+              scoreSource,
+              mergeStrategy,
+            },
+          }
+        : undefined,
+      warnings: warnings.length > 0 ? warnings : undefined,
+    }
+    this.emitFanoutTelemetry(canonicalQuery, opts, passes, successfulPasses, results.chunks, durationMs, mergeStrategy)
+    return response
+  }
+
+  private async executeSingle(text: string, opts?: SearchOptions | null, emitTelemetry = true): Promise<QueryResponse> {
+    const normalizedOpts = optionalCompactObject<SearchOptions>(opts, 'QueryPlanner.execute') as SearchOptions
     const startMs = Date.now()
     const count = resolveRequestedCount(normalizedOpts)
     const resources = resolveResources(normalizedOpts)
@@ -502,6 +966,7 @@ export class QueryPlanner {
     const graphIds = normalizedOpts.graphIds ?? [requestedGraph]
     const onBucketError = normalizedOpts.onBucketError ?? 'throw'
     const shouldRerank = rerankRequested(normalizedOpts)
+    const rerankQuery = resolveRerankQuery(normalizedOpts, text)
     const rerankTopK = resolveRerankTopK(normalizedOpts, count)
     const rerankState: RerankState = {
       requested: shouldRerank,
@@ -635,7 +1100,7 @@ export class QueryPlanner {
         this.logger?.warn(rerankWarning)
       } else if (shouldRerank && this.reranker && results.chunks.length > 0) {
         try {
-          results.chunks = await applyReranker(text, results.chunks, this.reranker, rerankState, normalizedOpts.abortSignal)
+          results.chunks = await applyReranker(rerankQuery, results.chunks, this.reranker, rerankState, normalizedOpts.abortSignal)
         } catch (err) {
           rerankWarning = `Search reranker failed: ${err instanceof Error ? err.message : String(err)}; returning non-reranked results.`
           rerankState.warning = rerankWarning
@@ -652,7 +1117,7 @@ export class QueryPlanner {
       const durationMs = Date.now() - startMs
       const counts = resultCounts(results)
 
-      if (this.eventSink) {
+      if (emitTelemetry && this.eventSink) {
         const event: typegraphEvent = {
           id: crypto.randomUUID(),
           eventType: 'query.execute',
@@ -688,7 +1153,13 @@ export class QueryPlanner {
       return {
         results,
         buckets: bucketTimings,
-        query: { text, durationMs, mergeStrategy: rerankState.applied ? 'rrf+rerank' : 'rrf' },
+        query: {
+          text,
+          durationMs,
+          mergeStrategy: rerankState.applied ? 'rrf+rerank' : 'rrf',
+          ...(shouldRerank ? { rerankQuery } : {}),
+          ...(rerankState.scoreSource ? { scoreSource: rerankState.scoreSource } : {}),
+        },
         explanation: normalizedOpts.explain
           ? buildExplanation({ requestedGraph, graphClosure: graphIds, resources, weights: publicWeights, fusion, results, bucketTimings, graphTrace, rerank: rerankExplanation(rerankState), warnings })
           : undefined,
@@ -702,7 +1173,7 @@ export class QueryPlanner {
 
     if (modelGroups.size > 0) {
       const runnerStart = Date.now()
-      const runner = new IndexedRunner(this.adapter, this.eventSink)
+      const runner = new IndexedRunner(this.adapter, emitTelemetry ? this.eventSink : undefined)
 
       try {
         const results = await withTimeout(
@@ -851,7 +1322,7 @@ export class QueryPlanner {
       this.logger?.warn(rerankWarning)
     } else if (shouldRerank && this.reranker && results.chunks.length > 0) {
       try {
-        results.chunks = await applyReranker(text, results.chunks, this.reranker, rerankState, normalizedOpts.abortSignal)
+        results.chunks = await applyReranker(rerankQuery, results.chunks, this.reranker, rerankState, normalizedOpts.abortSignal)
       } catch (err) {
         rerankWarning = `Search reranker failed: ${err instanceof Error ? err.message : String(err)}; returning non-reranked results.`
         rerankState.warning = rerankWarning
@@ -865,7 +1336,7 @@ export class QueryPlanner {
     const durationMs = Date.now() - startMs
     const counts = resultCounts(results)
 
-    if (this.eventSink) {
+    if (emitTelemetry && this.eventSink) {
       const event: typegraphEvent = {
         id: crypto.randomUUID(),
         eventType: 'query.execute',
@@ -905,6 +1376,8 @@ export class QueryPlanner {
         text,
         durationMs,
         mergeStrategy: rerankState.applied ? 'rrf+rerank' : 'rrf',
+        ...(shouldRerank ? { rerankQuery } : {}),
+        ...(rerankState.scoreSource ? { scoreSource: rerankState.scoreSource } : {}),
       },
       explanation: normalizedOpts.explain
         ? buildExplanation({ requestedGraph, graphClosure: graphIds, resources, weights: publicWeights, fusion, results, bucketTimings, graphTrace, rerank: rerankExplanation(rerankState), warnings })

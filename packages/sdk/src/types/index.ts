@@ -59,6 +59,7 @@ export type {
   ExtractionResult,
   Reranker,
   RerankerOptions,
+  RerankedCandidate,
 } from './extractor.js'
 
 export {
@@ -121,6 +122,8 @@ export type {
   SearchFusion,
   SearchRerankOptions,
   SearchRerankExplanation,
+  SearchFanoutPassExplanation,
+  SearchFanoutExplanation,
   SearchExplanation,
   OutputScores,
   QueryChunkResult,
